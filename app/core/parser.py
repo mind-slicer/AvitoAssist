@@ -221,15 +221,6 @@ class SearchNavigator:
         except Exception as e:
             raise e
 
-    #?
-    def _js_type(self, element, text):
-        self.driver.execute_script("arguments[0].focus();", element)
-        self.driver.execute_script("arguments[0].click();", element)
-        self.driver.execute_script(f"arguments[0].value = '{text}';", element)
-        self.driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", element)
-        self.driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", element)
-        time.sleep(0.5)
-
     def _type_query(self, keywords, fast_mode=False):
         if not fast_mode and ("avito.ru" not in self.driver.current_url):
             self.driver.get("https://www.avito.ru/moskva")
@@ -275,77 +266,6 @@ class SearchNavigator:
         except: pass
         
         return items
-
-    #?
-    def _find_search_input(self):
-        search_input = None
-        strategies = [
-            ('input[placeholder*="Поиск"]', "placeholder"),
-            ('input[name="q"]', "name=q"),
-            ('input[data-marker*="search"]', "data-marker"),
-            ('//header//input[@type="text"]', "header xpath")
-        ]
-
-        for selector, name in strategies:
-            try:
-                if selector.startswith('//'):
-                    search_input = self.driver.find_element(By.XPATH, selector)
-                else:
-                    search_input = self.driver.find_element(By.CSS_SELECTOR, selector)
-                break
-            except:
-                continue
-            
-        if not search_input:
-            all_inputs = self.driver.find_elements(By.TAG_NAME, "input")
-            if self.logger:
-                self.logger(f"Total inputs: {len(all_inputs)}")
-            for inp in all_inputs:
-                try:
-                    if inp.is_displayed() and inp.size['width'] > 100:
-                        search_input = inp
-                        if self.logger:
-                            self.logger("Found fallback input")
-                        break
-                except:
-                    continue
-                
-        return search_input
-
-    #?
-    def _load_search_page(self, keywords):
-        if self.logger:
-            self.logger("Loading search page...")
-
-        try:
-            self.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
-            self.driver.delete_all_cookies()
-        except Exception as e:
-            if self.logger:
-                self.logger(f"Cache clear failed: {e}")
-
-        params = {"q": keywords}
-        search_url = f"https://www.avito.ru/moskva?{urlencode(params)}"
-        self.driver.get(search_url)
-        time.sleep(3)
-
-        return self._check_page_status()
-
-    #?
-    def _check_page_status(self):
-        title = self.driver.title.lower()
-
-        if "404" in title or "не найдена" in title or "не существует" in title:
-            if self.logger:
-                self.logger("!!! 404 PAGE - Invalid URL !!!")
-            return "404"
-
-        if any(phrase in title for phrase in ["доступ ограничен", "проблема с ip", "captcha"]):
-            if self.logger:
-                self.logger("IP BLOCKED")
-            return "blocked"
-
-        return "ok"
 
     #?
     def _wait_for_dropdown(self):
@@ -412,31 +332,66 @@ class SearchNavigator:
         return results
     
     def perform_smart_search(self, keywords: str, forced_filters: List[str] = None) -> List[str]:
-        # Упрощенная версия smart_search с использованием логгера
-        try:            
+        collected_urls = []
+        try:
+            logger.info(f"Умный поиск: '{keywords}'...", token="smart_search")
+            
             items = self._type_query(keywords)
             if not items:
+                logger.warning("Подсказки не появились. Использую Fallback.", token="smart_search")
                 return []
+
+            candidates = []
+            seen_texts = set()
+
+            for i, item in enumerate(items):
+                try:
+                    text = item.text.replace("\n", " ").strip()
+                    if not text or text in seen_texts: continue
+                    seen_texts.add(text)
+
+                    has_icon = len(item.find_elements(By.TAG_NAME, "img")) > 0
+                    
+                    is_forced = False
+                    if forced_filters:
+                        for f in forced_filters:
+                            if f.lower() in text.lower():
+                                is_forced = True
+                                break
+                    
+                    if (not forced_filters and has_icon) or is_forced:
+                        candidates.append({'element': item, 'text': text})
+                except: pass
+
+            if not candidates:
+                logger.info("Подходящих категорий в подсказках не найдено.", token="smart_search")
+                return []
+
+            indices_to_click = [c['index'] for c in candidates]
             
-            # Логика выбора категории (упрощена для примера, полная версия была в прошлом коде)
-            # Если нужно восстановить полную логику выбора кликов - скажите
-            # Сейчас сделаем базовый клик по первому релевантному
+            target_candidate = candidates[0] # Берем лучшую
+            logger.info(f"Выбор категории: {target_candidate['text']}", token="smart_search")
             
-            if items:
-                target = items[0]
-                txt = target.text.replace("\n", " ")
-                logger.info(f"Выбор категории: {txt}")
-                target.click()
+            try:
+                # Попытка клика
+                el = target_candidate['element']
+                self.driver.execute_script("arguments[0].click();", el)
                 PageLoader.wait_for_load(self.driver)
-                return [self.driver.current_url]
-            
-            return []
-            
+                
+                time.sleep(2)
+                current_url = self.driver.current_url
+                logger.success(f"Переход успешен: {target_candidate['text']}")
+                collected_urls.append(current_url)
+                
+            except Exception as e:
+                logger.error(f"Ошибка перехода: {e}")
+
+            return collected_urls
+
         except Exception as e:
-            logger.error(f"Ошибка умного поиска: {e}")
+            logger.error(f"Ошибка Smart Search: {e}")
             return []
 
-    #?
     def _is_valid_url(self, url: str) -> bool:
         from urllib.parse import urlparse, parse_qs
 
@@ -1216,12 +1171,7 @@ class AvitoParser(QObject):
         except: pass
         return False
 
-    #?
-    def _wait_for_items(self):
-        try: WebDriverWait(self.driver_manager.driver, 4).until(EC.visibility_of_element_located((By.CSS_SELECTOR, '[data-marker="item"]')))
-        except: pass
-
-    #?
+    #? - Это подразумевалось под _check_price()?
     def _should_skip(self, item, min_p, max_p, ignore_kws, filter_defects: bool = False):
         if min_p and item['price'] < min_p: return True
         if max_p and item['price'] > max_p: return True
@@ -1244,7 +1194,7 @@ class AvitoParser(QObject):
 
         return False
 
-    #?   
+    #? - Не трогать? Ее вызывает process_region()   
     def _parse_page(self) -> List[Dict[str, Any]]:
         items = []
         try:
@@ -1263,44 +1213,6 @@ class AvitoParser(QObject):
         except Exception as e:
             logger.error(f"Ошибка парсинга страницы: {e}")
         return items
-    
-    #?
-    @staticmethod
-    def _load_existing_ids_for_queue(merge_with_table: Optional[str]) -> Set[str]:
-        """
-        ФАЗА 5.1: загрузить множество ID объявлений из merge-таблицы.
-        Если таблица не выбрана или не читается — возвращаем пустое множество.
-        """
-        existing_ids: Set[str] = set()
-
-        if not merge_with_table:
-            return existing_ids
-
-        filepath = merge_with_table
-        if not os.path.exists(filepath):
-            return existing_ids
-
-        try:
-            # Сначала пробуем обычный JSON
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                # Фолбэк — gzip JSON
-                with gzip.open(filepath, "rt", encoding="utf-8") as f:
-                    data = json.load(f)
-
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, dict):
-                        aid = item.get("id")
-                        if aid:
-                            existing_ids.add(str(aid))
-        except Exception as e:
-            # тихий fallback, чтобы не ломать парсер
-            print(f"[WARN] Failed to load existing ids for merge table {filepath}: {e}")
-
-        return existing_ids
 
     def cleanup(self):
         self.driver_manager.cleanup()

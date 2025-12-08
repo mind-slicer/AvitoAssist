@@ -114,6 +114,7 @@ class AIChatWorker(QThread):
 class AIManager(QObject):
     # Сигналы для совместимости с UI
     progress_signal = pyqtSignal(str)
+    ai_progress_value = pyqtSignal(int)
     result_signal = pyqtSignal(int, str, dict)
     finished_signal = pyqtSignal()
     all_finished_signal = pyqtSignal()
@@ -242,7 +243,7 @@ class AIManager(QObject):
             context=context,
             model_name=self._model_name
         )
-        self.processing_worker.progress_value.connect(self.ai_progress_value_signal_wrapper)
+        self.processing_worker.progress_value.connect(self.ai_progress_value.emit)
         self.processing_worker.result_signal.connect(self.result_signal.emit)
         self.processing_worker.finished_signal.connect(self.finished_signal.emit)
         self.processing_worker.finished_signal.connect(self.all_finished_signal.emit)

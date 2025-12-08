@@ -74,12 +74,12 @@ class ParserController(QObject):
         self.ensure_ai_manager()
         self.ai_manager.set_model(model_name)
 
-    def start_sequence(self, queues_config: List[Dict[str, Any]]):
+    def start_sequence(self, configs):
         self.cleanup_worker()
 
         self.queue_state.is_sequence_running = True
-        self.queue_state.queues_config = queues_config
-        self.queue_state.total_queues = len(queues_config)
+        self.queue_state.queues_config = configs
+        self.queue_state.total_queues = len(configs)
         self.queue_state.current_queue_index = 0
 
         self.sequence_started.emit()
