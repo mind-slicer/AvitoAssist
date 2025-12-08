@@ -26,7 +26,7 @@ from app.core.selectors import AvitoSelectors
 from app.core.log_manager import logger
 
 
-# Ban recovery mechanism
+# --- Ban Recovery Mechanism ---
 class BanRecoveryStrategy:
     def __init__(self, driver_manager):
         self.driver_manager = driver_manager
@@ -76,8 +76,7 @@ class BanRecoveryStrategy:
         elapsed = 0
         while elapsed < wait_time:
             if stop_check and stop_check():
-                if stop_check and stop_check():
-                    logger.info("Восстановление прервано пользователем")
+                logger.info("Восстановление прервано пользователем")
                 return False
             
             remaining = wait_time - elapsed
@@ -94,7 +93,8 @@ class BanRecoveryStrategy:
         logger.success("Попытка продолжения работы...")
         return True
 
-# Class loads the site pages carefully
+
+# --- Page Loader ---
 class PageLoader:
     @staticmethod
     def wait_for_load(driver, timeout: int = 5) -> bool:
@@ -195,8 +195,8 @@ class PageLoader:
             if new_height == last_height: break
             last_height = new_height
 
-# Class search for Avito categories and get optimal links for crawling
-# Imitating a human
+
+# --- Search Navigator ---
 class SearchNavigator:
     def __init__(self, driver):
         self.driver = driver
@@ -238,7 +238,8 @@ class SearchNavigator:
             return None
 
         try:
-            logger.info(f"Ввод запроса: {keywords}")
+            if not fast_mode:
+                logger.info(f"Ввод запроса: {keywords}")
             self._human_type(search_input, keywords)
         except Exception as e:
             logger.dev(f"Input failed: {e}", level="ERROR")
@@ -255,7 +256,8 @@ class SearchNavigator:
         except: pass
 
         if not dropdown:
-            search_input.send_keys(Keys.ENTER)
+            # Если выпадающего списка нет, возвращаем пустой список, 
+            # но не нажимаем Enter, чтобы дать шанс логике ретраев
             return []
 
         # Парсим подсказки
@@ -267,46 +269,24 @@ class SearchNavigator:
         
         return items
 
-    #?
-    def _wait_for_dropdown(self):
-        dropdown = None
-        for selector in ['div[data-marker*="suggest"]', '[role="listbox"]']:
-            try:
-                dropdown = WebDriverWait(self.driver, 3).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
-                )
-                if self.logger:
-                    self.logger(f"Dropdown found...")
-                break
-            except:
-                continue
-        return dropdown
+    def _is_valid_url(self, url: str) -> bool:
+        if not url or "avito.ru" not in url:
+            return False
 
-    #?
-    def _extract_dropdown_items(self, dropdown):
-        items = []
-        for selector in ['[data-marker*="suggest/list/item"]', '[role="option"]']:
-            try:
-                found = dropdown.find_elements(By.CSS_SELECTOR, selector)
-                if found:
-                    items.extend(found)
+        trimmed = url.rstrip("/")
+        if trimmed in ("https://www.avito.ru/moskva", "https://www.avito.ru/rossiya"):
+            return False
 
-                if self.logger and items:
-                    count = len(items)
-                    self.logger(f"Found {count} category entries in dropdown")
-                    names = []
-                    for it in items:
-                        try:
-                            t = it.text.replace("\n", " ").strip()
-                            if t:
-                                names.append(t)
-                        except Exception:
-                            pass
-                    if names:
-                        self.logger(f"Categories (raw): {', '.join(names)}")
-            except:
-                continue
-        return items
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        if "q" in qs:
+            return True
+
+        if parsed.path.count("/") >= 3:
+            return True
+        
+        return False
 
     def get_search_suggestions(self, keywords: str) -> List[Dict[str, str]]:
         results = []
@@ -332,6 +312,10 @@ class SearchNavigator:
         return results
     
     def perform_smart_search(self, keywords: str, forced_filters: List[str] = None) -> List[str]:
+        """
+        Merged logic from func.txt and parser.py.
+        Tries to match specific categories, prefers href extraction over clicking.
+        """
         collected_urls = []
         try:
             logger.info(f"Умный поиск: '{keywords}'...", token="smart_search")
@@ -344,6 +328,7 @@ class SearchNavigator:
             candidates = []
             seen_texts = set()
 
+            # Analyze dropdown items
             for i, item in enumerate(items):
                 try:
                     text = item.text.replace("\n", " ").strip()
@@ -351,40 +336,103 @@ class SearchNavigator:
                     seen_texts.add(text)
 
                     has_icon = len(item.find_elements(By.TAG_NAME, "img")) > 0
+                    has_arrow = "←" in text or "→" in text
+                    item_type = "CATEGORY" if has_icon else ("GENERAL" if has_arrow else "QUERY")
                     
-                    is_forced = False
-                    if forced_filters:
-                        for f in forced_filters:
-                            if f.lower() in text.lower():
-                                is_forced = True
-                                break
+                    href = item.get_attribute("href") or ""
                     
-                    if (not forced_filters and has_icon) or is_forced:
-                        candidates.append({'element': item, 'text': text})
+                    candidates.append({
+                        'index': i,
+                        'text': text,
+                        'type': item_type,
+                        'is_main': has_icon,
+                        'href': href,
+                        'element': item 
+                    })
                 except: pass
 
             if not candidates:
-                logger.info("Подходящих категорий в подсказках не найдено.", token="smart_search")
+                logger.info("Подходящих категорий не найдено.", token="smart_search")
                 return []
 
-            indices_to_click = [c['index'] for c in candidates]
+            indices_to_click = []
             
-            target_candidate = candidates[0] # Берем лучшую
-            logger.info(f"Выбор категории: {target_candidate['text']}", token="smart_search")
+            # Determine targets
+            if forced_filters:
+                logger.info(f"Принудительные фильтры: {forced_filters}")
+                for c in candidates:
+                    for f in forced_filters:
+                        if f.lower() in c['text'].lower():
+                            indices_to_click.append(c['index'])
+                            break
             
-            try:
-                # Попытка клика
-                el = target_candidate['element']
-                self.driver.execute_script("arguments[0].click();", el)
-                PageLoader.wait_for_load(self.driver)
+            # Default to Main Category if no forced filters or none found
+            if not forced_filters or not indices_to_click:
+                main = None
+                for c in candidates:
+                    if c['type'] == "CATEGORY" or c['is_main']:
+                        main = c
+                        break
+                if main is None and candidates:
+                    main = candidates[0] # Fallback to first
                 
-                time.sleep(2)
-                current_url = self.driver.current_url
-                logger.success(f"Переход успешен: {target_candidate['text']}")
-                collected_urls.append(current_url)
-                
-            except Exception as e:
-                logger.error(f"Ошибка перехода: {e}")
+                if main:
+                    indices_to_click = [main['index']]
+
+            # Execute navigation
+            for idx, target_index in enumerate(indices_to_click):
+                try:
+                    # If we went back or this is a second iteration, we need to re-type 
+                    # because the DOM is stale
+                    if idx > 0:
+                        items = self._type_query(keywords, fast_mode=True)
+                        if not items or len(items) <= target_index:
+                            continue
+                        
+                        # Re-fetch candidate data from fresh DOM
+                        target_element = items[target_index]
+                        href = target_element.get_attribute("href")
+                        text_for_log = target_element.text.replace("\n", " ")
+                    else:
+                        # First iteration, use cached data
+                        target_candidate = next((c for c in candidates if c['index'] == target_index), None)
+                        if not target_candidate: continue
+                        target_element = target_candidate['element']
+                        href = target_candidate['href']
+                        text_for_log = target_candidate['text']
+
+                    logger.info(f"Переход: {text_for_log}")
+
+                    # Prefer direct Link navigation
+                    if href and "avito.ru" in href:
+                        self.driver.get(href)
+                        PageLoader.wait_for_load(self.driver)
+                    else:
+                        # Fallback to Click
+                        try:
+                            ActionChains(self.driver).move_to_element(target_element).click().perform()
+                        except:
+                            self.driver.execute_script("arguments[0].click();", target_element)
+                        
+                        PageLoader.wait_for_load(self.driver)
+
+                    time.sleep(2.0)
+                    current_url = self.driver.current_url
+                    
+                    if self._is_valid_url(current_url):
+                        collected_urls.append(current_url)
+                        logger.success(f"URL получен: {current_url}")
+                    else:
+                        logger.warning(f"URL не прошел валидацию: {current_url}")
+
+                    # Go back if we have more targets
+                    if idx < len(indices_to_click) - 1:
+                        self.driver.back()
+                        PageLoader.wait_for_load(self.driver)
+                        time.sleep(1.0)
+
+                except Exception as e:
+                    logger.error(f"Ошибка перехода по индексу {target_index}: {e}")
 
             return collected_urls
 
@@ -392,28 +440,8 @@ class SearchNavigator:
             logger.error(f"Ошибка Smart Search: {e}")
             return []
 
-    def _is_valid_url(self, url: str) -> bool:
-        from urllib.parse import urlparse, parse_qs
 
-        if not url or "avito.ru" not in url:
-            return False
-
-        trimmed = url.rstrip("/")
-        if trimmed in ("https://www.avito.ru/moskva", "https://www.avito.ru/rossiya"):
-            return False
-
-        parsed = urlparse(url)
-        qs = parse_qs(parsed.query)
-
-        if "q" in qs:
-            return True
-
-        if parsed.path.count("/") >= 3:
-            return True
-        
-        return False
-
-# Single ads-element parsing class
+# --- Item Parser ---
 class ItemParser:
     @staticmethod
     def extract_ad_id(url: str) -> str:
@@ -469,7 +497,8 @@ class ItemParser:
         except Exception:
             return None
 
-# Main class of the website parser
+
+# --- Main Avito Parser Class ---
 class AvitoParser(QObject):
     progress_value = pyqtSignal(int)
     update_requests_count = pyqtSignal(int, int)
@@ -503,7 +532,6 @@ class AvitoParser(QObject):
         logger.info(f"Сканирование категорий: {keywords}")
         try:
             self.driver_manager._initialize_driver()
-            #time.sleep(random.uniform(2, 4))
             navigator = SearchNavigator(self.driver_manager.driver)
             return navigator.get_search_suggestions(keywords)
         except Exception as e:
@@ -543,15 +571,11 @@ class AvitoParser(QObject):
         unique_task_urls: set[str] = set()
 
         sort_map = {
-            # По умолчанию (релевантность)
-            "default": None, # 101
-            # Дешевле
+            "default": None, 
             "price_asc": "1",
-            # Дороже
             "price_desc": "2",
-            # По дате
             "date": "104",
-            "discount": None, # TODO
+            "discount": None,
         }
         sort_code = sort_map.get(sort_type)
 
@@ -602,64 +626,13 @@ class AvitoParser(QObject):
             final_tasks.append((fb_url, "Emergency Global"))
 
         return final_tasks
-    
-    #def _run_tasks(
-    #    self,
-    #    final_tasks: List[tuple[str, str]],
-    #    *,
-    #    max_pages: int,
-    #    max_items_per_page: int | None,
-    #    max_total_items: int | None,
-    #    search_mode: str,
-    #    filter_defects: bool,
-    #    ignore_keywords: List[str] | None,
-    #    min_price=None,
-    #    max_price=None,
-    #    skip_duplicates: bool = False,
-    #    allow_rewrite_duplicates: bool = False,
-    #    existing_ids_base: Optional[Set[str]] = None,
-    #) -> List[Dict[str, Any]]:
-    #    all_results: List[Dict[str, Any]] = []
-    #    seen_ids: set[str] = set()
-    #    ignore_keywords = ignore_keywords or []
-#
-    #    for i, (url, label) in enumerate(final_tasks):
-    #        if self.is_stop_requested():
-    #            if self.debug_mode:
-    #                self.log("Stop requested - returning collected results")
-    #            break
-    #        
-    #        if self.max_total_items and self.deep_checks_done >= self.max_total_items:
-    #            break
-#
-    #        if self.debug_mode:
-    #            self.log(f"Processing Task {i+1}/{len(final_tasks)}: {label} -> {url}")
-    #        self.update_progress.emit(f"Scanning: {label}...")
-#
-    #        self.process_region(
-    #            url,
-    #            max_pages,
-    #            min_price,
-    #            max_price,
-    #            ignore_keywords,
-    #            seen_ids,
-    #            all_results,
-    #            search_mode,
-    #            max_items_per_page=max_items_per_page,
-    #            max_total_items=max_total_items,
-    #            filter_defects=filter_defects,
-    #            skip_duplicates=skip_duplicates,
-    #            allow_rewrite_duplicates=allow_rewrite_duplicates,
-    #            existing_ids_base=existing_ids_base,
-    #        )
-#
-    #    if self.debug_mode:
-    #        self.log(f"--- FINISHED. Total Unique: {len(all_results)} ---")
-    #    return all_results
 
     def _run_tasks(self, final_tasks, **kwargs) -> List[Dict[str, Any]]:
         all_results = []
         seen_ids = set()
+        
+        # Load base existing IDs if provided (for duplicate checking against DB/File)
+        existing_ids_base = kwargs.get('existing_ids_base', set())
         
         total_tasks = len(final_tasks)
         for i, (url, label) in enumerate(final_tasks):
@@ -667,95 +640,25 @@ class AvitoParser(QObject):
             
             logger.info(f"Задача {i+1}/{total_tasks}: {label}")
             
-            self.process_region(url, seen_ids, all_results, **kwargs)
+            self.process_region(
+                base_url=url,
+                seen_ids=seen_ids,
+                results_list=all_results,
+                existing_ids_base=existing_ids_base,
+                **kwargs
+            )
 
         return all_results
 
-    #def search_items(
-    #    self,
-    #    keywords,
-    #    ignore_keywords=None,
-    #    *,
-    #    max_pages: int = 10,
-    #    max_items_per_page: int | None = None,
-    #    max_total_items: int | None = None,
-    #    min_price=None,
-    #    max_price=None,
-    #    sort_type="date",
-    #    search_all_regions=False,
-    #    search_mode="full",
-    #    forced_categories: List[str] | None = None,
-    #    filter_defects: bool = False,
-    #    skip_duplicates: bool = False,
-    #    allow_rewrite_duplicates: bool = False,
-    #    merge_with_table: Optional[str] = None,
-    #) -> List[Dict[str, Any]]:
-    #    if self._is_running:
-    #        return []
-#
-    #    self._is_running = True
-    #    self._stop_requested = False
-#
-    #    if self.debug_mode:
-    #        try:
-    #            with open(self.log_file, "a", encoding="utf-8") as f:
-    #                f.write(f"\n{'='*20} SESSION START: {datetime.now().isoformat()} {'='*20}\n")
-    #        except:
-    #            pass
-#
-    #    self.log(f"--- START: {keywords} (Mode: {search_mode}) ---")
-    #    if forced_categories:
-    #        self.log(f"Forced Categories: {forced_categories}")
-#
-    #    try:
-    #        self.update_progress.emit("Initializing browser...")
-    #        self.driver_manager._initialize_driver()
-#
-    #        final_tasks = self._build_tasks(
-    #            keywords=keywords,
-    #            min_price=min_price,
-    #            max_price=max_price,
-    #            search_all_regions=search_all_regions,
-    #            forced_categories=forced_categories,
-    #            sort_type=sort_type,
-    #        )
-#
-    #        existing_ids_base: Set[str] = set()
-    #        if merge_with_table:
-    #            existing_ids_base = self._load_existing_ids_for_queue(merge_with_table) if merge_with_table else set()
-    #            if self.debug_mode:
-    #                self.log(f"Loaded {len(existing_ids_base)} base IDs from {merge_with_table}")
-#
-    #        self.max_total_items = max_total_items
-    #        self.deep_checks_done = 0
-#
-    #        results = self._run_tasks(
-    #        final_tasks,
-    #        max_pages=max_pages,
-    #        max_items_per_page=max_items_per_page,
-    #        max_total_items=max_total_items,
-    #        search_mode=search_mode,
-    #        filter_defects=filter_defects,
-    #        ignore_keywords=ignore_keywords or [],
-    #        min_price=min_price,
-    #        max_price=max_price,
-    #        skip_duplicates=skip_duplicates,
-    #        allow_rewrite_duplicates=allow_rewrite_duplicates,
-    #        existing_ids_base=existing_ids_base,
-    #    )
-#
-    #        return results
-#
-    #    except Exception as e:
-    #        self.error_occurred.emit(str(e))
-    #        self.log(f"CRITICAL ERROR: {e}")
-    #        return []
-    #    finally:
-    #        self._is_running = False
-    #        if self._stop_requested:
-    #            self.log("Search stopped. Returning collected items gathered so far.")
-
-    def search_items(self, keywords, **kwargs) -> List[Dict[str, Any]]:
+    def search_items(self, keywords, ignore_keywords=None, **kwargs) -> List[Dict[str, Any]]:
+        """
+        Main entry point for search.
+        kwargs:
+            max_pages, max_items_per_page, max_total_items, 
+            min_price, max_price, sort_type, search_all_regions, 
+            forced_categories, filter_defects, skip_duplicates, 
+            allow_rewrite_duplicates, existing_ids_base
+        """
         if self._is_running: return []
         self._is_running = True
         self._stop_requested = False
@@ -766,10 +669,22 @@ class AvitoParser(QObject):
             logger.progress("Инициализация браузера...", token="init")
             self.driver_manager._initialize_driver()
             
-            final_tasks = self._build_tasks(keywords, kwargs.get('min_price'), kwargs.get('max_price'), kwargs.get('search_all_regions', False), kwargs.get('forced_categories'), kwargs.get('sort_type', 'date'))
+            # Extract arguments for build_tasks
+            forced_cats = kwargs.get('forced_categories')
+            sort_type = kwargs.get('sort_type', 'date')
+            all_regions = kwargs.get('search_all_regions', False)
+            min_p = kwargs.get('min_price')
+            max_p = kwargs.get('max_price')
+
+            final_tasks = self._build_tasks(
+                keywords, min_p, max_p, all_regions, forced_cats, sort_type
+            )
             
             self.max_total_items = kwargs.get('max_total_items')
             self.deep_checks_done = 0
+
+            # Pass ignore_keywords into kwargs so it reaches process_region
+            kwargs['ignore_keywords'] = ignore_keywords or []
 
             results = self._run_tasks(final_tasks, **kwargs)
             return results
@@ -780,190 +695,43 @@ class AvitoParser(QObject):
             return []
         finally:
             self._is_running = False
+            logger.info("Парсинг завершен.")
 
-    #def process_region(
-    #    self,
-    #    base_url,
-    #    max_pages,
-    #    min_p,
-    #    max_p,
-    #    ignore_kws,
-    #    seen_ids,
-    #    results_list,
-    #    search_mode,
-    #    *,
-    #    max_items_per_page: int | None = None,
-    #    max_total_items: int | None = None,
-    #    filter_defects: bool = False,
-    #    skip_duplicates: bool = False,
-    #    allow_rewrite_duplicates: bool = False,
-    #    existing_ids_base: Optional[Set[str]] = None,
-    #):
-    #    is_deep_mode = (search_mode in ["full", "neuro"])
-    #    ignore_kws = ignore_kws or []
-#
-    #    if max_pages and max_pages > 0:
-    #        display_total = str(max_pages)
-    #        page_limit = min(max_pages, ALL_PAGES_LIMIT)
-    #    else:
-    #        display_total = "ВСЕ"
-    #        page_limit = ALL_PAGES_LIMIT
-    #        if self.debug_mode:
-    #            self.log(f"max_pages<=0, using ALL mode with safety limit: {ALL_PAGES_LIMIT}")
-#
-    #    page = 1
-#
-    #    blacklist_manager = get_blacklist_manager()
-    #    blocked_seller_ids = blacklist_manager.get_active_seller_ids()
-#
-    #    if blocked_seller_ids and self.debug_mode:
-    #        self.log(f"Blacklist active: {len(blocked_seller_ids)} sellers blocked")
-#
-    #    while True:
-    #        if self.is_stop_requested():
-    #            self.log(f"Stop requested at page {page}. Collected {len(results_list)} items.")
-    #            break
-#
-    #        if max_total_items and len(results_list) >= max_total_items:
-    #            return
-#
-    #        if page > page_limit:
-    #            if self.debug_mode:
-    #                self.log(f"Reached page limit {page_limit}, stopping region parsing.")
-    #            break
-#
-    #        self.update_progress.emit(f"Searching page {page}/{display_total}...")
-#
-    #        url = f"{base_url}&p={page}" if "?" in base_url else f"{base_url}?p={page}"
-#
-    #        ok = PageLoader.safe_get(
-    #            self.driver_manager.driver,
-    #            url,
-    #            self.is_stop_requested,
-    #            logger=self.log if self.debug_mode else None,
-    #            on_request=lambda: self.update_requests_count.emit(1, 0),
-    #            driver_manager=self.driver_manager,
-    #            ban_strategy=self.ban_strategy,
-    #        )
-#
-    #        if not ok:
-    #            page += 1
-    #            continue
-#
-    #        PageLoader.scroll_page(self.driver_manager.driver, self.is_stop_requested, max_attempts=3)
-    #        time.sleep(0.5)
-    #        self._wait_for_items()
-#
-    #        page_items = self._parse_page()
-    #        if not page_items:
-    #            break
-#
-    #        total_items = len(page_items)
-    #        items_on_page = 0
-#
-    #        for i, item in enumerate(page_items):
-    #            if self.is_stop_requested():
-    #                break
-    #            if self.max_total_items and self.deep_checks_done >= self.max_total_items:
-    #                return
-#
-    #            ad_id = str(item.get("id") or "").strip()
-    #            
-    #            if ad_id and existing_ids_base and ad_id in existing_ids_base:
-    #                # Если найдено совпадение в базе
-    #                if skip_duplicates and not allow_rewrite_duplicates:
-    #                    # Если режим "Обновлять дубликаты" ВЫКЛЮЧЕН -> пропускаем полностью
-    #                    if self.debug_mode:
-    #                        self.log(f"Skipped base-table duplicate (fast): {ad_id}")
-    #                    continue
-    #                # Если режим ВКЛЮЧЕН -> идем дальше, парсим, обновляем
-    #            # ====================================================
-#
-    #            if item["id"] in seen_ids:
-    #                # Пропуск дубликатов внутри текущей сессии
-    #                if self.debug_mode:
-    #                    self.log(f"Skipped duplicate ID (session): {item['id']}")
-    #                continue
-    #            
-    #            item_seller_id = item.get('seller_id', '')
-    #            if item_seller_id and item_seller_id in blocked_seller_ids:
-    #                if self.debug_mode:
-    #                    self.log(f"BLOCKED by blacklist: seller_id={item_seller_id}, ad={item['id']}")
-    #                continue
-#
-    #            if self._should_skip(item, min_p, max_p, ignore_kws, filter_defects):
-    #                continue
-#
-    #            if search_mode == "primary":
-    #                item["city"] = "неизвестно"
-    #                item["condition"] = "неизвестно"
-#
-    #            elif is_deep_mode:
-    #                if self.max_total_items and self.deep_checks_done >= self.max_total_items:
-    #                    return
-    #                
-    #                self.deep_checks_done += 1
-#
-    #                self.update_requests_count.emit(1, 0)
-    #                short_title = item["title"][:25] + "..." if len(item["title"]) > 25 else item["title"]
-    #                
-    #                if self.max_total_items:
-    #                    num = self.deep_checks_done
-    #                    denom = self.max_total_items
-    #                else:
-    #                    num = i + 1
-    #                    denom = total_items
-    #                
-    #                self.update_progress.emit(f"Deep check {num}/{denom}: {short_title}")
-#
-    #                details = self._deep_dive_get_details(item["link"])
-    #                if not details:
-    #                    self.log(f"FILTERED (Tech): {item['id']}")
-    #                    continue
-#
-    #                item.update(details)
-#
-    #            if item["id"] not in seen_ids:
-    #                seen_ids.add(item["id"])
-    #                results_list.append(item)
-    #                items_on_page += 1
-#
-    #            if max_items_per_page and items_on_page >= max_items_per_page:
-    #                break
-#
-    #        collected = len(results_list)
-    #        if self.max_total_items:
-    #            self.update_progress.emit(
-    #                f"Collected {collected} items so far (deep checks {self.deep_checks_done}/{self.max_total_items})"
-    #            )
-    #        else:
-    #            self.update_progress.emit(
-    #                f"Collected {collected} items so far..."
-    #            )
-#
-    #        if self.max_total_items and self.deep_checks_done >= self.max_total_items:
-    #            return
-#
-    #        if not self._has_next_page(page):
-    #            break
-#
-    #        page += 1
-
-    def process_region(self, base_url, seen_ids, results_list, max_pages=10, max_items_per_page=None, max_total_items=None, search_mode="full", **kwargs):
+    def process_region(
+        self, 
+        base_url, 
+        seen_ids, 
+        results_list, 
+        existing_ids_base=None,
+        max_pages=10, 
+        max_items_per_page=None, 
+        max_total_items=None, 
+        search_mode="full", 
+        ignore_keywords=None,
+        min_price=None,
+        max_price=None,
+        filter_defects=False,
+        skip_duplicates=False,
+        allow_rewrite_duplicates=False,
+        **kwargs
+    ):
         is_deep_mode = (search_mode in ["full", "neuro"])
         page_limit = min(max_pages, ALL_PAGES_LIMIT) if max_pages > 0 else ALL_PAGES_LIMIT
         page = 1
+        
+        ignore_keywords = ignore_keywords or []
+
+        blacklist_manager = get_blacklist_manager()
+        blocked_seller_ids = blacklist_manager.get_active_seller_ids()
 
         while True:
             if self.is_stop_requested(): break
             if max_total_items and len(results_list) >= max_total_items: return
             if page > page_limit: break
 
-            # Обновляем прогресс текстом
             logger.progress(f"Сканирование страницы {page}...", token="parser_page")
             
-            # Обновляем прогресс бар (эвристика: если лимит 10 стр, то 1 стр = 10%)
-            # Либо если есть max_total_items, считаем от него
+            # Update Progress Bar
             if max_total_items:
                 pct = int((len(results_list) / max_total_items) * 100)
             else:
@@ -985,50 +753,68 @@ class AvitoParser(QObject):
 
             PageLoader.scroll_page(self.driver_manager.driver, self.is_stop_requested)
             
-            blacklist_manager = get_blacklist_manager()
-            blocked_seller_ids = blacklist_manager.get_active_seller_ids()
-
             page_items = self._parse_page()
             if not page_items: break
 
             items_added_on_page = 0
-            for i, item in enumerate(page_items):
+            for item in page_items:
                 if self.is_stop_requested(): break
                 if max_total_items and len(results_list) >= max_total_items: return
 
-                if item["id"] in seen_ids: continue
+                ad_id = str(item.get("id") or "").strip()
+
+                # --- Duplicate Checking Logic ---
+                if ad_id and existing_ids_base and ad_id in existing_ids_base:
+                    # If duplicate in DB/File
+                    if skip_duplicates and not allow_rewrite_duplicates:
+                        # Skip completely
+                        continue
+                    # If allow_rewrite is True, we proceed to parse and potentially update
                 
+                if ad_id in seen_ids:
+                    # Duplicate in current session
+                    continue
+
+                # --- Blacklist Check ---
                 item_seller_id = item.get('seller_id', '')
                 if item_seller_id and item_seller_id in blocked_seller_ids:
-                    # TODO LOG
+                    # logger.dev(f"Seller blocked: {item_seller_id}")
                     continue
                 
+                # --- Filtering (Price, Keywords, Defects) ---
+                if self._should_skip(item, min_price, max_price, ignore_keywords, filter_defects):
+                    continue
+                
+                # --- Deep Dive / Details ---
                 if is_deep_mode:
                     if max_total_items and self.deep_checks_done >= max_total_items: return
                     self.deep_checks_done += 1
                     
                     short = item["title"][:30]
-                    # Обновляем статус глубокой проверки
                     logger.progress(f"Анализ товара: {short}", token="parser_deep")
+                    self.update_requests_count.emit(1, 0)
                     
                     details = self._deep_dive_get_details(item["link"])
-                    if details: item.update(details)
+                    if not details:
+                        # Item likely closed or unavailable
+                        continue
+                    
+                    item.update(details)
                 
-                if item["id"] not in seen_ids:
-                    seen_ids.add(item["id"])
+                # --- Add Result ---
+                if ad_id not in seen_ids:
+                    seen_ids.add(ad_id)
                     results_list.append(item)
                     items_added_on_page += 1
                     
                 if max_items_per_page and items_added_on_page >= max_items_per_page: break
 
-            # Если мы набрали товары, обновляем "галочкой" статус страницы
             if items_added_on_page > 0:
                 logger.info(f"Стр {page}: +{items_added_on_page} товаров", token=f"page_done_{page}")
 
             if not self._has_next_page(page): break
             page += 1
 
-    # TODO
     def _deep_dive_get_details(self, url):
         try:
             if self.is_stop_requested():
@@ -1044,19 +830,14 @@ class AvitoParser(QObject):
             if not ok:
                 return None
 
+            # Artificial delay for human emulation
             wait = random.uniform(1.5, 2.5)
-            step = 0.3
-            elapsed = 0.0
-
-            while elapsed < wait:
-                if self.is_stop_requested():
-                    return None
-                time.sleep(step)
-                elapsed += step
+            time.sleep(wait)
 
             if self.is_stop_requested():
                 return None
 
+            # Check if ad is closed
             body_text = self.driver_manager.driver.execute_script(
                 "return document.body.innerText;"
             ).lower()
@@ -1092,7 +873,6 @@ class AvitoParser(QObject):
 
             seller_id = ""
             try:
-                # Ищем ссылку на профиль продавца
                 seller_link = self.driver_manager.driver.find_element(
                     By.CSS_SELECTOR,
                     "a[data-marker='seller-info/label'], a[href*='/profile/']"
@@ -1100,69 +880,52 @@ class AvitoParser(QObject):
                 href = seller_link.get_attribute('href')
                 if href:
                     match = re.search(r'/profile/(\w+)', href)
-                    if match:
-                        seller_id = match.group(1)
-            except:
-                pass
+                    if match: seller_id = match.group(1)
+            except: pass
             
-            if seller_id:
-                details['seller_id'] = seller_id
+            if seller_id: details['seller_id'] = seller_id
 
             try:
                 desc_el = self.driver_manager.driver.find_element(
-                    By.CSS_SELECTOR,
-                    "[data-marker='item-view/item-description']",
+                    By.CSS_SELECTOR, "[data-marker='item-view/item-description']"
                 )
                 details['description'] = desc_el.text.strip()
-            except:
-                pass
+            except: pass
 
             try:
                 addr_container = self.driver_manager.driver.find_element(
-                    By.CSS_SELECTOR,
-                    "[itemprop='address']",
+                    By.CSS_SELECTOR, "[itemprop='address']"
                 )
                 details['city'] = addr_container.text.strip().split(',')[0].strip()
             except:
                 try:
                     addr_el = self.driver_manager.driver.find_element(
-                        By.CSS_SELECTOR,
-                        "[data-marker='delivery-item-address-text'], [class*='item-address-georeferences']",
+                        By.CSS_SELECTOR, "[data-marker='delivery-item-address-text']"
                     )
                     details['city'] = addr_el.text.strip().split(',')[0].strip()
-                except:
-                    pass
+                except: pass
 
             try:
                 params_el = self.driver_manager.driver.find_element(
-                    By.CSS_SELECTOR,
-                    "[data-marker='item-view/item-params']",
+                    By.CSS_SELECTOR, "[data-marker='item-view/item-params']"
                 )
                 for line in params_el.text.split('\n'):
                     if "Состояние" in line:
-                        details['condition'] = (
-                            line.replace("Состояние", "")
-                                .replace(":", "")
-                                .strip()
-                        )
+                        details['condition'] = line.replace("Состояние", "").replace(":", "").strip()
                         break
-            except:
-                pass
+            except: pass
 
             try:
                 date_el = self.driver_manager.driver.find_element(
-                    By.CSS_SELECTOR,
-                    "[data-marker='item-view/item-date']",
+                    By.CSS_SELECTOR, "[data-marker='item-view/item-date']"
                 )
                 details['date_text'] = date_el.text.replace("· ", "").strip()
-            except:
-                pass
+            except: pass
 
             return details
 
         except Exception as e:
-            if self.debug_mode: #TODO LOG
-                return None
+            return None
 
     def _has_next_page(self, current_page: int) -> bool:
         try:
@@ -1171,10 +934,11 @@ class AvitoParser(QObject):
         except: pass
         return False
 
-    #? - Это подразумевалось под _check_price()?
     def _should_skip(self, item, min_p, max_p, ignore_kws, filter_defects: bool = False):
-        if min_p and item['price'] < min_p: return True
-        if max_p and item['price'] > max_p: return True
+        price = item.get('price', 0)
+        if min_p and price < min_p: return True
+        if max_p and price > max_p: return True
+        
         text_lower = f"{item['title'].lower()} {item.get('description', '').lower()}"
         
         for w in ignore_kws:
@@ -1188,24 +952,23 @@ class AvitoParser(QObject):
             ]
             for dm in defect_markers:
                 if dm in text_lower:
+                    # Exception: "No defects" / "Without defects"
                     if f"без {dm}" in text_lower or f"нет {dm}" in text_lower:
                         continue
                     return True
 
         return False
 
-    #? - Не трогать? Ее вызывает process_region()   
     def _parse_page(self) -> List[Dict[str, Any]]:
         items = []
         try:
-            # BeautifulSoup парсинг
             source = self.driver_manager.driver.page_source
             soup = BeautifulSoup(source, 'lxml')
             elements = soup.select(AvitoSelectors.ITEM_CONTAINER)
             
             for el in elements:
                 if self.is_stop_requested(): break
-                # Игнорируем карусели
+                # Ignore carousel items
                 if el.find_parent(class_=lambda x: x and 'carousel' in x.lower()): continue
                 
                 item = ItemParser.parse_search_item(el)

@@ -5,6 +5,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
 from app.core.worker import ParserWorker, CategoryScannerWorker
 from app.core.ai.ai_manager import AIManager
 from app.core.ai.prompts import PromptBuilder, AnalysisPriority
+from app.core.log_manager import logger
 
 
 # Simple queue
@@ -42,10 +43,9 @@ class ParserController(QObject):
     
     ui_lock_requested = pyqtSignal(bool)
     
-    def __init__(self, memory_manager=None, logger=None):
+    def __init__(self, memory_manager=None):
         super().__init__()
         
-        self.logger = logger
         self.worker: Optional[ParserWorker] = None
         self.worker_thread: Optional[QThread] = None
         self.scan_worker: Optional[CategoryScannerWorker] = None
@@ -61,14 +61,16 @@ class ParserController(QObject):
             print("[DEBUG] Creating NEW AIManager instance")
 
             self.ai_manager = AIManager(memory_manager=self.memory_manager)
+            self.ai_manager.progress_signal.connect(self._on_ai_text_progress)
             self.ai_manager.progress_signal.connect(self.ai_progress_updated.emit)
             self.ai_manager.result_signal.connect(self.ai_result_ready.emit)
             self.ai_manager.finished_signal.connect(self._on_ai_batch_finished)
             self.ai_manager.all_finished_signal.connect(self._on_ai_all_finished)
             self.ai_manager.error_signal.connect(self.error_occurred.emit)
             self.ai_manager.chat_response_signal.connect(self.ai_chat_reply.emit)
-        else:
-            print("[DEBUG] Reusing existing AIManager instance")
+
+    def _on_ai_text_progress(self, text: str):
+        logger.info(text, token="ai_progress")
 
     def set_ai_model(self, model_name: str):
         self.ensure_ai_manager()
@@ -83,7 +85,6 @@ class ParserController(QObject):
         self.queue_state.current_queue_index = 0
 
         self.sequence_started.emit()
-        self.progress_updated.connect(self.progress_updated.emit)
         self.ui_lock_requested.emit(True)
 
         self._execute_queue(0)
@@ -114,7 +115,7 @@ class ParserController(QObject):
         self.queue_state.current_queue_index = queue_index
         config = self.queue_state.queues_config[queue_index]
 
-        self.progress_updated.emit(f"⏳ Очередь {queue_index + 1}...")
+        logger.info(f"Очередь {queue_index + 1} из {self.queue_state.total_queues}...", token="queue_start")
         
         if not config.get('search_tags'):
             QTimer.singleShot(100, lambda: self._execute_queue(queue_index + 1))
@@ -174,7 +175,7 @@ class ParserController(QObject):
         if search_mode != 'neuro' or not results:
             return False
 
-        self.progress_updated.emit("🧠 Нейро-фильтрация...")
+        logger.info("Нейро-фильтрация...")
         self.filter_group_started.emit(results)
 
         search_tags = config.get('search_tags', [])
@@ -207,7 +208,6 @@ class ParserController(QObject):
         search_tags = config.get('search_tags', [])
         has_rag = config.get('store_in_memory', False)
 
-        # ✅ Выбираем приоритет
         priority = PromptBuilder.select_priority(
             table_size=len(results),
             user_instructions=user_instructions,
@@ -222,14 +222,13 @@ class ParserController(QObject):
         store = config.get('store_in_memory', False)
         base_offset = config.get('ai_offset', 0)
 
-        # ✅ Передаём параметры для построения промпта в контексте
         context = {
             "mode": "analysis",
             "offset": base_offset,
             "queueidx": queueidx,
             "issplit": issplit,
             "store_in_memory": store,
-            "include_ai": include_ai,  # <--- ВОТ ЭТА СТРОКА ВАЖНА
+            "include_ai": include_ai,
             "priority": priority,
             "user_instructions": user_instructions,
             "has_rag": has_rag,
@@ -299,7 +298,7 @@ class ParserController(QObject):
             self.error_occurred.emit("Не указаны ключевые слова")
             return
         self.ui_lock_requested.emit(True)
-        self.progress_updated.emit("🔍 Сканирование категорий...")
+        logger.info("Сканирование категорий...")
         self.scan_worker_thread = QThread()
         self.scan_worker = CategoryScannerWorker(keywords)
         self.scan_worker.moveToThread(self.scan_worker_thread)

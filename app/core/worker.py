@@ -1,11 +1,12 @@
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from app.core.parser import AvitoParser
+from app.core.log_manager import logger
 
 
 class ParserWorker(QObject):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(int)
     requests_count = pyqtSignal(int, int)
     
     def __init__(self, keywords, ignore_keywords, max_pages, max_total_items,
@@ -51,7 +52,7 @@ class ParserWorker(QObject):
         results = []
         try:
             with AvitoParser(debug_mode=self.debug_mode) as self.parser:
-                self.parser.update_progress.connect(self.progress.emit)
+                self.parser.progress_value.connect(self.progress.emit)
                 self.parser.update_requests_count.connect(self.requests_count.emit)
 
                 results = self.parser.search_items(

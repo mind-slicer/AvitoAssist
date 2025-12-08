@@ -1,37 +1,4 @@
 {
-  "categories": [
-    {
-      "text": "rtx 4070 ti super ← Видеокарты",
-      "type": "ОБЩАЯ"
-    },
-    {
-      "text": "rtx 4070 ti super ← Системные блоки",
-      "type": "ОБЩАЯ"
-    },
-    {
-      "text": "rtx 4070 ti super",
-      "type": "ЗАПРОС"
-    },
-    {
-      "text": "rtx 4070 ti",
-      "type": "ЗАПРОС"
-    },
-    {
-      "text": "видеокарта rtx 4070 ti",
-      "type": "ЗАПРОС"
-    },
-    {
-      "text": "rtx 4070 ti super 16 gb",
-      "type": "ЗАПРОС"
-    },
-    {
-      "text": "rtx 4070 ti gamerock",
-      "type": "ЗАПРОС"
-    },
-    {
-      "text": "видеокарта rtx 4070 ti super",
-      "type": "ЗАПРОС"
-    }
-  ],
+  "categories": [],
   "forced_selection": []
 }
