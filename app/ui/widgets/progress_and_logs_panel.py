@@ -1,64 +1,102 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QProgressBar, QSizePolicy, QGroupBox
-from app.ui.widgets.logger import LogWidget
-from app.ui.styles import Components, Palette, Typography, Spacing
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel, QProgressBar
+from PyQt6.QtCore import Qt
 
+from app.ui.styles import Components, Palette, Spacing
+# Импортируем наш новый виджет и менеджер логов
+from app.ui.widgets.smart_log_widget import SmartLogWidget
+from app.core.log_manager import logger
 
 class ProgressAndLogsPanel(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+        self._connect_logger()
 
-        main_frame = QFrame()
-        main_frame.setObjectName("panel")
-        main_frame.setStyleSheet(Components.panel())
-
-        main_layout = QVBoxLayout(main_frame)
-        main_layout.setContentsMargins(*Spacing.PADDING_PANEL, *Spacing.PADDING_PANEL)
-        main_layout.setSpacing(Spacing.GAP_NORMAL)
-
-        content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        content_layout.setSpacing(Spacing.MD)
-
-        left = self._create_column("ПАРСЕР", "")
-        self.parser_log = left["log"]
-        self.parser_bar = left["bar"]
-        content_layout.addWidget(left["frame"], stretch=1)
-
-        right = self._create_column("НЕЙРОСЕТЬ", "")
-        self.ai_log = right["log"]
-        self.ai_bar = right["bar"]
-        content_layout.addWidget(right["frame"], stretch=1)
-
-        main_layout.addLayout(content_layout, stretch=1)
-
-        wrapper = QVBoxLayout(self)
-        wrapper.setContentsMargins(0, 0, 0, 0)
-        wrapper.setSpacing(0)
-        wrapper.addWidget(main_frame, stretch=1)
-
-    def _create_column(self, title: str, tooltip: str):
-        frame = QFrame()
-        frame.setStyleSheet("border: none;")
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        layout = QVBoxLayout(frame)
+    def init_ui(self):
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.SM)
 
-        lbl = QLabel(title)
-        lbl.setStyleSheet(Components.section_title())
-        layout.addWidget(lbl)
+        # --- Прогресс бары (оставляем как было, но чуть причешем) ---
+        bars_container = QWidget()
+        bars_layout = QVBoxLayout(bars_container)
+        bars_layout.setContentsMargins(0, 0, 0, 0)
+        bars_layout.setSpacing(4)
 
-        log = LogWidget()
-        log.setMinimumHeight(80)
-        log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(log, stretch=1)
+        # Парсер бар
+        self.parser_label = QLabel("Прогресс поиска:")
+        self.parser_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
+        self.parser_bar = QProgressBar()
+        self.parser_bar.setStyleSheet(Components.progress_bar(Palette.PRIMARY))
+        self.parser_bar.setFixedHeight(6)
+        self.parser_bar.setTextVisible(False)
+        
+        # AI бар
+        self.ai_label = QLabel("Прогресс нейросети:")
+        self.ai_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
+        self.ai_bar = QProgressBar()
+        self.ai_bar.setStyleSheet(Components.progress_bar(Palette.SECONDARY))
+        self.ai_bar.setFixedHeight(6)
+        self.ai_bar.setTextVisible(False)
 
-        bar = QProgressBar()
-        bar.setFixedHeight(8)
-        bar.setTextVisible(False)
-        bar.setToolTip(tooltip)
-        bar.setStyleSheet(Components.progress_bar())
-        layout.addWidget(bar)
+        bars_layout.addWidget(self.parser_label)
+        bars_layout.addWidget(self.parser_bar)
+        bars_layout.addWidget(self.ai_label)
+        bars_layout.addWidget(self.ai_bar)
+        
+        layout.addWidget(bars_container)
 
-        return {"frame": frame, "layout": layout, "log": log, "bar": bar}
+        # --- Табы с логами ---
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(Components.panel())
+        
+        # 1. Основной лог (вместо parser_log и ai_log теперь единый поток)
+        self.main_log_widget = SmartLogWidget()
+        
+        # 2. Технический лог (можно оставить пустым или выводить туда Traceback)
+        # Пока сделаем единый лог, так как концепция "умного логгера" объединяет потоки
+        
+        self.tabs.addTab(self.main_log_widget, "Журнал событий")
+        
+        layout.addWidget(self.tabs)
+
+    def _connect_logger(self):
+        # Подключаем сигнал от синглтона LogManager к нашему виджету
+        logger.ui_log_signal.connect(self.main_log_widget.add_log)
+        
+    # --- Методы совместимости (чтобы не переписывать ВЕСЬ код сразу) ---
+    # Мы создадим property, которые будут имитировать старые объекты parser_log и ai_log,
+    # но на самом деле перенаправлять всё в новый logger.
+    
+    @property
+    def parser_log(self):
+        return _LegacyLogAdapter("PARSER")
+        
+    @property
+    def ai_log(self):
+        return _LegacyLogAdapter("AI")
+
+# Адаптер для плавного перехода. 
+# Он позволяет старому коду (self.progress_panel.parser_log.info(...)) работать через новый logger
+class _LegacyLogAdapter:
+    def __init__(self, prefix):
+        self.prefix = prefix
+    
+    def info(self, msg):
+        logger.info(msg) # Префикс можно добавить в текст, если хочется
+        
+    def success(self, msg):
+        logger.success(msg)
+        
+    def warning(self, msg):
+        logger.warning(msg)
+        
+    def error(self, msg):
+        logger.error(msg)
+        
+    def progress(self, msg):
+        # Старый код не передает токен, поэтому генерируем общий
+        logger.progress(msg, token=f"{self.prefix}_general_progress")
+        
+    def ai_status(self, msg):
+        logger.progress(msg, token="ai_status")
