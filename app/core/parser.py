@@ -4,6 +4,7 @@ import random
 import json
 import gzip
 import os
+from bs4 import BeautifulSoup
 from typing import Optional, Dict, Any, List, Callable, Set
 from urllib.parse import urlencode, urlparse, parse_qs
 from datetime import datetime
@@ -20,6 +21,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from app.core.driver import DriverManager
 from app.config import USER_AGENTS, BASE_URL_MOSCOW, ALL_PAGES_LIMIT
 from app.core.blacklist_manager import get_blacklist_manager
+from app.core.selectors import AvitoSelectors
 
 
 # Ban recovery mechanism
@@ -592,83 +594,84 @@ class SearchNavigator:
 
 # Single ads-element parsing class
 class ItemParser:
+    """
+    Парсит данные из HTML (BeautifulSoup Tag), а не через Selenium.
+    Это ускоряет работу в 10-50 раз.
+    """
     @staticmethod
     def extract_ad_id(url: str) -> str:
-        try: return url.split('?')[0].split('_')[-1]
-        except: return ""
+        try:
+            # Извлекаем ID из URL (например ..._2568234)
+            return url.split('?')[0].split('_')[-1]
+        except:
+            return ""
     
     @staticmethod
-    def parse_search_item(element, logger=None) -> Optional[Dict[str, Any]]:
+    def parse_search_item(soup_element, logger=None) -> Optional[Dict[str, Any]]:
         try:
-            try:
-                link_element = element.find_element(By.CSS_SELECTOR, '[data-marker="item-title"]')
-                link = link_element.get_attribute('href')
-            except NoSuchElementException: return None
-            if not link: return None
-            title = link_element.text.strip()
-            if not title: return None
+            # 1. Ссылка и Заголовок
+            link_el = soup_element.select_one(AvitoSelectors.PREVIEW_TITLE)
+            if not link_el:
+                return None
+            
+            link = "https://www.avito.ru" + link_el.get('href') if link_el.get('href').startswith('/') else link_el.get('href')
+            title = link_el.get_text(strip=True)
             ad_id = ItemParser.extract_ad_id(link)
-            price = 0
-            try:
-                price_text = element.find_element(By.CSS_SELECTOR, '[data-marker="item-price"]').text.replace(' ', '').replace('\u2009', '').replace('\xa0', '')
-                match = re.search(r'(\d+)', price_text)
-                if match: price = int(match.group(1))
-            except: pass
-            
-            description = ""
-            try:
-                desc_el = element.find_element(By.CSS_SELECTOR, "div[class*='iva-item-bottomBlock'] p[class*='styles-module-root']")
-                description = desc_el.text.strip()
-                if logger and description:
-                    logger(f"Description (bottomBlock): {len(description)} chars")
-            except:
-                pass
-            
-            if not description:
-                try:
-                    desc_el = element.find_element(By.CSS_SELECTOR, "div[class*='bottomBlock'] p[class*='styles-module']")
-                    description = desc_el.text.strip()
-                    if logger and description:
-                        logger(f"Description (bottomBlock alt): {len(description)} chars")
-                except:
-                    pass
 
+            # 2. Цена
+            price = 0
+            price_el = soup_element.select_one(AvitoSelectors.PREVIEW_PRICE)
+            if price_el:
+                # Удаляем пробелы, nbsp, знак рубля
+                raw_price = price_el.get_text(strip=True).replace('\xa0', '').replace(' ', '').replace('₽', '')
+                match = re.search(r'(\d+)', raw_price)
+                if match:
+                    price = int(match.group(1))
+
+            # 3. Описание (пробуем варианты из селекторов)
+            description = ""
+            for selector in AvitoSelectors.PREVIEW_DESC_VARIANTS:
+                desc_el = soup_element.select_one(selector)
+                if desc_el:
+                    description = desc_el.get_text(strip=True)
+                    break
+
+            # 4. Дата и Город
             date_text = "неизвестно"
-            try:
-                date_el = element.find_element(By.CSS_SELECTOR, '[data-marker="item-date"]')
-                date_text = date_el.text.strip()
-            except: pass
+            date_el = soup_element.select_one(AvitoSelectors.PREVIEW_DATE)
+            if date_el:
+                date_text = date_el.get_text(strip=True)
 
             city = "неизвестно"
-            try:
-                geo_el = element.find_element(By.CSS_SELECTOR, "div[class*='geo-root']")
-                raw_geo = geo_el.text.strip()
-                city = re.split(r'[,·]', raw_geo)[0].strip()
-            except: pass
+            geo_el = soup_element.select_one(AvitoSelectors.PREVIEW_GEO)
+            if geo_el:
+                # Обычно город идет первым: "Москва, м. Царицыно" -> "Москва"
+                city = re.split(r'[,·]', geo_el.get_text(strip=True))[0].strip()
 
+            # 5. ID продавца (если есть в превью)
             seller_id = ""
-            try:
-                # Пробуем найти ссылку на профиль продавца
-                seller_link = element.find_element(By.CSS_SELECTOR, 
-                    "a[data-marker='seller-link/link'], a[href*='/profile/']")
-                href = seller_link.get_attribute('href')
-                if href:
-                    # Извлекаем ID из URL (например: /profile/12345678/)
-                    match = re.search(r'/profile/(\w+)', href)
-                    if match:
-                        seller_id = match.group(1)
-            except:
-                pass
+            seller_link = soup_element.select_one(AvitoSelectors.PREVIEW_SELLER_LINK)
+            if seller_link:
+                href = seller_link.get('href')
+                match = re.search(r'/profile/(\w+)', href)
+                if match:
+                    seller_id = match.group(1)
 
             return {
-                'id': ad_id, 'link': link, 'price': price,
-                'title': title, 'date_text': date_text,
-                'description': description, 'city': city, 'condition': 'неизвестно',
+                'id': ad_id,
+                'link': link,
+                'price': price,
+                'title': title,
+                'date_text': date_text,
+                'description': description,
+                'city': city,
+                'condition': 'неизвестно',
                 'seller_id': seller_id,
                 'parsed_at': datetime.now().isoformat()
             }
         except Exception as e:
-            if logger: logger(f"Item Parse Error: {e}")
+            if logger:
+                logger(f"Parsing Error: {e}")
             return None
 
 # Main class of the website parser
@@ -1318,16 +1321,30 @@ class AvitoParser(QObject):
     def _parse_page(self) -> List[Dict[str, Any]]:
         items = []
         try:
-            item_elements = self.driver_manager.driver.find_elements(By.CSS_SELECTOR, '[data-marker="item"]')
+            # БЕРЕМ HTML ОДИН РАЗ (это быстро)
+            page_source = self.driver_manager.driver.page_source
+            
+            # Парсим всю страницу через lxml (быстрее) или html.parser
+            soup = BeautifulSoup(page_source, 'lxml')
+            
+            # Находим все контейнеры товаров
+            item_elements = soup.select(AvitoSelectors.ITEM_CONTAINER)
+            
             for element in item_elements:
-                if self.is_stop_requested(): break
-                try:
-                    parent = element.find_element(By.XPATH, "./..")
-                    if "carousel" in parent.get_attribute("class").lower(): continue
-                except: pass
+                if self.is_stop_requested(): 
+                    break
+                
+                # Пропускаем карусели/рекомендации внутри выдачи
+                if element.find_parent(class_=lambda x: x and 'carousel' in x.lower()):
+                    continue
+
                 item = ItemParser.parse_search_item(element, self.log if self.debug_mode else None)
-                if item: items.append(item)
-        except: pass
+                if item: 
+                    items.append(item)
+                    
+        except Exception as e:
+            if self.debug_mode:
+                self.log(f"Page Parse Critical Error: {e}")
         return items
     
     @staticmethod

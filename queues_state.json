@@ -1,15 +1,15 @@
 {
   "0": {
     "search_tags": [
-      "видеокарта"
+      "цп"
     ],
     "ignore_tags": [],
     "min_price": 0,
     "max_price": 0,
-    "search_mode": "primary",
+    "search_mode": "full",
     "ai_criteria": "",
     "include_ai": false,
-    "store_in_memory": true,
+    "store_in_memory": false,
     "max_pages": 1,
     "max_items": 30,
     "all_regions": false,
@@ -25,7 +25,7 @@
     "skip_duplicates": false,
     "allow_rewrite_duplicates": false,
     "split_results": false,
-    "context_table": "E:\\wip2\\results\\avito_search_20251207_151610.json",
+    "context_table": "E:\\wip2\\results\\avito_search_20251208_151805.json",
     "original_index": 0,
     "debug_mode": false,
     "ai_debug_mode": false,

@@ -8,4 +8,4 @@ huggingface_hub
 requests
 psutil
 urllib3>=2.5.0
-chromadb
+pytest
