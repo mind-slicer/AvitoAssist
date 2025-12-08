@@ -20,9 +20,9 @@ class ParserController(QObject):
     parser_started = pyqtSignal()
     parser_finished = pyqtSignal(list)
 
-    progress_updated = pyqtSignal(str)
+    progress_updated = pyqtSignal(int)
     results_ready = pyqtSignal(list)
-    ai_progress_updated = pyqtSignal(str)
+    ai_progress_updated = pyqtSignal(int)
     ai_result_ready = pyqtSignal(int, str, dict)
     ai_chat_reply = pyqtSignal(str)
     
@@ -74,10 +74,6 @@ class ParserController(QObject):
         self.ensure_ai_manager()
         self.ai_manager.set_model(model_name)
 
-    def set_ai_debug_mode(self, enabled: bool):
-        if self.ai_manager:
-            self.ai_manager._debug_logs = enabled
-
     def start_sequence(self, queues_config: List[Dict[str, Any]]):
         self.cleanup_worker()
 
@@ -87,6 +83,7 @@ class ParserController(QObject):
         self.queue_state.current_queue_index = 0
 
         self.sequence_started.emit()
+        self.progress_updated.connect(self.progress_updated.emit)
         self.ui_lock_requested.emit(True)
 
         self._execute_queue(0)

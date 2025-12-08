@@ -212,8 +212,6 @@ class MainWindow(QWidget):
         self.results_area.file_loaded.connect(self._on_file_loaded)
         self.results_area.file_deleted.connect(self._on_file_deleted)
         self.results_area.table_item_deleted.connect(self._on_table_item_deleted)
-        #self.results_area.results_table.item_fav.connect(self._on_item_starred)
-        #self.controls_widget.stop_neuro_analysis_requested.connect(self.stop_neuro_analysis_requested.emit)
         self.controls_widget.pause_neuronet_requested.connect(self._on_pause_neuronet_requested)
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
@@ -541,21 +539,8 @@ class MainWindow(QWidget):
             # Загружаем настройки, чтобы пользователь видел, что выполняется
             self._load_queue_to_ui(original_next_idx)
 
-    def _on_parser_progress(self, msg: str):
-        self.progress_panel.parser_log.progress(msg)
-        if "Deep check" in msg or "/" in msg:
-            import re
-            m = re.search(r"(\d+)\s*/\s*(\d+)", msg)
-            if m:
-                try:
-                    curr, total = int(m.group(1)), int(m.group(2))
-                    if total > 0:
-                        val = int(curr / total * 100)
-                        self.progress_panel.parser_bar.setValue(val)
-                except: pass
-        elif self.current_search_mode == "primary":
-            val = self.progress_panel.parser_bar.value()
-            self.progress_panel.parser_bar.setValue((val + 5) % 100)
+    def _on_parser_progress(self, val: int):
+        self.progress_panel.parser_bar.setValue(val)
 
     def _check_ai_availability(self):
         self.controller.ensure_ai_manager()
@@ -806,17 +791,8 @@ class MainWindow(QWidget):
                 QMessageBox.StandardButton.Ok
             )
 
-    def _on_ai_progress(self, msg: str):
-        self.progress_panel.ai_log.ai_status(msg)
-        import re
-        m = re.search(r"(\d+)\s*/\s*(\d+)", msg)
-        if m:
-            try:
-                curr, total = int(m.group(1)), int(m.group(2))
-                if total > 0:
-                    val = int(curr / total * 100)
-                    self.progress_panel.ai_bar.setValue(val)
-            except: pass
+    def _on_ai_progress(self, val: int):
+        self.progress_panel.ai_bar.setValue(val)
 
     def _on_ai_result(self, idx, json_text, ctx):
         self.progress_panel.ai_log.info(f"AI обновил элемент #{idx}")

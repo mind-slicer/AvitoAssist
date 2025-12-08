@@ -13,11 +13,12 @@ from app.config import AI_CTX_SIZE, AI_GPU_LAYERS, AI_SERVER_PORT, BASE_APP_DIR,
 from app.core.ai.server_manager import ServerManager
 from app.core.ai.llama_client import LlamaClient
 from app.core.ai.prompts import PromptBuilder, AnalysisPriority
+from app.core.log_manager import logger
 
 # --- Воркер для пакетной обработки товаров ---
 class AIProcessingWorker(QThread):
-    progress_signal = pyqtSignal(str)
-    result_signal = pyqtSignal(int, str, dict) # idx, json, ctx
+    progress_value = pyqtSignal(int)
+    result_signal = pyqtSignal(int, str, dict)
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
 
@@ -41,10 +42,12 @@ class AIProcessingWorker(QThread):
         try:
             total = len(self.items)
             for i, item in enumerate(self.items):
-                if not self._is_running:
-                    break
+                if not self._is_running: break
                 
-                self.progress_signal.emit(f"AI анализ: {i + 1}/{total}")
+                logger.progress(f"Нейросеть анализирует: {i + 1}/{total}", token="ai_batch")
+
+                pct = int(((i + 1) / total) * 100)
+                self.progress_value.emit(pct)
                 
                 # Формируем промпт
                 prompt_text = self.prompts[i] if i < len(self.prompts) else self.prompts[-1]
@@ -67,10 +70,13 @@ class AIProcessingWorker(QThread):
                     self.result_signal.emit(i, cleaned, self.context)
                 else:
                     self.error_signal.emit(f"Пустой ответ для товара #{i}")
-                
+            
+            logger.success("Анализ нейросетью завершен")
             self.finished_signal.emit()
+
         except Exception as e:
-            self.error_signal.emit(f"Ошибка воркера: {e}")
+            logger.error(f"Ошибка AI воркера: {e}")
+            self.error_signal.emit(str(e))
         finally:
             await client.close()
 
@@ -198,7 +204,6 @@ class AIManager(QObject):
         # Если сервер еще не готов, сохраняем задачу и ждем сигнала
         if not self._server_ready:
             self.server_ready_signal.connect(lambda: self.start_processing(items, prompt, debug_mode, context), Qt.ConnectionType.SingleShotConnection)
-            #self.server_ready_signal.connect(lambda: self.start_processing(items, prompt, debug_mode, context), singleShot=True)
             return
 
         # Подготовка промптов (RAG)
@@ -237,7 +242,7 @@ class AIManager(QObject):
             context=context,
             model_name=self._model_name
         )
-        self.processing_worker.progress_signal.connect(self.progress_signal.emit)
+        self.processing_worker.progress_value.connect(self.ai_progress_value_signal_wrapper)
         self.processing_worker.result_signal.connect(self.result_signal.emit)
         self.processing_worker.finished_signal.connect(self.finished_signal.emit)
         self.processing_worker.finished_signal.connect(self.all_finished_signal.emit)
@@ -251,7 +256,6 @@ class AIManager(QObject):
 
         if not self._server_ready:
             self.server_ready_signal.connect(lambda: self.start_chat_request(messages, debug_mode), Qt.ConnectionType.SingleShotConnection)
-            #self.server_ready_signal.connect(lambda: self.start_chat_request(messages, debug_mode), singleShot=True)
             return
             
         if self.chat_worker and self.chat_worker.isRunning():
