@@ -2,14 +2,18 @@ import re
 import hashlib
 from typing import Dict, List
 
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+except ImportError:
+    TfidfVectorizer = None
+    cosine_similarity = None
+
 class FeatureExtractor:
-    """Extracts technical specifications from item titles and descriptions."""
-    
-    # Регулярки для выделения ключевых характеристик
     PATTERNS = {
-        'storage': r'\b(\d+)\s*(gb|гб|tb|тб)\b',       # 128gb, 1tb
-        'ram': r'\b(\d+)\s*(gb|гб)\s*(ram|озу)\b',     # 16gb ram
-        'model_suffix': r'\b(pro|max|plus|ultra|mini|air|slim|lite|se)\b', # iphone 13 PRO
+        'storage': r'\b(\d+)\s*(gb|гб|tb|тб)\b',
+        'ram': r'\b(\d+)\s*(gb|гб)\s*(ram|озу)\b',
+        'model_suffix': r'\b(pro|max|plus|ultra|mini|air|slim|lite|se)\b',
         'condition': r'\b(new|новый|sealed|запеч|б/?у|used|ideal|идеал)\b',
         'authenticity': r'\b(orig|ориг|replica|репл|copy|копия)\b'
     }
@@ -26,61 +30,38 @@ class FeatureExtractor:
         for key, pattern in FeatureExtractor.PATTERNS.items():
             match = re.search(pattern, text)
             if match:
-                # Нормализация: убираем пробелы (128 gb -> 128gb)
                 raw_val = match.group(0).replace(" ", "")
-                # Унификация (гб -> gb)
                 raw_val = raw_val.replace("гб", "gb").replace("тб", "tb")
                 raw_val = raw_val.replace("озу", "ram")
                 raw_val = raw_val.replace("новый", "new").replace("запеч", "new")
-                raw_val = raw_val.replace("идеал", "used") # Идеал все равно б/у
+                raw_val = raw_val.replace("идеал", "used")
                 features[key] = raw_val
                 
         return features
 
     @staticmethod
     def normalize_for_hash(text: str) -> List[str]:
-        """Cleans text for hashing: removes punctuation, lowers case."""
         if not text:
             return []
-        # Оставляем только буквы и цифры
         text = re.sub(r'[^\w\s]', '', text.lower())
         return text.split()
 
-class SimHash:
-    """Locality Sensitive Hashing for finding near-duplicate text."""
-    
+class TextMatcher:
     @staticmethod
-    def get_hash(text: str) -> int:
-        features = FeatureExtractor.normalize_for_hash(text)
-        if not features:
-            return 0
+    def calculate_similarity(target_text: str, candidates: List[str]) -> List[float]:
+        if not TfidfVectorizer or not target_text or not candidates:
+            return [0.0] * len(candidates)
             
-        hash_bits = [0] * 64
+        corpus = [target_text] + candidates
         
-        for feature in features:
-            # MD5 hash of the word
-            h = int(hashlib.md5(feature.encode('utf-8')).hexdigest(), 16)
-            for i in range(64):
-                bit = (h >> i) & 1
-                if bit:
-                    hash_bits[i] += 1
-                else:
-                    hash_bits[i] -= 1
-        
-        fingerprint = 0
-        for i in range(64):
-            if hash_bits[i] > 0:
-                fingerprint |= (1 << i)
-        
-        return fingerprint
-
-    @staticmethod
-    def distance(hash1: int, hash2: int) -> int:
-        """Calculates Hamming distance between two 64-bit integers."""
-        # XOR gives bits that are different
-        x = (hash1 ^ hash2) & ((1 << 64) - 1)
-        ans = 0
-        while x:
-            ans += 1
-            x &= x - 1
-        return ans
+        try:
+            vectorizer = TfidfVectorizer(analyzer='char_wb', ngram_range=(2, 4))
+            tfidf_matrix = vectorizer.fit_transform(corpus)
+            
+            # Считаем сходство первого вектора (target) со всеми остальными
+            cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])
+            
+            # Возвращаем плоский список
+            return cosine_sim[0].tolist()
+        except Exception:
+            return [0.0] * len(candidates)

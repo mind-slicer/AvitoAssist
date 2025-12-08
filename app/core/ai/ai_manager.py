@@ -1,19 +1,18 @@
 import os
 import json
 import glob
-import time
 import asyncio
-import threading
+import re
 from typing import List, Dict, Optional
-from datetime import datetime
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, Qt
 
-from app.config import AI_CTX_SIZE, AI_GPU_LAYERS, AI_SERVER_PORT, BASE_APP_DIR, MODELS_DIR
+from app.config import AI_CTX_SIZE, AI_GPU_LAYERS, AI_SERVER_PORT, MODELS_DIR
 from app.core.ai.server_manager import ServerManager
 from app.core.ai.llama_client import LlamaClient
 from app.core.ai.prompts import PromptBuilder, AnalysisPriority
 from app.core.log_manager import logger
+
 
 # --- Воркер для пакетной обработки товаров ---
 class AIProcessingWorker(QThread):
@@ -81,6 +80,10 @@ class AIProcessingWorker(QThread):
             await client.close()
 
     def _clean_json(self, text: str) -> str:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return match.group(0)
+        
         text = text.replace("```json", "").replace("```", "").strip()
         return text
 
