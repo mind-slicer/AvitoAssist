@@ -731,6 +731,14 @@ class ControlsWidget(QWidget):
         if hasattr(self, "queue_manager_widget"): self.queue_manager_widget.setEnabled(not locked)
         if hasattr(self, "blacklist_widget"): self.blacklist_widget.setEnabled(not locked)
         if hasattr(self, "search_mode_widget"): self.search_mode_widget.setEnabled(not locked)
+        if hasattr(self, 'btn_start'):
+            self.start_button.setVisible(not locked)
+        if hasattr(self, 'btn_stop'):
+            self.stop_button.setVisible(locked)
+            self.stop_button.setEnabled(True)
+            self.stop_button.setText("Остановить")
+
+        self.setEnabled(True)
 
     def set_rewrite_controls_enabled(self, has_context: bool):
         self._update_duplicates_toggle_state()

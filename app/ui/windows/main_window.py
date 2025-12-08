@@ -374,8 +374,31 @@ class MainWindow(QWidget):
         self.progress_panel.parser_log.info(f"🚀 Запуск {len(active_configs)} очередей...")
 
     def _on_stop_search(self):
+        # 1. Сообщаем контроллеру об остановке
         self.controller.request_soft_stop()
         self.progress_panel.parser_log.warning("Остановка по запросу пользователя...")
+        
+        # 2. Визуально блокируем кнопку стоп, чтобы не тыкали много раз
+        if hasattr(self.controls_widget, 'btn_stop'):
+            self.controls_widget.stop_button.setEnabled(False)
+            self.controls_widget.stop_button.setText("Останавливаемся...")
+
+        # 3. Принудительно сбрасываем флаг последовательности
+        self.is_sequence_running = False
+        if self.controller.queue_state:
+            self.controller.queue_state.is_sequence_running = False
+
+        # 4. Создаем "страховочный" таймер. 
+        # Если через 2 секунды штатный сигнал finished не придет, мы сбросим UI вручную.
+        QTimer.singleShot(2000, self._force_ui_reset)
+
+    def _force_ui_reset(self):
+        """Гарантированно возвращает интерфейс в исходное состояние"""
+        self.controls_widget.set_ui_locked(False)
+        self.progress_panel.parser_bar.setValue(0)
+        # Возвращаем текст кнопке стоп (set_ui_locked это сделает, но для надежности)
+        if hasattr(self.controls_widget, 'btn_stop'):
+            self.controls_widget.stop_button.setText("Остановить")
 
     def _on_parameters_changed(self, params: dict):
         merge_target = params.get("merge_with_table")
