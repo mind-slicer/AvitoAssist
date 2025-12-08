@@ -178,7 +178,6 @@ class ResultsAreaWidget(QGroupBox):
         elif mode == "По ID":
             col_idx = 1
             
-        print(f"[DEBUG] Applying Search: '{query}', Mode: '{mode}' -> Col: {col_idx}") # DEBUG
         self.results_table.filter_data(query, col_idx)
 
     def update_header(self, table_name: str, full_date: str, count: int):

@@ -2,6 +2,7 @@ import aiohttp
 import logging
 import json
 from typing import Optional, Dict, List, Any
+from app.core.log_manager import logger
 
 class LlamaClient:
     """
@@ -11,7 +12,6 @@ class LlamaClient:
     def __init__(self, port: int, host: str = "127.0.0.1"):
         self.base_url = f"http://{host}:{port}"
         self.session: Optional[aiohttp.ClientSession] = None
-        self.logger = logging.getLogger("LlamaClient")
 
     async def ensure_session(self):
         if self.session is None or self.session.closed:
@@ -56,12 +56,12 @@ class LlamaClient:
             async with self.session.post(f"{self.base_url}/v1/chat/completions", json=payload) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    self.logger.error(f"API Error {resp.status}: {text}")
+                    logger.error(f"Ошибка API: {resp.status}: {text}")
                     return None
                 
                 data = await resp.json()
                 return data["choices"][0]["message"]["content"]
                 
         except Exception as e:
-            self.logger.error(f"Request failed: {e}")
+            logger.error(f"Запрос провален: {e}")
             return None

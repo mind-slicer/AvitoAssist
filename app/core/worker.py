@@ -73,7 +73,7 @@ class ParserWorker(QObject):
                     merge_with_table=self.merge_with_table,
                 )
         except Exception as e:
-            print(f"PARSER WORKER ERROR: {e}")
+            logger.error(f"Ошибка запуска парсера: {e}")
             self.error.emit(str(e))
         finally:
             self.finished.emit(results if results else [])

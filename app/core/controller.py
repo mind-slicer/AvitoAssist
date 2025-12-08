@@ -58,8 +58,6 @@ class ParserController(QObject):
     def ensure_ai_manager(self):
         """Ensure AI manager exists (singleton pattern)"""
         if not self.ai_manager:
-            print("[DEBUG] Creating NEW AIManager instance")
-
             self.ai_manager = AIManager(memory_manager=self.memory_manager)
             self.ai_manager.progress_signal.connect(self._on_ai_text_progress)
             self.ai_manager.progress_signal.connect(self.ai_progress_updated.emit)
@@ -214,9 +212,6 @@ class ParserController(QObject):
             has_rag=has_rag,
             search_tags=search_tags
         )
-
-        priority_names = {1: "ЦЕНА", 2: "ДЕФИЦИТ", 3: "КАЧЕСТВО"}
-        print(f"[AI] Выбран приоритет: {priority_names[priority]}")
 
         ai_debug = config.get('ai_debug_mode', False)
         store = config.get('store_in_memory', False)

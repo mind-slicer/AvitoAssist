@@ -5,6 +5,7 @@ import socket
 import psutil
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
+from app.core.log_manager import logger
 
 # Импортируем настройку предпочтений
 from app.config import AI_BACKEND_PREFERENCE
@@ -24,7 +25,6 @@ class ServerManager(QObject):
         self.requested_port = port
         self.actual_port = port
         self.process: subprocess.Popen = None
-        self.logger = logging.getLogger("ServerManager")
 
     def _find_free_port(self, start_port: int) -> int:
         """Ищет свободный порт"""
@@ -42,7 +42,7 @@ class ServerManager(QObject):
             try:
                 for con in proc.connections():
                     if con.laddr.port == port:
-                        self.logger.warning(f"Killing zombie process on port {port}: {proc.info['name']}")
+                        logger.dev(f"Killing zombie process on port {port}: {proc.info['name']}", level="INFO")
                         proc.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -110,7 +110,7 @@ class ServerManager(QObject):
             self.error_occurred.emit("Не найден исполняемый файл llama-server (ни CUDA, ни Vulkan, ни CPU)!")
             return
 
-        self.logger.info(f"Selected AI Backend: {backend_name.upper()} ({server_exe})")
+        logger.info(f"Выбранный бэкенд для ИИ: {backend_name.upper()} ({server_exe})")
 
         # 3. Аргументы запуска
         cmd = [
@@ -141,7 +141,7 @@ class ServerManager(QObject):
 
     def stop_server(self):
         if self.process:
-            self.logger.info("Stopping server...")
+            logger.info("Останавливаем сервер...")
             self.process.terminate()
             try:
                 self.process.wait(timeout=5)

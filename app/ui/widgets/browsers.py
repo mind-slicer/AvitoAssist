@@ -6,6 +6,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QValidator
 from app.ui.styles import Components, Palette, Typography, Spacing, InputComponents
 from app.config import RESULTS_DIR
+from app.core.log_manager import logger
+
 
 class FilenameValidator(QValidator):
     def validate(self, text, pos):
@@ -58,7 +60,7 @@ class BaseJsonFileBrowser(QWidget):
             except:
                 with gzip.open(fname, 'rt', encoding='utf-8') as f: data = json.load(f)
             self.file_loaded.emit(fname, data)
-        except Exception as e: print(e)
+        except Exception: pass
 
     def delete_selected_file(self):
         item = self.file_list.currentItem()
@@ -206,9 +208,9 @@ class MiniFileBrowser(BaseJsonFileBrowser):
 
         try:
             os.rename(old_path, new_path)
-            print(f"Переименовано: {os.path.basename(old_path)} -> {os.path.basename(new_path)}")
+            logger.info(f"Переименовано: {os.path.basename(old_path)} -> {os.path.basename(new_path)}...")
         except Exception as e:
-            print(f"Ошибка переименования: {e}")
+            logger.error(f"Ошибка переименования: {e}...")
 
         self.refresh_files()
 

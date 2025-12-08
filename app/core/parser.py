@@ -1,11 +1,8 @@
 import re
 import time
 import random
-import json
-import gzip
-import os
 from bs4 import BeautifulSoup
-from typing import Optional, Dict, Any, List, Callable, Set
+from typing import Optional, Dict, Any, List, Callable
 from urllib.parse import urlencode, urlparse, parse_qs
 from datetime import datetime
 
@@ -322,7 +319,7 @@ class SearchNavigator:
             
             items = self._type_query(keywords)
             if not items:
-                logger.warning("Подсказки не появились. Использую Fallback.", token="smart_search")
+                logger.warning("Категории не появились. Использую Fallback.", token="smart_search")
                 return []
 
             candidates = []

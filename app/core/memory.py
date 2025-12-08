@@ -1,7 +1,6 @@
 import sqlite3
 import json
 import os
-import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 from datetime import timedelta
@@ -9,6 +8,7 @@ import re
 import statistics
 from app.config import BASE_APP_DIR
 from app.core.text_utils import SimHash, FeatureExtractor
+from app.core.log_manager import logger
 
 
 class MemoryManager:
@@ -115,7 +115,6 @@ class MemoryManager:
                 if cursor.fetchone():
                     return False # Уже есть
 
-                # ИСПРАВЛЕНО: используем added_at вместо parsed_date
                 cursor.execute("""
                     INSERT INTO items (
                         avito_id, title, price, description, url, seller, address, 
@@ -130,8 +129,7 @@ class MemoryManager:
                     item.get('seller'),
                     item.get('address'),
                     item.get('date'),
-                    datetime.now().isoformat(), # Это значение пойдет в added_at
-                    # AI Results
+                    datetime.now().isoformat(),
                     item.get('verdict'),
                     item.get('reason'),
                     item.get('market_position'),
@@ -140,7 +138,7 @@ class MemoryManager:
                 conn.commit()
                 return True
             except Exception as e:
-                print(f"DB Error: {e}")
+                logger.dev(f"DB Error: {e}", level="ERROR")
                 return False
 
     # ==================== Поиск похожих товаров ====================
@@ -189,11 +187,11 @@ class MemoryManager:
             rows = [dict(row) for row in c.fetchall()]
             conn.close()
 
-            print(f"[Memory] 🔍 Keyword search: {len(rows)} results for '{title[:30]}'")
+            logger.dev(f"Memory keyword search: {len(rows)} results for '{title[:30]}'", level="INFO")
             return rows
 
         except Exception as e:
-            print(f"[Memory] Keyword search error: {e}")
+            logger.dev(f"Memory keyword search error: {e}", level="ERROR")
             return []
 
     def _extract_keywords(self, title: str) -> List[str]:
@@ -231,7 +229,7 @@ class MemoryManager:
         cached_stats = self._get_cached_stats(product_key)
 
         if cached_stats:
-            print(f"[Memory] 📊 Using cached stats for '{title[:30]}'")
+            logger.dev(f"Memory using cached stats for {title[:30]}", level="INFO")
             return cached_stats
 
         # Ищем похожие товары
@@ -324,7 +322,7 @@ class MemoryManager:
         # Кешируем статистику
         self._cache_stats(product_key, context)
 
-        print(f"[Memory] 📊 RAG context: {len(filtered_items)} items (filtered from {len(similar_items)}), avg={context['avg_price']}, trend={trend} ({trend_percent:+.1f}%)")
+        logger.dev(f"Memory RAG context: {len(filtered_items)} items (filtered from {len(similar_items)}), avg={context['avg_price']}, trend={trend} ({trend_percent:+.1f}%)", level="INFO")
         return context
 
     def _calculate_trend(self, items: List[Dict]) -> tuple[str, float]:
@@ -367,7 +365,7 @@ class MemoryManager:
             else:
                 return ("stable", percent_change)
         except Exception as e:
-            print(f"[Memory] Trend calculation error: {e}")
+            logger.dev(f"Trend calculation error: {e}", level="ERROR")
             return ("stable", 0.0)
 
     # ==================== Кеширование статистики ====================
@@ -375,7 +373,7 @@ class MemoryManager:
     def _generate_product_key(self, title: str) -> str:
         """Генерация ключа продукта для кеширования"""
         keywords = self._extract_keywords(title)
-        return ' '.join(keywords[:3])  # Первые 3 ключевых слова
+        return ' '.join(keywords[:3])
 
     def _get_cached_stats(self, product_key: str) -> Optional[Dict]:
         """Получить статистику из кеша (если не устарела)"""
@@ -398,7 +396,7 @@ class MemoryManager:
             return None
 
         except Exception as e:
-            print(f"[Memory] Cache read error: {e}")
+            logger.dev(f"Cache read error: {e}", level="ERROR")
             return None
 
     def _cache_stats(self, product_key: str, context: Dict):
@@ -436,7 +434,7 @@ class MemoryManager:
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"[Memory] Cache write error: {e}")
+            logger.dev(f"Cache write error: {e}", level="ERROR")
 
     def _invalidate_stats_cache(self, title: str):
         """Инвалидация кеша статистики при добавлении нового товара"""
@@ -466,10 +464,8 @@ class MemoryManager:
             titles = [row['title'] for row in c.fetchall()]
             conn.close()
             
-            print(f"[Memory] 🔍 Found {len(titles)} unique titles")  # DEBUG
-            
             if not titles:
-                print("[Memory] ⚠️ No titles found, database might be empty")
+                logger.dev(f"No titles found, database might be empty", level="DEBUG")
                 return 0
             
             # Генерируем product_key и собираем уникальные
@@ -479,7 +475,7 @@ class MemoryManager:
                 if pk:
                     product_keys.add(pk)
             
-            print(f"[Memory] 🔄 Rebuilding stats for {len(product_keys)} categories...")
+            logger.dev(f"Rebuilding stats for {len(product_keys)} categories", level="INFO")
             
             rebuilt = 0
             for pk in product_keys:
@@ -493,7 +489,7 @@ class MemoryManager:
                 similar = self.find_similar_items(temp_title, limit=100)
                 
                 if len(similar) < 2:
-                    print(f"[Memory] ⚠️ Category '{pk}': too few items ({len(similar)})")
+                    logger.dev(f"Category '{pk}': too few items ({len(similar)})", level="DEBUG")
                     continue
                 
                 # Фильтруем по дате (последние 30 дней)
@@ -501,7 +497,7 @@ class MemoryManager:
                 filtered = [item for item in similar if item.get('added_at', '') >= cutoff_date]
                 
                 if len(filtered) < 2:
-                    print(f"[Memory] ⚠️ Category '{pk}': too few recent items ({len(filtered)})")
+                    logger.dev(f"Category '{pk}': too few recent items ({len(filtered)})", level="DEBUG")
                     continue
                 
                 # Считаем статистику
@@ -523,13 +519,13 @@ class MemoryManager:
                 
                 self._cache_stats(pk, context)
                 rebuilt += 1
-                print(f"[Memory] ✅ Category '{pk}': avg={context['avg_price']}, trend={trend}")
+                logger.dev(f"Category '{pk}': avg={context['avg_price']}, trend={trend}", level="INFO")
             
-            print(f"[Memory] ✅ Rebuild complete: {rebuilt}/{len(product_keys)} categories")
+            logger.dev(f"Rebuild complete: {rebuilt}/{len(product_keys)} categories", level="INFO")
             return rebuilt
             
         except Exception as e:
-            print(f"[Memory] ❌ Rebuild error: {e}")
+            logger.dev(f"Rebuild error: {e}", level="ERROR")
             import traceback
             traceback.print_exc()
             return 0
@@ -556,7 +552,7 @@ class MemoryManager:
             return rows
 
         except Exception as e:
-            print(f"[Memory] Get statistics error: {e}")
+            logger.dev(f"Get statistics error: {e}", level="ERROR")
             return []
 
     def get_stats_for_product_key(self, product_key: str) -> Optional[Dict]:
@@ -573,7 +569,7 @@ class MemoryManager:
             conn.close()
             return dict(row) if row else None
         except Exception as e:
-            print(f"[Memory] Get stats by key error: {e}")
+            logger.dev(f"Get stats by key error: {e}", level="ERROR")
             return None
 
     def get_stats_for_title(self, title: str) -> Optional[Dict]:
@@ -640,7 +636,7 @@ class MemoryManager:
                 "trend": trend
             }
         except Exception as e:
-            print(f"RAG Error calculation: {e}")
+            logger.dev(f"RAG Error calculation: {e}", level="ERROR")
             return None
 
     def get_rag_context_for_product_key(self, product_key: str) -> Optional[Dict]:
@@ -710,7 +706,7 @@ class MemoryManager:
             }
             
         except Exception as e:
-            print(f"[Memory] Get RAG status error: {e}")
+            logger.dev(f"Get RAG status error: {e}", level="ERROR")
             return {
                 'total_items': 0,
                 'total_categories': 0,
@@ -734,7 +730,7 @@ class MemoryManager:
             conn.close()
             return rows
         except Exception as e:
-            print(f"[Memory] Get Error: {e}")
+            logger.dev(f"Get error:: {e}", level="ERROR")
             return []
 
     def delete_item(self, avito_id: str):
@@ -833,6 +829,6 @@ class MemoryManager:
             conn.commit()
             conn.close()
 
-            print(f"[Memory] 🗑️ Cleanup: {deleted} items older than {days_to_keep} days")
+            logger.dev(f"Memory cleanup: {deleted} items older than {days_to_keep} days", level="INFO")
         except Exception as e:
-            print(f"[Memory] Cleanup error: {e}")
+            logger.dev(f"Memory cleanup error: {e}", level="ERROR")

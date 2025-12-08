@@ -155,11 +155,9 @@ class AnalyticsWidget(QWidget):
                 count = 0
             self.rebuild_finished_signal.emit(count)
         except Exception as e:
-            print(f"Analytics Rebuild error: {e}")
             self.rebuild_finished_signal.emit(0)
 
     def on_rebuild_finished(self, count: int):
-        print(f"Analytics UI: update, {count} categories rebuilt")
         self.refresh_data()
 
     def delete_selected(self):

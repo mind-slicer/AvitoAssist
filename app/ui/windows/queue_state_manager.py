@@ -198,7 +198,6 @@ class QueueStateManager(QObject):
                 self.queues_data[0] = self._create_default_state()
         
         except Exception as e:
-            print(f"Failed to load queues: {e}")
             self.queues_data[0] = self._create_default_state()
     
     def _save_all_queues(self):
@@ -215,7 +214,7 @@ class QueueStateManager(QObject):
                 json.dump(save_data, f, ensure_ascii=False, indent=2)
         
         except Exception as e:
-            print(f"Failed to save queues: {e}")
+            pass
     
     def save_current_state(self):
         """Save current queue state"""
@@ -273,7 +272,6 @@ class QueueStateManager(QObject):
             return True
         
         except Exception as e:
-            print(f"Import failed: {e}")
             return False
     
     # ============ Validation ============

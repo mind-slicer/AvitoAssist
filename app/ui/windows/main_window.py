@@ -22,6 +22,7 @@ from app.ui.widgets.ai_stats_panel import AIStatsPanel
 from app.ui.widgets.progress_and_logs_panel import ProgressAndLogsPanel
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.ui.widgets.rag_stats_panel import RAGStatsPanel
+from app.core.log_manager import logger
 
 class MainWindow(QWidget):
     def __init__(self):
@@ -277,29 +278,21 @@ class MainWindow(QWidget):
         if hasattr(self.controls_widget, 'queue_manager_widget'):
             self.controls_widget.queue_manager_widget.set_queue_checked(index, is_enabled)
             
-        self.progress_panel.parser_log.info(f"Загружена очередь #{index + 1}")
+        logger.info(f"Загружена очередь #{index + 1}...")
 
     def _on_queue_changed(self, new_index: int):
         self._save_current_queue_state()
         self._load_queue_to_ui(new_index)
 
     def _on_queue_toggled(self, index: int, is_checked: bool):
-        """
-        ✅ Немедленно синхронизируем состояние при клике на чекбокс
-        """
-        # СРАЗУ обновляем состояние в памяти
         self.queue_manager.update_state({"queue_enabled": is_checked}, index)
         
         # Логируем действие
         status = "включена ✓" if is_checked else "отключена ✗"
-        self.progress_panel.parser_log.info(f"Очередь #{index + 1} {status}")
-        
-        # ⚠️ ВАЖНО: Если парсер уже запущен и очередь отключена,
-        # это может потребовать остановки. Но в текущей логике
-        # это не влияет на уже запущенный процесс (как и должно быть)
+        logger.info(f"Очередь #{index + 1} {status}...")
 
     def _on_pause_neuronet_requested(self):
-        self.progress_panel.ai_log.warning("Функция паузы нейросети еще не реализована в контроллере.")
+        self.progress_panel.ai_log.warning(f"Функция паузы нейросети еще не реализована в контроллере.")
 
     def _on_start_search(self):
         self._save_current_queue_state()
@@ -313,7 +306,7 @@ class MainWindow(QWidget):
             if state.get("queue_enabled", True):
                 # Валидация тегов
                 if not state.get("search_tags"):
-                    self.progress_panel.parser_log.warning(f"Очередь #{idx+1} пропущена: нет тегов")
+                    logger.warning(f"Очередь #{idx+1} пропущена: нет тегов...")
                     continue
                 # Добавляем оригинальный индекс очереди для корректного переключения UI
                 state['original_index'] = idx
@@ -340,11 +333,11 @@ class MainWindow(QWidget):
             if merge_file and os.path.exists(merge_file):
                 self.current_json_file = merge_file
                 self.current_results = self._load_results_file_silent(merge_file)
-                self.progress_panel.parser_log.info(f"Режим добавления: {os.path.basename(merge_file)}")
+                logger.info(f"Режим добавления: {os.path.basename(merge_file)}")
             else:
                 self._create_new_results_file()
                 self.current_results = []
-                self.progress_panel.parser_log.info("Режим слияния: Создан новый файл для всех очередей")
+                logger.info(f"Режим слияния: Создан новый файл для всех очередей")
         
         base_count = len(self.current_results or [])
 
@@ -369,12 +362,12 @@ class MainWindow(QWidget):
             self._load_queue_to_ui(first_idx)
                 
         self.controller.start_sequence(active_configs)
-        self.progress_panel.parser_log.info(f"🚀 Запуск {len(active_configs)} очередей...")
+        logger.info(f"Запуск {len(active_configs)} очередей...")
 
     def _on_stop_search(self):
         # 1. Сообщаем контроллеру об остановке
         self.controller.request_soft_stop()
-        self.progress_panel.parser_log.warning("Остановка по запросу пользователя...")
+        logger.info(f"Остановка по запросу пользователя...")
         
         # 2. Визуально блокируем кнопку стоп, чтобы не тыкали много раз
         if hasattr(self.controls_widget, 'btn_stop'):
@@ -462,7 +455,7 @@ class MainWindow(QWidget):
             
             merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
             self._save_list_to_file(merged, target_file)
-            self.progress_panel.parser_log.success(f"Очередь #{q_num}: Сохранено в {filename}")
+            logger.success(f"Очередь #{q_num}: Сохранено в {filename}...")
             
         else:
             if not self.current_json_file:
@@ -511,7 +504,7 @@ class MainWindow(QWidget):
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self._refresh_merge_targets()
         except Exception as e:
-            self.progress_panel.parser_log.error(f"Save failed: {e}")
+            pass
 
     def _on_parser_started_logic(self):
         self.progress_panel.parser_bar.setValue(0)
@@ -523,7 +516,7 @@ class MainWindow(QWidget):
             config = self.controller.queue_state.queues_config[idx]
         q_num = config.get('original_index', idx) + 1
         
-        self.progress_panel.parser_log.info(f"Очередь #{q_num} завершена. Получено {len(results)} шт.")
+        logger.success(f"Очередь #{q_num} завершена. Получено {len(results)} шт...")
         
         # Переключение UI на следующую очередь (если есть)
         next_idx = idx + 1
@@ -625,7 +618,7 @@ class MainWindow(QWidget):
                     Components.text_input()
                 )
         
-        self.progress_panel.ai_log.success("ИИ функции доступны")
+        logger.success(f"ИИ функции доступны...")
 
         if hasattr(self, '_model_was_just_downloaded') and self._model_was_just_downloaded:
             self._model_was_just_downloaded = False
@@ -747,8 +740,8 @@ class MainWindow(QWidget):
                     """
                 )
         
-        self.progress_panel.ai_log.warning("ИИ функции отключены: модель не найдена")
-        self.progress_panel.ai_log.info("Откройте Настройки → Нейросеть для установки модели")
+        logger.warning(f"ИИ функции отключены: модель не найдена...")
+        logger.info(f"Откройте 'Настройки → Нейросеть' для установки модели...")
 
     def on_chat_message_sent(self, messages: list):
         """Обработка отправки сообщения в чат"""
@@ -766,18 +759,14 @@ class MainWindow(QWidget):
         if self.is_sequence_running:
             return
 
-        print("[MainWindow] 🔄 Background RAG rebuild started...")
-
         # Запускаем в фоне
         import threading
         def rebuild_task():
             try:
-                count = self.memory_manager.rebuild_statistics_cache()
-                print(f"[MainWindow] ✅ Background RAG rebuild complete: {count} categories")
                 if hasattr(self, "analyticswidget"):
                     self.analytics_widget.refresh_data()
             except Exception as e:
-                print("MainWindow RAG rebuild error", e)
+                pass
 
         threading.Thread(target=rebuild_task, daemon=True).start()
 
@@ -795,15 +784,13 @@ class MainWindow(QWidget):
         self.progress_panel.ai_bar.setValue(val)
 
     def _on_ai_result(self, idx, json_text, ctx):
-        self.progress_panel.ai_log.info(f"AI обновил элемент #{idx}")
-
         if 0 <= idx < len(self.current_results):
             self.current_results[idx]["ai_comment"] = json_text
             self.results_area.results_table.update_ai_column(idx, json_text)
             self._save_results_to_file()
 
     def _on_ai_all_finished(self):
-        self.progress_panel.ai_log.success("ИИ анализ завершён")
+        logger.info(f"ИИ завершил анализ...")
 
         ai_column_index = 7
         #self.results_area.results_table.sortItems(ai_column_index, Qt.SortOrder.DescendingOrder)
@@ -832,17 +819,10 @@ class MainWindow(QWidget):
                     ai_data = json.loads(ai_json)
                     item.update(ai_data) # Добавляем данные AI к товару
                 except Exception as e:
-                    print(f"[MainWindow] JSON Parse Error for Memory: {e}")
+                    pass
 
                 # Сохраняем
                 success = self.memory_manager.add_item(item)
-                
-                if success:
-                    # Если визуальный анализ выключен, пишем в лог, что сохранили "тихо"
-                    if not include_ai:
-                        print(f"[MainWindow] 💾 Saved to memory (Silent): {item.get('title', '')[:30]}")
-                    else:
-                        print(f"[MainWindow] ✅ Saved to memory: {item.get('title', '')[:30]}")
 
     def _open_rag_tab(self):
         """Переключиться на Аналитику → вкладка RAG‑статус"""
@@ -854,10 +834,10 @@ class MainWindow(QWidget):
 
     def _on_scan_finished(self, categories):
         self.search_widget.set_scanned_categories(categories)
-        self.progress_panel.parser_log.success(f"Найдено {len(categories)} категорий")
+        logger.info(f"Найдено {len(categories)} категорий...")
 
     def _on_categories_selected(self, cats):
-        self.progress_panel.parser_log.info(f"Выбрано {len(cats)} категорий")
+        logger.info(f"Выбрано {len(cats)} категорий...")
 
     def _on_file_loaded(self, path, data):
         self.current_json_file = path 
@@ -879,7 +859,6 @@ class MainWindow(QWidget):
             count=len(data)
         )
 
-        self.progress_panel.parser_log.info(f"Загружен: {os.path.basename(path)}")
         self._refresh_merge_targets()
 
     def _on_file_deleted(self, path):
@@ -904,9 +883,6 @@ class MainWindow(QWidget):
         title_item = self.results_area.results_table.item(row, 2)
         if not title_item:
             return
-        title = title_item.text()
-        stats = self.memory_manager.get_stats_for_title(title)
-        print("[RAG] Stats for selected:", title, "->", stats)
 
     def _on_table_item_deleted(self, item_id):
         self.current_results = [x for x in self.current_results if str(x.get("id")) != str(item_id)]

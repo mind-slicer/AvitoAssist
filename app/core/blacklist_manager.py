@@ -1,12 +1,9 @@
-"""
-Менеджер черного списка с поддержкой наборов.
-Каждый набор содержит seller_id + custom_name для блокировки продавцов.
-"""
 import json
 import os
-from typing import List, Dict, Optional
+from typing import List, Optional
 from datetime import datetime
 from app.config import BASE_APP_DIR
+from app.core.log_manager import logger
 
 
 class BlacklistEntry:
@@ -171,7 +168,7 @@ class BlacklistManager:
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[BLACKLIST] Save error: {e}")
+            logger.dev(f"Blacklist save error: {e}", level="ERROR")
 
     def load(self):
         """Загрузить наборы из файла"""
@@ -192,7 +189,7 @@ class BlacklistManager:
                 self._ensure_default_set()
 
         except Exception as e:
-            print(f"[BLACKLIST] Load error: {e}")
+            logger.dev(f"Blacklist load error: {e}", level="ERROR")
             self._ensure_default_set()
 
 
