@@ -409,10 +409,7 @@ class ParserController(QObject):
     def cleanup(self):
         if self.queue_state.is_sequence_running:
             self.stop_sequence()
-
-        if self.ai_manager:
-            self.ai_manager.shutdown_app(on_finished=None)
-
+            
         self.cleanup_worker()
 
         if self.scan_worker:

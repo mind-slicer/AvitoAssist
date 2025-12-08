@@ -6,9 +6,13 @@ import psutil
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 
+# Импортируем настройку предпочтений
+from app.config import AI_BACKEND_PREFERENCE
+
 class ServerManager(QObject):
     """
     Управляет жизненным циклом процесса llama-server.
+    Автоматически выбирает лучший доступный бэкенд (CUDA -> Vulkan -> CPU).
     """
     server_started = pyqtSignal()
     server_stopped = pyqtSignal(int)
@@ -43,6 +47,49 @@ class ServerManager(QObject):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
+    def _has_nvidia_gpu(self) -> bool:
+        """Проверка наличия NVIDIA GPU через nvidia-smi"""
+        try:
+            subprocess.check_output(
+                "nvidia-smi",
+                stderr=subprocess.STDOUT,
+                creationflags=0x08000000 if sys.platform == "win32" else 0
+            )
+            return True
+        except Exception:
+            return False
+
+    def _detect_server_executable(self) -> tuple[str, str]:
+        base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.getcwd()
+        exe_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+
+        # Пути к разным версиям бэкендов
+        paths = {
+            "cuda": os.path.join(base_dir, "backends", "cuda", "llama_cpp", exe_name),
+            "vulkan": os.path.join(base_dir, "backends", "vulkan", "llama_cpp", exe_name),
+            "cpu": os.path.join(base_dir, "backends", "cpu", "llama_cpp", exe_name)
+        }
+
+        # 1. Проверяем явную настройку пользователя
+        pref = (AI_BACKEND_PREFERENCE or "auto").lower()
+        if pref in paths and os.path.exists(paths[pref]):
+            return pref, paths[pref]
+
+        # 2. Авто-определение (CUDA)
+        if self._has_nvidia_gpu() and os.path.exists(paths["cuda"]):
+            return "cuda", paths["cuda"]
+
+        # 3. Авто-определение (Vulkan)
+        # Если нет NVIDIA или драйверов, пробуем Vulkan (AMD/Intel/Integrated)
+        if os.path.exists(paths["vulkan"]):
+            return "vulkan", paths["vulkan"]
+
+        # 4. Fallback на CPU
+        if os.path.exists(paths["cpu"]):
+            return "cpu", paths["cpu"]
+            
+        return "unknown", ""
+
     def start_server(self, ctx_size: int = 2048, gpu_layers: int = -1, batch_size: int = 512):
         if self.is_running():
             self.server_started.emit()
@@ -56,26 +103,14 @@ class ServerManager(QObject):
         self.actual_port = self._find_free_port(self.requested_port)
         self._kill_existing_on_port(self.actual_port)
 
-        # 2. Поиск exe файла
-        base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.getcwd()
-        exe_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
-        
-        # Пытаемся найти CUDA версию, иначе CPU
-        possible_paths = [
-            os.path.join(base_dir, "backends", "cuda", "llama_cpp", exe_name),
-            os.path.join(base_dir, "backends", "vulkan", "llama_cpp", exe_name),
-            os.path.join(base_dir, "backends", "cpu", "llama_cpp", exe_name),
-        ]
-        
-        server_exe = None
-        for p in possible_paths:
-            if os.path.exists(p):
-                server_exe = p
-                break
+        # 2. Поиск exe файла с учетом логики бэкендов
+        backend_name, server_exe = self._detect_server_executable()
         
         if not server_exe:
-            self.error_occurred.emit(f"Не найден исполняемый файл {exe_name}!")
+            self.error_occurred.emit("Не найден исполняемый файл llama-server (ни CUDA, ни Vulkan, ни CPU)!")
             return
+
+        self.logger.info(f"Selected AI Backend: {backend_name.upper()} ({server_exe})")
 
         # 3. Аргументы запуска
         cmd = [
@@ -87,27 +122,26 @@ class ServerManager(QObject):
             "--batch-size", str(batch_size)
         ]
         
+        # Для Vulkan тоже полезно передавать слои, если GPU поддерживает
         if gpu_layers != 0:
             cmd += ["--gpu-layers", str(gpu_layers)]
-
-        self.logger.info(f"Starting server: {' '.join(cmd)}")
 
         try:
             # Запускаем процесс
             self.process = subprocess.Popen(
                 cmd, 
-                stdout=subprocess.DEVNULL, # Можно перенаправить в файл
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
-            # Мы не ждем тут healthcheck, это сделает менеджер верхнего уровня
             self.server_started.emit()
             
         except Exception as e:
-            self.error_occurred.emit(f"Ошибка запуска: {e}")
+            self.error_occurred.emit(f"Ошибка запуска сервера: {e}")
 
     def stop_server(self):
         if self.process:
+            self.logger.info("Stopping server...")
             self.process.terminate()
             try:
                 self.process.wait(timeout=5)
