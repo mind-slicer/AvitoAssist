@@ -1,3 +1,10 @@
+# App specific
+backends/
+models/
+data/
+icons/
+results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

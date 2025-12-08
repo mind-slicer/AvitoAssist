@@ -1,0 +1,11 @@
+aiohttp
+beautifulsoup4
+PyQt6
+lxml
+selenium
+webdriver-manager
+huggingface_hub
+requests
+psutil
+urllib3>=2.5.0
+chromadb

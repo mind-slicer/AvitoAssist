@@ -1,0 +1,17 @@
+{
+  "sets": [
+    {
+      "name": "Основной набор",
+      "entries": [],
+      "created_at": "2025-12-06T13:37:02.141894",
+      "is_active": true
+    },
+    {
+      "name": "Набор 2",
+      "entries": [],
+      "created_at": "2025-12-06T13:45:10.332353",
+      "is_active": false
+    }
+  ],
+  "active_index": 0
+}
