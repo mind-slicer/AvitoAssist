@@ -87,6 +87,7 @@ class DriverManager:
         
         # Опции Chrome
         options = uc.ChromeOptions()
+        options.page_load_strategy = 'eager'
         
         # Базовые аргументы
         args = [
@@ -130,7 +131,7 @@ class DriverManager:
                 use_subprocess=True,
             )
             
-            self._driver.set_page_load_timeout(30)
+            self._driver.set_page_load_timeout(60)
             
             # Дополнительный размер окна для естественности
             self._driver.set_window_size(random.randint(1200, 1600), random.randint(800, 1000))
@@ -141,7 +142,7 @@ class DriverManager:
         except Exception as e:
             if self._driver:
                 try:
-                    self._driver.quit()
+                    self._driver.close()
                 except:
                     pass
                 self._driver = None
@@ -279,7 +280,7 @@ class DriverManager:
             if self.config.use_cookies:
                 self._save_cookies()
             try:
-                self._driver.quit()
+                self._driver.close()
             except:
                 pass
             self._driver = None

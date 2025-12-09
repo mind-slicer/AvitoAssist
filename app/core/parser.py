@@ -101,19 +101,13 @@ class PageLoader:
         except TimeoutException: return False
 
     @staticmethod
-    def _rotate_user_agent(driver):
-        new_ua = random.choice(USER_AGENTS)
-        try: driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": new_ua})
-        except: pass
-
-    @staticmethod
     def safe_get(
         driver,
         url: str,
         stop_check: Callable[[], bool] = None,
         on_request: Callable[[], None] = None,
         driver_manager=None,
-        rotate_ua_for_avito: bool = True,
+        rotate_ua_for_avito: bool = False,
         ban_strategy=None,
     ) -> bool:
         max_retries = 2
@@ -122,11 +116,6 @@ class PageLoader:
         for attempt in range(max_retries + 1):
             if stop_check and stop_check():
                 return False
-
-            is_avito = "avito.ru" in url
-
-            if (not is_avito) or (is_avito and rotate_ua_for_avito):
-                PageLoader._rotate_user_agent(driver)
 
             if driver_manager and hasattr(driver_manager, 'rate_limit_delay'):
                 driver_manager.rate_limit_delay(stop_check=stop_check)
@@ -140,7 +129,6 @@ class PageLoader:
                 driver.get(url)
 
                 title = driver.title.lower()
-
                 if "доступ ограничен" in title or "проблема с ip" in title:
                     logger.warning("SOFT BAN DETECTED (Page Title)")
 
@@ -153,13 +141,17 @@ class PageLoader:
                         time.sleep(20)
                         raise WebDriverException("Soft Ban")
                     
-                if PageLoader.wait_for_load(driver, timeout=8):
+                if PageLoader.wait_for_load(driver, timeout=10):
                     logger.dev(f"Page loaded in {time.time() - t_start:.2f}s")
                     return True
             
             except WebDriverException as e:
                 if "Soft Ban" in str(e):
                     continue
+                
+                if "timed out receiving message from renderer" in str(e).lower():
+                    logger.dev("Renderer timeout (ignored due to eager strategy)")
+                    return True
 
                 logger.dev(f"Load Error: {e}", level="ERROR")
  
