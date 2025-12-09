@@ -65,10 +65,21 @@ class ProgressAndLogsPanel(QWidget):
     def _connect_logger(self):
         # Подключаем сигнал от синглтона LogManager к нашему виджету
         logger.ui_log_signal.connect(self.main_log_widget.add_log)
+    
+    def set_parser_mode(self, mode: str):
+        if mode == "primary":
+            self.parser_bar.setMinimum(0)
+            self.parser_bar.setMaximum(0)
+        else:
+            self.parser_bar.setMinimum(0)
+            self.parser_bar.setMaximum(100)
+            self.parser_bar.setValue(0)
+
+    def reset_parser_progress(self):
+        self.parser_bar.setMinimum(0)
+        self.parser_bar.setMaximum(100)
+        self.parser_bar.setValue(100)
         
-    # --- Методы совместимости (чтобы не переписывать ВЕСЬ код сразу) ---
-    # Мы создадим property, которые будут имитировать старые объекты parser_log и ai_log,
-    # но на самом деле перенаправлять всё в новый logger.
     
     @property
     def parser_log(self):

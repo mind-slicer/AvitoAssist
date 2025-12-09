@@ -280,17 +280,24 @@ class MainWindow(QWidget):
     def _load_queue_to_ui(self, index: int):
         self.queue_manager.set_current_index(index)
         state = self.queue_manager.get_state(index)
-        
+
         self.search_widget.set_search_tags(state.get("search_tags", []))
         self.search_widget.set_ignore_tags(state.get("ignore_tags", []))
-        self.search_widget.set_forced_categories(state.get("forced_categories", []))
+
+        forced_cats = state.get("forced_categories", [])
+        if forced_cats and not self.search_widget.cached_scanned_categories:
+            forced_cats = []
+            state["forced_categories"] = []
+
+        self.search_widget.set_forced_categories(forced_cats)
+
         self.controls_widget.set_parameters(state)
-        self._update_cost_calculation() # Обновляем расчет при загрузке
-        
+        self._update_cost_calculation()
+
         is_enabled = state.get("queue_enabled", True)
         if hasattr(self.controls_widget, 'queue_manager_widget'):
             self.controls_widget.queue_manager_widget.set_queue_checked(index, is_enabled)
-            
+
         logger.info(f"Загружена очередь #{index + 1}...")
 
     def _on_queue_changed(self, new_index: int):
@@ -334,6 +341,7 @@ class MainWindow(QWidget):
         
         # Берем режим поиска из первой активной очереди (или текущей, для UI)
         self.current_search_mode = active_configs[0].get("search_mode", "full")
+        self.progress_panel.set_parser_mode(self.current_search_mode)
         self.cnt_parser = 0
         self.cnt_neuro = 0
         
@@ -494,10 +502,8 @@ class MainWindow(QWidget):
         if not self.controller.queue_state.is_sequence_running:
             self.controls_widget.set_ui_locked(False)
             self.is_sequence_running = False
-            self.progress_panel.parser_bar.setValue(100)
-
-        self.progress_panel.parser_bar.setValue(100)
-        logger.success("Парсинг завершен...")
+            self.progress_panel.reset_parser_progress()
+            logger.success("Парсинг завершен...")
 
     def _create_new_results_file(self):
         timestamp = time.strftime('%Y%m%d_%H%M%S')
@@ -519,7 +525,7 @@ class MainWindow(QWidget):
             pass
 
     def _on_parser_started_logic(self):
-        self.progress_panel.parser_bar.setValue(0)
+        self.progress_panel.set_parser_mode(self.current_search_mode)
         self.progress_panel.ai_bar.setValue(0)
         
     def _on_queue_finished(self, results, idx, is_split):
