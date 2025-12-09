@@ -70,7 +70,7 @@ class ParserController(QObject):
         if not self.ai_manager:
             self.ai_manager = AIManager(memory_manager=self.memory_manager)
             self.ai_manager.progress_signal.connect(self._on_ai_text_progress)
-            self.ai_manager.progress_signal.connect(self.ai_progress_updated.emit)
+            self.ai_manager.ai_progress_value.connect(self.ai_progress_updated.emit)
             self.ai_manager.result_signal.connect(self.ai_result_ready.emit)
             self.ai_manager.finished_signal.connect(self._on_ai_batch_finished)
             self.ai_manager.all_finished_signal.connect(self._on_ai_all_finished)
@@ -125,6 +125,8 @@ class ParserController(QObject):
 
         logger.info(f"Очередь {queue_index + 1} из {self.queue_state.total_queues}...", token="queue_start")
         
+        self.progress_updated.emit(0)
+
         if not config.get('search_tags'):
             QTimer.singleShot(100, lambda: self._execute_queue(queue_index + 1))
             return
@@ -260,6 +262,7 @@ class ParserController(QObject):
 
     def _finish_sequence(self):
         self.queue_state.is_sequence_running = False
+        self.progress_updated.emit(100)
         self.sequence_finished.emit()
         self.ui_lock_requested.emit(False)
     

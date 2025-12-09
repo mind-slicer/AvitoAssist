@@ -2,7 +2,6 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel, QProgressB
 from PyQt6.QtCore import Qt
 
 from app.ui.styles import Components, Palette, Spacing
-# Импортируем наш новый виджет и менеджер логов
 from app.ui.widgets.smart_log_widget import SmartLogWidget
 from app.core.log_manager import logger
 
@@ -17,7 +16,7 @@ class ProgressAndLogsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.SM)
 
-        # --- Прогресс бары (оставляем как было, но чуть причешем) ---
+        # --- Прогресс бары ---
         bars_container = QWidget()
         bars_layout = QVBoxLayout(bars_container)
         bars_layout.setContentsMargins(0, 0, 0, 0)
@@ -26,8 +25,11 @@ class ProgressAndLogsPanel(QWidget):
         # Парсер бар
         self.parser_label = QLabel("Прогресс поиска:")
         self.parser_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
+        
         self.parser_bar = QProgressBar()
+        # По умолчанию обычный режим, скрыт или на нуле
         self.parser_bar.setRange(0, 100)
+        self.parser_bar.setValue(0)
         self.parser_bar.setStyleSheet(Components.progress_bar(Palette.PRIMARY))
         self.parser_bar.setFixedHeight(6)
         self.parser_bar.setTextVisible(False)
@@ -35,6 +37,7 @@ class ProgressAndLogsPanel(QWidget):
         # AI бар
         self.ai_label = QLabel("Прогресс нейросети:")
         self.ai_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
+        
         self.ai_bar = QProgressBar()
         self.ai_bar.setRange(0, 100)
         self.ai_bar.setStyleSheet(Components.progress_bar(Palette.SECONDARY))
@@ -52,34 +55,34 @@ class ProgressAndLogsPanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(Components.panel())
         
-        # 1. Основной лог (вместо parser_log и ai_log теперь единый поток)
         self.main_log_widget = SmartLogWidget()
-        
-        # 2. Технический лог (можно оставить пустым или выводить туда Traceback)
-        # Пока сделаем единый лог, так как концепция "умного логгера" объединяет потоки
-        
         self.tabs.addTab(self.main_log_widget, "Журнал событий")
         
         layout.addWidget(self.tabs)
 
     def _connect_logger(self):
-        # Подключаем сигнал от синглтона LogManager к нашему виджету
         logger.ui_log_signal.connect(self.main_log_widget.add_log)
     
     def set_parser_mode(self, mode: str):
+        self.parser_bar.reset() # Сброс внутренних состояний Qt
+        
         if mode == "primary":
-            self.parser_bar.setMinimum(0)
-            self.parser_bar.setMaximum(0)
+            # Бесконечный режим: min=0, max=0 запускает анимацию Marquee
+            self.parser_bar.setRange(0, 0)
+            self.parser_bar.setTextVisible(False)
         else:
-            self.parser_bar.setMinimum(0)
-            self.parser_bar.setMaximum(100)
+            # Обычный режим: 0-100%
+            self.parser_bar.setRange(0, 100)
             self.parser_bar.setValue(0)
+            self.parser_bar.setTextVisible(False) # Или True, если хочешь видеть %
 
     def reset_parser_progress(self):
-        self.parser_bar.setMinimum(0)
-        self.parser_bar.setMaximum(100)
+        self.parser_bar.setRange(0, 100)
+        self.parser_bar.setValue(0)
+
+    def set_finished_state(self):
+        self.parser_bar.setRange(0, 100)
         self.parser_bar.setValue(100)
-        
     
     @property
     def parser_log(self):
@@ -89,14 +92,12 @@ class ProgressAndLogsPanel(QWidget):
     def ai_log(self):
         return _LegacyLogAdapter("AI")
 
-# Адаптер для плавного перехода. 
-# Он позволяет старому коду (self.progress_panel.parser_log.info(...)) работать через новый logger
 class _LegacyLogAdapter:
     def __init__(self, prefix):
         self.prefix = prefix
     
     def info(self, msg):
-        logger.info(msg) # Префикс можно добавить в текст, если хочется
+        logger.info(msg)
         
     def success(self, msg):
         logger.success(msg)
@@ -108,7 +109,6 @@ class _LegacyLogAdapter:
         logger.error(msg)
         
     def progress(self, msg):
-        # Старый код не передает токен, поэтому генерируем общий
         logger.progress(msg, token=f"{self.prefix}_general_progress")
         
     def ai_status(self, msg):

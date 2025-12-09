@@ -194,6 +194,7 @@ class MainWindow(QWidget):
         self.controller.progress_updated.connect(self._on_parser_progress)
         self.controller.queue_finished.connect(self._on_queue_finished)
         self.controller.parser_finished.connect(self._on_parsing_finished)
+        self.controller.sequence_finished.connect(self._on_sequence_finished_ui)
         self.controller.error_occurred.connect(lambda msg: self.progress_panel.parser_log.error(msg))
         self.controller.ui_lock_requested.connect(self.controls_widget.set_ui_locked)
         self.controller.request_increment.connect(self._on_request_increment)
@@ -219,6 +220,12 @@ class MainWindow(QWidget):
         self.controls_widget.pause_neuronet_requested.connect(self._on_pause_neuronet_requested)
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
+
+    def _on_sequence_finished_ui(self):
+        logger.info("Последовательность полностью завершена.")
+        # Принудительно останавливаем любой бар (и primary, и обычный)
+        self.progress_panel.set_finished_state()
+        self.controls_widget.set_ui_locked(False)
 
     def _update_cost_calculation(self):
         category_count = self.search_widget.get_category_count()
@@ -381,7 +388,9 @@ class MainWindow(QWidget):
             if hasattr(self.controls_widget, 'queue_manager_widget'):
                 self.controls_widget.queue_manager_widget.set_current_queue(first_idx)
             self._load_queue_to_ui(first_idx)
-                
+
+        self.progress_panel.set_parser_mode(self.current_search_mode)
+
         self.controller.start_sequence(active_configs)
         logger.info(f"Запуск {len(active_configs)} очередей...")
 
@@ -405,10 +414,10 @@ class MainWindow(QWidget):
         QTimer.singleShot(2000, self._force_ui_reset)
 
     def _force_ui_reset(self):
-        """Гарантированно возвращает интерфейс в исходное состояние"""
         self.controls_widget.set_ui_locked(False)
         self.progress_panel.parser_bar.setValue(0)
-        # Возвращаем текст кнопке стоп (set_ui_locked это сделает, но для надежности)
+        self.progress_panel.reset_parser_progress() 
+        
         if hasattr(self.controls_widget, 'btn_stop'):
             self.controls_widget.stop_button.setText("Остановить")
 
@@ -466,7 +475,6 @@ class MainWindow(QWidget):
         
         if split_results:
             timestamp = time.strftime('%Y%m%d_%H%M%S')
-            # Получаем оригинальный номер очереди для имени файла, если есть
             q_num = config.get('original_index', idx) + 1
             filename = f"avito_search_q{q_num}_{timestamp}.json"
             target_file = os.path.join(RESULTS_DIR, filename)
@@ -502,7 +510,7 @@ class MainWindow(QWidget):
         if not self.controller.queue_state.is_sequence_running:
             self.controls_widget.set_ui_locked(False)
             self.is_sequence_running = False
-            self.progress_panel.reset_parser_progress()
+            self.progress_panel.set_finished_state()
             logger.success("Парсинг завершен...")
 
     def _create_new_results_file(self):
@@ -551,18 +559,20 @@ class MainWindow(QWidget):
             self._load_queue_to_ui(original_next_idx)
 
     def _on_parser_progress(self, val: int):
-        # Принудительно ограничиваем от 0 до 100
         clamped_val = max(0, min(100, val))
         
-        # Обновляем виджет прогресса
-        self.progress_panel.parser_bar.setValue(clamped_val)
+        # Если режим не primary (там Value не имеет значения), обновляем значение
+        if self.current_search_mode != "primary":
+            # Если вдруг диапазон сбился (например, равен 0-0), восстанавливаем 0-100
+            if self.progress_panel.parser_bar.maximum() == 0:
+                 self.progress_panel.parser_bar.setRange(0, 100)
+            
+            self.progress_panel.parser_bar.setValue(clamped_val)
         
-        # Обновляем текстовый статус через токен
+        # Логирование оставляем как было...
         if clamped_val > 0 and clamped_val < 100:
-            # Используем глобальный logger, а не устаревший адаптер
             logger.progress(f"Выполнение: {clamped_val}%", token="parser_global_progress")
         elif clamped_val == 100:
-            # Финализируем строку лога
             logger.success("Сбор данных завершен (100%)")
              
         self.last_progress_value = clamped_val

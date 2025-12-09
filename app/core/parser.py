@@ -1069,7 +1069,16 @@ class AvitoParser(QObject):
             items_added_on_page = 0
             for item in page_items:
                 if self.is_stop_requested(): break
-                if max_total_items and len(results_list) >= max_total_items: return
+                if max_total_items and len(results_list) >= max_total_items:
+                    if total_expected_items:
+                         items_done_in_current = max_total_items
+                         items_done_in_previous = current_task_index * max_total_items
+                         total_done = items_done_in_previous + items_done_in_current
+                         p = int((total_done / total_expected_items) * 100)
+                         self.progress_value.emit(p)
+                    else:
+                         self.progress_value.emit(100)
+                    return
 
                 ad_id = str(item.get("id") or "").strip()
 
@@ -1106,6 +1115,18 @@ class AvitoParser(QObject):
                     seen_ids.add(ad_id)
                     results_list.append(item)
                     items_added_on_page += 1
+
+                    if total_expected_items and total_expected_items > 0:
+                        items_done_in_current = len(results_list)
+                        items_done_in_previous = current_task_index * max_total_items
+                        total_done = items_done_in_previous + items_done_in_current
+                        
+                        p = min(100, int((total_done / total_expected_items) * 100))
+                        self.progress_value.emit(p)
+                        
+                    elif max_total_items and max_total_items > 0:
+                        p = min(100, int((len(results_list) / max_total_items) * 100))
+                        self.progress_value.emit(p)
                     
                 if max_items_per_page and items_added_on_page >= max_items_per_page: break
 
@@ -1114,9 +1135,6 @@ class AvitoParser(QObject):
 
             if not self._has_next_page(page): break
             page += 1
-
-        self.progress_value.emit(100)
-        logger.dev("Прогресс: 100% (завершено)")
 
     def _deep_dive_get_details(self, url):
         try:

@@ -4,6 +4,7 @@ PyQt6
 lxml
 selenium
 webdriver-manager
+undetected-chromedriver
 huggingface_hub
 requests
 psutil

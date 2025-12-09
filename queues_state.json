@@ -1,14 +1,14 @@
 {
   "0": {
     "search_tags": [
-      "видеокарта"
+      "кулер"
     ],
     "ignore_tags": [],
     "min_price": 0,
     "max_price": 0,
     "search_mode": "primary",
     "ai_criteria": "",
-    "include_ai": false,
+    "include_ai": true,
     "store_in_memory": false,
     "max_pages": 0,
     "max_items": 10,
@@ -25,7 +25,7 @@
     "allow_rewrite_duplicates": false,
     "split_results": false,
     "merge_with_table": null,
-    "context_table": "E:\\wip2\\results\\avito_search_20251209_175952.json",
+    "context_table": "E:\\wip2\\results\\avito_search_20251209_191551.json",
     "original_index": 0,
     "debug_mode": false,
     "ai_debug_mode": false,
