@@ -54,9 +54,9 @@ class ResultsAreaWidget(QGroupBox):
         right_layout.setSpacing(Spacing.SM)
 
         # Header Area
-        header_widget = QWidget()
-        header_widget.setStyleSheet(Components.section_title())
-        header_layout = QHBoxLayout(header_widget)
+        self.header_widget = QWidget()
+        self.header_widget.setStyleSheet(Components.section_title())
+        header_layout = QHBoxLayout(self.header_widget)
         header_layout.setContentsMargins(0, Spacing.SM, 0, Spacing.SM)
         header_layout.setSpacing(Spacing.LG)
         
@@ -114,7 +114,6 @@ class ResultsAreaWidget(QGroupBox):
         self.search_mode.setFixedWidth(140)
         self.search_mode.setMaximumHeight(30)
         self.search_mode.setStyleSheet(Components.styled_combobox())
-        # ВАЖНО: Сигнал смены режима!
         self.search_mode.currentTextChanged.connect(lambda: self._apply_search(self.searchedit.text()))
 
         search_layout.addWidget(self.searchedit)
@@ -138,8 +137,10 @@ class ResultsAreaWidget(QGroupBox):
         self.right_stack.addWidget(self.results_table)
         self.right_stack.setCurrentWidget(self.empty_label)
 
-        right_layout.addWidget(header_widget, 0)
+        right_layout.addWidget(self.header_widget, 0)
         right_layout.addWidget(table_container, 1)
+
+        self.header_widget.setVisible(False)
 
         content_layout.addWidget(left_widget, 0)
         content_layout.addWidget(right_widget, 1)
@@ -150,27 +151,37 @@ class ResultsAreaWidget(QGroupBox):
         # Connections
         self.mini_browser.file_loaded.connect(self.file_loaded)
         self.mini_browser.file_deleted.connect(self.file_deleted)
-        # self.results_table.item_deleted.connect(self.table_item_deleted)
+        self.results_table.item_deleted.connect(self.table_item_deleted)
+        self.results_table.item_favorited.connect(self._on_item_favorited)
+
+    def _on_item_favorited(self, item_id: str, is_favorite: bool):
+        # TODO: Реализовать сохранение в файл
+        # Пока просто логируем
+        action = "добавлен в" if is_favorite else "удален из"
+        print(f"Элемент {item_id} {action} избранное")
 
     def clear_table(self):
-        self.results_table.model.clear()
+        self.results_table.source_model.clear()
         self.update_header("", "", 0)
         self.right_stack.setCurrentWidget(self.empty_label)
+        self.header_widget.setVisible(False)
 
     def load_full_history(self, items: list[dict]):
         self.clear_table()
         if not items:
             self.right_stack.setCurrentWidget(self.empty_label)
+            self.header_widget.setVisible(False)
             return
-            
+
         self.right_stack.setCurrentWidget(self.results_table)
+        self.header_widget.setVisible(True)
         self.results_table.add_items(items)
 
     def _apply_search(self, text: str):
         query = text.strip()
         mode = self.search_mode.currentText()
         
-        col_idx = 3 # Default Title
+        col_idx = 3
         if mode == "По заголовку":
             col_idx = 3
         elif mode == "По цене":
@@ -185,7 +196,9 @@ class ResultsAreaWidget(QGroupBox):
             self.table_title_label.setText("")
             self.table_date_label.setText("")
             self.table_count_label.setText("")
+            self.header_widget.setVisible(False)
         else:
             self.table_title_label.setText(table_name)
             self.table_date_label.setText(full_date)
             self.table_count_label.setText(f"{count} объявлений")
+            self.header_widget.setVisible(True)

@@ -1,6 +1,6 @@
 import json
 from PyQt6.QtWidgets import QTableView, QHeaderView, QTableWidgetItem
-from PyQt6.QtCore import QSortFilterProxyModel, Qt, QRegularExpression, QUrl
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl
 from PyQt6.QtGui import QColor, QFont, QDesktopServices
 from datetime import datetime, timedelta
 from app.ui.models.results_model import ResultsModel
@@ -108,21 +108,18 @@ class VerdictItem(QTableWidgetItem):
         try:
             clean_json = self.raw_data.strip()
 
-            # ИСПРАВЛЕНО: Корректная обработка markdown-блоков
             if clean_json.startswith("```json") and clean_json.endswith("```"):
                 clean_json = clean_json[7:-3].strip()
             elif clean_json.startswith("```") and clean_json.endswith("```"):
                 clean_json = clean_json[3:-3].strip()
             elif "```json" in clean_json and "```" in clean_json:
-                # Обработка случая, когда блок находится в середине текста
                 parts = clean_json.split("```json")
                 if len(parts) > 1:
                     inner = parts[1].split("```")[0]
                     clean_json = inner.strip()
             elif "```" in clean_json:
-                # Обработка обычного markdown-блока
                 parts = clean_json.split("```")
-                if len(parts) > 2:  # Есть открывающий и закрывающий маркеры
+                if len(parts) > 2:
                     clean_json = parts[1].strip()
 
             data = json.loads(clean_json)
@@ -226,6 +223,9 @@ class VerdictItem(QTableWidgetItem):
         return super().data(role)
 
 class ResultsTable(QTableView):
+    item_favorited = pyqtSignal(str, bool)
+    item_deleted = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.source_model = ResultsModel()
@@ -241,30 +241,28 @@ class ResultsTable(QTableView):
         
         # --- Делегаты ---
         self.ai_delegate = AIDelegate()
-        self.actions_delegate = ActionsDelegate(self) # передаем self как parent
+        self.actions_delegate = ActionsDelegate(self)
         
         self.setItemDelegateForColumn(7, self.ai_delegate) # AI (col 7)
         self.setItemDelegateForColumn(0, self.actions_delegate) # Actions (col 0)
 
-        # --- Стили ---
-        self.setShowGrid(True) # Включаем сетку (разделители) - ИСПРАВЛЕНИЕ 2
+        self.setShowGrid(True)
         self.setGridStyle(Qt.PenStyle.SolidLine)
         
-        # --- Ширина колонок (ИСПРАВЛЕНИЕ 7) ---
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         
-        # 0: Actions (fixed, small)
+        # 0: Actions
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(0, 60)
+        self.setColumnWidth(0, 70)
         
-        # 1: ID (fixed)
+        # 1: ID
         self.setColumnWidth(1, 100)
 
-        # 2: Price (fixed)
+        # 2: Price
         self.setColumnWidth(2, 90)
 
-        # 3: Title (stretch - основное место)
+        # 3: Title
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self.setColumnWidth(3, 400)
 
@@ -274,62 +272,117 @@ class ResultsTable(QTableView):
         # 5: Date
         self.setColumnWidth(5, 100)
 
-        # 6: Desc (Interactive - можно растягивать)
+        # 6: Desc
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch) 
 
         # 7: AI
         header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(7, 140)
 
-        # Обработка двойного клика (ИСПРАВЛЕНИЕ 4 и 7)
         self.doubleClicked.connect(self.on_double_click)
 
     def filter_data(self, text, column_index):
-        # 1. Устанавливаем наш кастомный тип фильтра
         self.proxy_model.setFilterType(column_index)
-        
-        # 2. Устанавливаем текст (это запустит filterAcceptsRow)
         self.proxy_model.setFilterRegularExpression(text)
 
-    def delete_row_requested(self, row):
-        """Вызывается из делегата"""
-        item = self.model.get_item(row)
+    def toggle_favorite_requested(self, proxy_row):
+        proxy_index = self.proxy_model.index(proxy_row, 0)
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        source_row = source_index.row()
+        
+        item = self.source_model.get_item(source_row)
         if item:
-            # Тут можно эмитить сигнал наружу, чтобы удалить из базы/файла
-            # self.item_deleted.emit(item['id']) 
-            self.model.remove_row(row)
+            item_id = item.get('id', '')
+            current_favorite = item.get('is_favorite', False)
+            new_favorite = not current_favorite
+            
+            item['is_favorite'] = new_favorite
+            
+            if item_id:
+                self.item_favorited.emit(item_id, new_favorite)
+            
+            self.viewport().update()
+
+    def delete_row_requested(self, proxy_row):
+        proxy_index = self.proxy_model.index(proxy_row, 0)
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        source_row = source_index.row()
+
+        item = self.source_model.get_item(source_row)
+        if item:
+            item_id = item.get('id', '')
+            if item_id:
+                self.item_deleted.emit(item_id)
+
+            self.source_model.remove_row(source_row)
+
+            if hasattr(self.actions_delegate, 'hovered_row'):
+                self.actions_delegate.hovered_row = -1
+                self.actions_delegate.hovered_side = None
+                self.actions_delegate.pressed_row = -1
+                self.actions_delegate.pressed_side = None
+
+            self.viewport().update()
 
     def on_double_click(self, index):
-        row = index.row()
         col = index.column()
-        item = self.model.get_item(row)
-        
-        # Клик по заголовку (col 3) -> Открыть ссылку
+
+        source_index = self.proxy_model.mapToSource(index)
+        source_row = source_index.row()
+
+        item = self.source_model.get_item(source_row)
+        if not item:
+            return
+
         if col == 3:
             link = item.get('link')
             if link:
                 QDesktopServices.openUrl(QUrl(link))
-        
-        # Клик по описанию (col 6) -> Показать полное (можно через QMessageBox)
-        if col == 6:
+
+        elif col == 6:
             from PyQt6.QtWidgets import QMessageBox
             desc = item.get('description', 'Нет описания')
             QMessageBox.information(self, "Описание", desc)
 
     def mouseMoveEvent(self, event):
-        # Меняем курсор на руку над ссылкой (колонка 3)
         index = self.indexAt(event.pos())
+
+        if hasattr(self.actions_delegate, 'hovered_row'):
+            old_row = self.actions_delegate.hovered_row
+            old_side = self.actions_delegate.hovered_side
+
+            if index.isValid() and index.column() == 0:
+                cell_rect = self.visualRect(index)
+                relative_x = event.pos().x() - cell_rect.x()
+
+                self.actions_delegate.hovered_row = index.row()
+                if relative_x > cell_rect.width() / 2:
+                    self.actions_delegate.hovered_side = 'trash'
+                else:
+                    self.actions_delegate.hovered_side = 'star'
+            else:
+                self.actions_delegate.hovered_row = -1
+                self.actions_delegate.hovered_side = None
+
+            if old_row != self.actions_delegate.hovered_row or old_side != self.actions_delegate.hovered_side:
+                self.viewport().update()
+
         if index.isValid() and index.column() == 3:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
+
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if hasattr(self.actions_delegate, 'hovered_row'):
+            self.actions_delegate.hovered_row = -1
+            self.actions_delegate.hovered_side = None
+            self.viewport().update()
+        super().leaveEvent(event)
 
     def add_items(self, items):
         self.source_model.add_items(items)
-        # Автоскролл вниз, если нужно
-        if self.model.rowCount() > 0:
-            self.scrollToBottom()
 
     def update_ai_column(self, row_idx, ai_json):
         self.model.update_ai_verdict(row_idx, ai_json)
