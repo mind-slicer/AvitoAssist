@@ -1,3 +1,4 @@
+import math
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
                              QLabel, QGroupBox, QSpinBox, QPlainTextEdit, QGridLayout, QSizePolicy)
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -105,10 +106,11 @@ class ControlsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._suppress_param_signals = False
+        self._current_tags_count = 1  # Default to 1 category
         self._init_ui()
         self._connect_signals()
+        self._update_pages_info()
 
-    # Единый стиль для всех тумблеров
     def _update_toggle_label(self, label_widget: QLabel, is_checked: bool):
         text = "Вкл" if is_checked else "Выкл"
         weight = Typography.WEIGHT_BOLD if is_checked else Typography.WEIGHT_NORMAL
@@ -269,10 +271,10 @@ class ControlsWidget(QWidget):
         unified_layout.addWidget(self.queue_manager_widget, stretch=2)
         self.queue_add_btn.clicked.connect(self.queue_manager_widget.add_queue)
         self.queue_remove_btn.clicked.connect(self.queue_manager_widget.remove_queue)
-        self.queue_add_btn.clicked.connect(self._update_queue_buttons)
-        self.queue_remove_btn.clicked.connect(self._update_queue_buttons)
-        self.queue_manager_widget.list_widget.model().rowsInserted.connect(self._update_queue_buttons)
-        self.queue_manager_widget.list_widget.model().rowsRemoved.connect(self._update_queue_buttons)
+        self.queue_add_btn.clicked.connect(self._update_queue_ui_state)
+        self.queue_remove_btn.clicked.connect(self._update_queue_ui_state)
+        self.queue_manager_widget.list_widget.model().rowsInserted.connect(self._update_queue_ui_state)
+        self.queue_manager_widget.list_widget.model().rowsRemoved.connect(self._update_queue_ui_state)
         
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
@@ -302,6 +304,12 @@ class ControlsWidget(QWidget):
         layout.addWidget(unified_card, stretch=1)
         self._update_queue_buttons()
         return layout
+
+    def _update_queue_ui_state(self):
+        """Обновляет состояние кнопок очереди"""
+        if not hasattr(self, 'queue_manager_widget'): return
+        queue_count = self.queue_manager_widget.list_widget.count()
+        self.queue_remove_btn.setEnabled(queue_count > 1)
 
     def _update_queue_buttons(self):
         if not hasattr(self, 'queue_manager_widget'): return
@@ -407,23 +415,43 @@ class ControlsWidget(QWidget):
         limits_card, limits_layout = self._create_param_card("ЛИМИТЫ")
         grid = QGridLayout()
         grid.setSpacing(Spacing.SM)
-        self.max_pages_input = QSpinBox()
-        self.max_pages_input.setMinimumWidth(80)
-        self.max_pages_input.setRange(0, 100)
-        self.max_pages_input.setSpecialValueText("Все")
-        self.max_pages_input.setStyleSheet(Components.text_input())
-        grid.addWidget(ParamInput("Страниц", self.max_pages_input), 0, 0)
         self.max_items_input = QSpinBox()
         self.max_items_input.setMinimumWidth(80)
         self.max_items_input.setRange(0, 99_999)
         self.max_items_input.setSpecialValueText("∞")
         self.max_items_input.setSingleStep(10)
         self.max_items_input.setStyleSheet(Components.text_input())
-        grid.addWidget(ParamInput("Объявлений", self.max_items_input), 0, 1)
+        self.max_items_input.valueChanged.connect(self._update_pages_info)
+        grid.addWidget(ParamInput("Объявлений", self.max_items_input), 0, 0)
+        
+        # Информационный лейбл с формулой
+        self.pages_info_lbl = QLabel()
+        self.pages_info_lbl.setStyleSheet(Typography.style(
+            family=Typography.UI,
+            size=Typography.SIZE_SMALL,
+            color=Palette.TEXT_MUTED
+        ))
+        self.pages_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Оборачиваем лейбл в контейнер для выравнивания
+        info_container = QWidget()
+        info_layout = QVBoxLayout(info_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(4)
+        lbl_caption = QLabel("Расход:")
+        lbl_caption.setStyleSheet(Typography.style(family=Typography.UI, size=Typography.SIZE_SMALL, color=Palette.TEXT_SECONDARY))
+        info_layout.addWidget(lbl_caption)
+        info_layout.addWidget(self.pages_info_lbl)
+
+        grid.addWidget(info_container, 0, 1)
+
+        # ---------------------------------------------------------------------------------
+
         grid.addWidget(self._create_region_toggle(), 1, 0)
         grid.addWidget(self._create_defects_toggle(), 1, 1)
         limits_layout.addLayout(grid)
         layout.addWidget(limits_card)
+
         sort_card, sort_layout = self._create_param_card("СОРТИРОВКА")
         self.sort_combo = NoScrollComboBox()
         self.sort_combo.setMinimumWidth(80)
@@ -449,6 +477,45 @@ class ControlsWidget(QWidget):
         neuro_layout.addLayout(neuro_grid)
         layout.addWidget(neuro_card, stretch=1)
         return layout
+
+    def update_category_count(self, count: int):
+        """Обновляет количество категорий для расчета расхода"""
+        self._current_tags_count = max(1, count)
+        self._update_pages_info()
+
+    def _update_pages_info(self):
+        if not hasattr(self, 'max_items_input'):
+            return
+        items = self.max_items_input.value()
+        categories = self._current_tags_count if self._current_tags_count >= 1 else 1
+
+        if hasattr(self, '_parent') and hasattr(self._parent, 'search_widget'):
+            if not self._parent.search_widget.cached_scanned_categories and not self._parent.search_widget.cached_forced_categories:
+                categories = 1
+
+        if items == 0:
+            # Бесконечный режим
+            items_per_cat = "∞"
+            pages_per_cat = 100
+            total_items = "∞"
+        else:
+            items_per_cat = items
+            pages_per_cat = math.ceil(items / 50)
+            total_items = categories * items
+
+        # Новое форматирование для отображения расхода
+        text = f"""
+        <html>
+        <head/>
+        <body>
+        <p align="center" style="margin:0px;"><b>{categories}</b> кат. ✕ <b>{items_per_cat}</b> об.</p>
+        <p align="center" style="margin:0px;"><b>{pages_per_cat}</b> стр. <span style="font-size:10px; color:{Palette.TEXT_MUTED};">(по 50 об.)</span></p>
+        <p align="center" style="margin:4px 0px 0px 0px; font-size:12px; color:{Palette.PRIMARY};">Суммарно: <b>{total_items}</b> об.</p>
+        </body>
+        </html>
+        """
+        self.pages_info_lbl.setText(text)
+        self.pages_info_lbl.setToolTip(f"Будет проверено до {categories} категорий по {items_per_cat} объявлений в каждой...")
 
     def _create_rag_toggle(self) -> QWidget:
         container = QWidget()
@@ -527,7 +594,6 @@ class ControlsWidget(QWidget):
         self.search_all_regions_checkbox.setFixedSize(55, 30)
         self.region_status_label = QLabel("Москва")
         self._update_toggle_label(self.region_status_label, False)
-        # Переопределяем текст для региона
         self.region_status_label.setText("Москва")
         
         self.search_all_regions_checkbox.stateChanged.connect(
@@ -600,7 +666,6 @@ class ControlsWidget(QWidget):
         self.pause_neuronet_btn.clicked.connect(self.pause_neuronet_requested.emit)
         self.min_price_input.valueChanged.connect(lambda _: self._emit_parameters_changed())
         self.max_price_input.valueChanged.connect(lambda _: self._emit_parameters_changed())
-        self.max_pages_input.valueChanged.connect(lambda _: self._emit_parameters_changed())
         self.max_items_input.valueChanged.connect(lambda _: self._emit_parameters_changed())
         self.search_all_regions_checkbox.stateChanged.connect(lambda _: self._emit_parameters_changed())
         self.filter_defects_sw.stateChanged.connect(lambda _: self._emit_parameters_changed())
@@ -647,7 +712,7 @@ class ControlsWidget(QWidget):
             "ai_criteria": self.ai_criteria_input.toPlainText(),
             "include_ai": self.include_ai_sw.isChecked(),
             "store_in_memory": self.store_memory_sw.isChecked(),
-            "max_pages": self.max_pages_input.value(),
+            "max_pages": 0,
             "max_items": self.max_items_input.value(),
             "all_regions": self.search_all_regions_checkbox.isChecked(),
             "filter_defects": self.filter_defects_sw.isChecked(),
@@ -666,7 +731,6 @@ class ControlsWidget(QWidget):
             self.ai_criteria_input.setPlainText(params.get("ai_criteria", ""))
             self.include_ai_sw.setChecked(params.get("include_ai", True))
             self.store_memory_sw.setChecked(params.get("store_in_memory", False))
-            self.max_pages_input.setValue(params.get("max_pages", 0))
             self.max_items_input.setValue(params.get("max_items", 0))
             self.search_all_regions_checkbox.setChecked(params.get("all_regions", False))
             self.filter_defects_sw.setChecked(params.get("filter_defects", False))
@@ -718,7 +782,6 @@ class ControlsWidget(QWidget):
         self.stop_button.setEnabled(locked)
         self.min_price_input.setEnabled(not locked)
         self.max_price_input.setEnabled(not locked)
-        self.max_pages_input.setEnabled(not locked)
         self.max_items_input.setEnabled(not locked)
         self.search_all_regions_checkbox.setEnabled(not locked)
         self.filter_defects_sw.setEnabled(not locked)

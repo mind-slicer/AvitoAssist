@@ -30,6 +30,7 @@ class MainWindow(QWidget):
 
         self.memory_manager = MemoryManager()
         self.controller = ParserController(memory_manager=self.memory_manager)
+        self.controller.set_progress_callback(self._on_parser_progress)
         self.controller.ai_result_ready.connect(self._on_ai_result_with_memory)
         
         self.queue_manager = QueueStateManager()
@@ -202,9 +203,11 @@ class MainWindow(QWidget):
         self.controller.ai_all_finished.connect(self._on_ai_all_finished)
         self.search_widget.scan_categories_requested.connect(lambda tags: self.controller.scan_categories(tags))
         self.search_widget.categories_selected.connect(self._on_categories_selected)
+        self.search_widget.categories_changed.connect(self._update_cost_calculation)
         self.controls_widget.start_requested.connect(self._on_start_search)
         self.controls_widget.stop_requested.connect(self._on_stop_search)
         self.controls_widget.parameters_changed.connect(self._on_parameters_changed)
+        self.controls_widget.parameters_changed.connect(self._update_cost_calculation)
         if hasattr(self.controls_widget, 'queue_manager_widget'):
             self.controls_widget.queue_manager_widget.queue_changed.connect(self._on_queue_changed)
             self.controls_widget.queue_manager_widget.queue_removed.connect(self.queue_manager.delete_queue)
@@ -216,6 +219,11 @@ class MainWindow(QWidget):
         self.controls_widget.pause_neuronet_requested.connect(self._on_pause_neuronet_requested)
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
+
+    def _update_cost_calculation(self):
+        category_count = self.search_widget.get_category_count()
+        category_count = max(1, category_count)
+        self.controls_widget.update_category_count(category_count)
 
     def _on_table_closed(self):
         logger.info("Таблица закрыта пользователем...")
@@ -277,6 +285,7 @@ class MainWindow(QWidget):
         self.search_widget.set_ignore_tags(state.get("ignore_tags", []))
         self.search_widget.set_forced_categories(state.get("forced_categories", []))
         self.controls_widget.set_parameters(state)
+        self._update_cost_calculation() # Обновляем расчет при загрузке
         
         is_enabled = state.get("queue_enabled", True)
         if hasattr(self.controls_widget, 'queue_manager_widget'):
@@ -397,8 +406,6 @@ class MainWindow(QWidget):
 
     def _on_parameters_changed(self, params: dict):
         merge_target = params.get("merge_with_table")
-        if hasattr(self.results_area, "mini_browser"):
-            self.results_area.mini_browser.set_merge_target(merge_target)
         
         is_split = params.get("split_results", False)
         has_context = bool(merge_target and not is_split)
@@ -470,8 +477,6 @@ class MainWindow(QWidget):
             self.current_results = merged
             
             self._save_results_to_file()
-            # q_num = config.get('original_index', idx) + 1
-            # self.progress_panel.parser_log.success(f"Очередь #{q_num}: Добавлено {added}, Обновлено {updated}")
         
         if not split_results:
              self.results_area.load_full_history(self.current_results)
@@ -490,6 +495,9 @@ class MainWindow(QWidget):
             self.controls_widget.set_ui_locked(False)
             self.is_sequence_running = False
             self.progress_panel.parser_bar.setValue(100)
+
+        self.progress_panel.parser_bar.setValue(100)
+        logger.success("Парсинг завершен...")
 
     def _create_new_results_file(self):
         timestamp = time.strftime('%Y%m%d_%H%M%S')
@@ -537,7 +545,21 @@ class MainWindow(QWidget):
             self._load_queue_to_ui(original_next_idx)
 
     def _on_parser_progress(self, val: int):
-        self.progress_panel.parser_bar.setValue(val)
+        # Принудительно ограничиваем от 0 до 100
+        clamped_val = max(0, min(100, val))
+        
+        # Обновляем виджет прогресса
+        self.progress_panel.parser_bar.setValue(clamped_val)
+        
+        # Обновляем текстовый статус через токен
+        if clamped_val > 0 and clamped_val < 100:
+            # Используем глобальный logger, а не устаревший адаптер
+            logger.progress(f"Выполнение: {clamped_val}%", token="parser_global_progress")
+        elif clamped_val == 100:
+            # Финализируем строку лога
+            logger.success("Сбор данных завершен (100%)")
+             
+        self.last_progress_value = clamped_val
 
     def _check_ai_availability(self):
         self.controller.ensure_ai_manager()

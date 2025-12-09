@@ -12,12 +12,10 @@ CHROME_OPTIONS_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
     "--exclude-switches=enable-automation",
     "--disable-browser-side-navigation",
-    
     "--disable-extensions",
     "--disable-plugins",
     "--disable-popup-blocking",
@@ -25,46 +23,67 @@ CHROME_OPTIONS_ARGS = [
     "--disable-default-apps",
     "--disable-sync",
     "--disable-translate",
-    "--disable-web-security",
-    
     "--dns-prefetch-disable",
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-logging",
     "--disable-permissions-api",
-    
     "--ignore-certificate-errors",
-    "--ignore-ssl-errors",
     "--disable-features=IsolateOrigins,site-per-process",
-    
-    "--disk-cache-size=1",
-    "--media-cache-size=1",
-    "--disable-application-cache"
+    "--window-size=1920,1080",
+    "--start-maximized",
 ]
 
 # User Agents
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    # Chrome 140+
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+
+    # Chrome 131
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    
+    # Chrome 130
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    
+    # Firefox
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:132.0) Gecko/20100101 Firefox/132.0",
+    
+    # Edge
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+
+    # Safari
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    
+    # Linux
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ]
 
 # Parser
 ALL_PAGES_LIMIT = 100
 
 # Delays
-MIN_REQUEST_DELAY = 1.5
-MAX_REQUEST_DELAY = 3.5
+MIN_REQUEST_DELAY = 3.0
+MAX_REQUEST_DELAY = 7.0
 DEFAULT_TIMEOUT = 10
+
+HUMAN_TYPING_MIN_DELAY = 0.05
+HUMAN_TYPING_MAX_DELAY = 0.15
+HUMAN_TYPING_PAUSE_CHANCE = 0.15
+HUMAN_TYPING_PAUSE_DURATION = (0.3, 0.8)
+
+RANDOM_SCROLL_CHANCE = 0.3
+RANDOM_MOUSE_MOVE_CHANCE = 0.2
+
+COOLDOWN_EVERY_MIN = 8
+COOLDOWN_EVERY_MAX = 12
+COOLDOWN_DURATION_MIN = 10.0
+COOLDOWN_DURATION_MAX = 20.0
 
 def resource_path(relative_path):
     try: base_path = sys._MEIPASS

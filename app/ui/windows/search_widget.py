@@ -18,6 +18,7 @@ class SearchWidget(QWidget):
     ignore_tags_changed = pyqtSignal(list)
     scan_categories_requested = pyqtSignal(list)
     categories_selected = pyqtSignal(list)
+    categories_changed = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -27,11 +28,12 @@ class SearchWidget(QWidget):
         self.cached_forced_categories: List[str] = []
         self.tag_presets: Dict[str, List[str]] = {}
         self.ignore_tag_presets: Dict[str, List[str]] = {}
+        self._current_category_count = 1
         self._load_tag_presets()
         self._load_ignore_tag_presets()
-        self._load_categories_cache()
         self._init_ui()
         self._connect_signals()
+        self._emit_categories_changed()
     
     def _init_ui(self):
         root_layout = QHBoxLayout(self)
@@ -157,6 +159,11 @@ class SearchWidget(QWidget):
         self.ignore_tags_input.tags_changed.connect(lambda t: self.ignore_tags_changed.emit(t))
 
     def _on_search_tags_changed(self, tags):
+        if self.cached_scanned_categories or self.cached_forced_categories:
+            self.cached_scanned_categories = []
+            self.cached_forced_categories = []
+            self._emit_categories_changed()
+        
         self.tags_changed.emit(tags)
 
     def _on_scan_categories(self):
@@ -165,9 +172,10 @@ class SearchWidget(QWidget):
             QMessageBox.warning(self, "Ошибка", "Введите теги для сканирования!")
             return
         
+        # Сброс перед новым сканированием
+        self.cached_scanned_categories = []
         self.cached_forced_categories = []
-        self._save_categories_cache()
-
+        
         self.scan_categories_requested.emit(tags)
 
     def _on_view_categories(self):
@@ -182,18 +190,29 @@ class SearchWidget(QWidget):
         )
         if dlg.exec():
             selected = dlg.get_selected()
-            self.cached_forced_categories = selected
-            self._save_categories_cache()
-            self.categories_selected.emit(selected)
+            if selected != self.cached_forced_categories:
+                self.cached_forced_categories = selected
+                self.categories_selected.emit(selected)
+                self._emit_categories_changed()
 
     def set_scanned_categories(self, categories: List[str]):
-        self.cached_scanned_categories = categories
-        self._save_categories_cache()
+        if categories != self.cached_scanned_categories:
+            self.cached_scanned_categories = categories
+            self._emit_categories_changed()
 
     def get_forced_categories(self) -> List[str]: return self.cached_forced_categories
     def set_forced_categories(self, categories: List[str]):
-        self.cached_forced_categories = categories
-        self._save_categories_cache()
+        if categories != self.cached_forced_categories:
+            self.cached_forced_categories = categories
+            self._emit_categories_changed()
+
+    def _emit_categories_changed(self):
+        count = len(self.cached_forced_categories) if self.cached_forced_categories else 1
+        self._current_category_count = count
+        self.categories_changed.emit()
+
+    def get_category_count(self) -> int:
+        return self._current_category_count
 
     def _on_tag_presets_clicked(self):
         self._show_presets_menu(self.btn_presets, self.tag_presets, self.search_tags_input, is_ignore=False)
@@ -239,13 +258,6 @@ class SearchWidget(QWidget):
     def _load_ignore_tag_presets(self): self.ignore_tag_presets = self._load_json(self._ignore_presets_file_path())
     def _save_tag_presets(self): self._save_json(self._presets_file_path(), self.tag_presets)
     def _save_ignore_tag_presets(self): self._save_json(self._ignore_presets_file_path(), self.ignore_tag_presets)
-    def _load_categories_cache(self):
-        data = self._load_json(self._categories_cache_path())
-        self.cached_scanned_categories = data.get("categories", [])
-        self.cached_forced_categories = data.get("forced_selection", [])
-    def _save_categories_cache(self):
-        data = {"categories": self.cached_scanned_categories, "forced_selection": self.cached_forced_categories}
-        self._save_json(self._categories_cache_path(), data)
     def _load_json(self, path) -> dict:
         if not os.path.exists(path): return {}
         try:
@@ -257,6 +269,6 @@ class SearchWidget(QWidget):
         except: pass
 
     def get_search_tags(self) -> List[str]: return self.search_tags_input.get_tags()
-    def set_search_tags(self, tags: List[str]): self.search_tags_input.set_tags(tags)
+    def set_search_tags(self, tags: List[str]): self.search_tags_input.set_tags(tags); self._emit_categories_changed()
     def get_ignore_tags(self) -> List[str]: return self.ignore_tags_input.get_tags()
     def set_ignore_tags(self, tags: List[str]): self.ignore_tags_input.set_tags(tags)

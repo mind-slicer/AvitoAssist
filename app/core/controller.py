@@ -1,3 +1,4 @@
+import math
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
@@ -54,7 +55,16 @@ class ParserController(QObject):
         self.queue_state = QueueState()
         self.zombie_threads: List[QThread] = []
         self.memory_manager = memory_manager
+        self.parser_progress_callback = None
     
+    def set_progress_callback(self, callback):
+        self.parser_progress_callback = callback
+
+    def _on_parser_progress(self, value):
+        if self.parser_progress_callback:
+            self.parser_progress_callback(value)
+        self.progress_updated.emit(value)
+
     def ensure_ai_manager(self):
         """Ensure AI manager exists (singleton pattern)"""
         if not self.ai_manager:
@@ -119,11 +129,18 @@ class ParserController(QObject):
             QTimer.singleShot(100, lambda: self._execute_queue(queue_index + 1))
             return
         
+        max_items = config.get('max_items', 0)
+    
+        if max_items and max_items > 0:
+             calc_pages = math.ceil(max_items / 50)
+        else:
+             calc_pages = 100
+
         self.worker_thread = QThread()
         self.worker = ParserWorker(
             keywords=config.get('search_tags', []),
             ignore_keywords=config.get('ignore_tags', []),
-            max_pages=config.get('pages', 0) or 0,
+            max_pages=calc_pages,
             max_total_items=config.get('max_items', 0) or None,
             min_price=config.get('min_price') or None,
             max_price=config.get('max_price') or None,
