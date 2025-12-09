@@ -152,8 +152,15 @@ class SearchWidget(QWidget):
         self.btn_clear_search.clicked.connect(self.search_tags_input.clear_tags)
         self.btn_presets_ignore.clicked.connect(self._on_ignore_tag_presets_clicked)
         self.btn_clear_ignore.clicked.connect(self.ignore_tags_input.clear_tags)
+        self.search_tags_input.tags_changed.connect(self._on_search_tags_changed)
         self.search_tags_input.tags_changed.connect(lambda t: self.tags_changed.emit(t))
         self.ignore_tags_input.tags_changed.connect(lambda t: self.ignore_tags_changed.emit(t))
+
+    def _on_search_tags_changed(self, tags):
+        self.cached_scanned_categories = []
+        self.cached_forced_categories = []
+        self._save_categories_cache()
+        self.tags_changed.emit(tags)
 
     def _on_scan_categories(self):
         tags = self.get_search_tags()
@@ -164,9 +171,14 @@ class SearchWidget(QWidget):
 
     def _on_view_categories(self):
         if not self.cached_scanned_categories:
-            QMessageBox.information(self, "Инфо", "Сначала выполните сканирование.")
+            QMessageBox.information(self, "Информация", "Сначала выполните сканирование.")
             return
-        dlg = CategorySelectionDialog(self.cached_scanned_categories, self)
+
+        dlg = CategorySelectionDialog(
+            self.cached_scanned_categories, 
+            self, 
+            selected_categories=self.cached_forced_categories
+        )
         if dlg.exec():
             selected = dlg.get_selected()
             self.cached_forced_categories = selected

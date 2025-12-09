@@ -302,21 +302,22 @@ class SearchNavigator:
                     has_arrow = "←" in text or "→" in text
                     type_str = "ГЛАВНАЯ" if has_icon else ("СПЕЦИАЛЬНАЯ" if has_arrow else "ЗАПРОС")
                     
-                    results.append({"text": text, "type": type_str})
+                    href = item.get_attribute("href") or ""
+                
+                    results.append({
+                        "text": text, 
+                        "type": type_str,
+                        "href": href
+                    })
                 except: pass
         except Exception as e:
             logger.dev(f"Scan Error: {e}")
         return results
     
     def perform_smart_search(self, keywords: str, forced_filters: List[str] = None) -> List[str]:
-        """
-        Merged logic from func.txt and parser.py.
-        Tries to match specific categories, prefers href extraction over clicking.
-        """
         collected_urls = []
         try:
             logger.info(f"Умный поиск: '{keywords}'...", token="smart_search")
-            
             items = self._type_query(keywords)
             if not items:
                 logger.warning("Категории не появились. Использую Fallback.", token="smart_search")
@@ -335,16 +336,15 @@ class SearchNavigator:
                     has_icon = len(item.find_elements(By.TAG_NAME, "img")) > 0
                     has_arrow = "←" in text or "→" in text
                     item_type = "CATEGORY" if has_icon else ("GENERAL" if has_arrow else "QUERY")
-                    
                     href = item.get_attribute("href") or ""
-                    
+
                     candidates.append({
                         'index': i,
                         'text': text,
                         'type': item_type,
                         'is_main': has_icon,
                         'href': href,
-                        'element': item 
+                        'element': item
                     })
                 except: pass
 
@@ -353,45 +353,53 @@ class SearchNavigator:
                 return []
 
             indices_to_click = []
-            
+
             # Determine targets
             if forced_filters:
                 logger.info(f"Принудительные фильтры: {forced_filters}")
-                for c in candidates:
-                    for f in forced_filters:
-                        if f.lower() in c['text'].lower():
-                            indices_to_click.append(c['index'])
+                for f in forced_filters:
+                    found = False
+                    for c in candidates:
+                        # ✅ ИСПРАВЛЕНО: Более гибкий поиск
+                        if f.lower() in c['text'].lower() or c['text'].lower() in f.lower():
+                            if c['index'] not in indices_to_click:
+                                indices_to_click.append(c['index'])
+                                logger.info(f"Найдено совпадение: '{c['text']}' для фильтра '{f}'")
+                            found = True
                             break
-            
-            # Default to Main Category if no forced filters or none found
-            if not forced_filters or not indices_to_click:
+                        
+                    if not found:
+                        logger.warning(f"Не найдено совпадение для фильтра '{f}'")
+
+            # ✅ ИСПРАВЛЕНО: Fallback только если НЕТ forced_filters или ничего не найдено
+            if not indices_to_click:
+                logger.info("Используется основная категория (fallback)")
                 main = None
                 for c in candidates:
                     if c['type'] == "CATEGORY" or c['is_main']:
                         main = c
                         break
                 if main is None and candidates:
-                    main = candidates[0] # Fallback to first
-                
+                    main = candidates[0]
                 if main:
                     indices_to_click = [main['index']]
+
+            # ✅ ДОБАВЛЕНО: Если всё равно пусто - выходим
+            if not indices_to_click:
+                logger.warning("Не удалось определить целевые категории")
+                return []
 
             # Execute navigation
             for idx, target_index in enumerate(indices_to_click):
                 try:
-                    # If we went back or this is a second iteration, we need to re-type 
-                    # because the DOM is stale
                     if idx > 0:
                         items = self._type_query(keywords, fast_mode=True)
                         if not items or len(items) <= target_index:
                             continue
-                        
-                        # Re-fetch candidate data from fresh DOM
                         target_element = items[target_index]
                         href = target_element.get_attribute("href")
                         text_for_log = target_element.text.replace("\n", " ")
                     else:
-                        # First iteration, use cached data
                         target_candidate = next((c for c in candidates if c['index'] == target_index), None)
                         if not target_candidate: continue
                         target_element = target_candidate['element']
@@ -400,29 +408,25 @@ class SearchNavigator:
 
                     logger.info(f"Переход: {text_for_log}")
 
-                    # Prefer direct Link navigation
                     if href and "avito.ru" in href:
                         self.driver.get(href)
                         PageLoader.wait_for_load(self.driver)
                     else:
-                        # Fallback to Click
                         try:
                             ActionChains(self.driver).move_to_element(target_element).click().perform()
                         except:
                             self.driver.execute_script("arguments[0].click();", target_element)
-                        
                         PageLoader.wait_for_load(self.driver)
 
                     time.sleep(2.0)
                     current_url = self.driver.current_url
-                    
+
                     if self._is_valid_url(current_url):
                         collected_urls.append(current_url)
                         logger.success(f"URL получен: {current_url}")
                     else:
                         logger.warning(f"URL не прошел валидацию: {current_url}")
 
-                    # Go back if we have more targets
                     if idx < len(indices_to_click) - 1:
                         self.driver.back()
                         PageLoader.wait_for_load(self.driver)

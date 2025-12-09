@@ -245,6 +245,7 @@ class ParserController(QObject):
     def _finish_sequence(self):
         self.queue_state.is_sequence_running = False
         self.sequence_finished.emit()
+        self.ui_lock_requested.emit(False)
     
     def _async_force_stop(self):
         if self.worker_thread and self.worker_thread.isRunning():

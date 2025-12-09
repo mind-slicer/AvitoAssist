@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt
 from app.ui.styles import Components, Palette, Typography, Spacing
 
 class CategorySelectionDialog(QDialog):
-    def __init__(self, categories: List[dict], parent=None):
+    def __init__(self, categories: List[dict], parent=None, selected_categories: List[str] = None):
         super().__init__(parent)
         self.setWindowTitle("Выберите категории")
         self.resize(400, 500)
@@ -31,23 +31,26 @@ class CategorySelectionDialog(QDialog):
             QListWidget::item:selected {{ background: {Palette.PRIMARY_DARK}; }}
         """)
 
+        selected_set = set(selected_categories) if selected_categories else set()
+
         for cat in categories:
-            # cat is usually dict {'text': '...', 'type': '...'}
             text = cat.get('text', str(cat))
             typ = cat.get('type', '')
             item = QListWidgetItem(f"[{typ}] {text}" if typ else text)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
+            if not selected_categories or text in selected_set:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, text)
             self.list_widget.addItem(item)
 
         layout.addWidget(self.list_widget)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
+        btns.rejected.connect(self.accept)
         
-        # Style buttons roughly
         for btn in btns.buttons():
             btn.setStyleSheet(Components.small_button())
             
