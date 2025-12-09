@@ -15,8 +15,7 @@ class ParserWorker(QObject):
             search_mode="full", forced_categories=None,
             filter_defects=False,
             skip_duplicates=False,
-            allow_rewrite_duplicates=False,
-            merge_with_table=None):
+            allow_rewrite_duplicates=False):
         super().__init__()
         self.keywords = keywords
         self.ignore_keywords = ignore_keywords
@@ -32,7 +31,6 @@ class ParserWorker(QObject):
         self.filter_defects = filter_defects
         self.skip_duplicates = skip_duplicates
         self.allow_rewrite_duplicates = allow_rewrite_duplicates
-        self.merge_with_table = merge_with_table
 
         if self.search_mode == "primary":
             self.max_items_per_page = self.max_total_items
@@ -70,7 +68,6 @@ class ParserWorker(QObject):
                     filter_defects=self.filter_defects,
                     skip_duplicates=self.skip_duplicates,
                     allow_rewrite_duplicates=self.allow_rewrite_duplicates,
-                    merge_with_table=self.merge_with_table,
                 )
         except Exception as e:
             logger.error(f"Ошибка запуска парсера: {e}")

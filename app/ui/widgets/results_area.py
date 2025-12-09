@@ -17,7 +17,7 @@ class ResultsAreaWidget(QGroupBox):
     file_loaded = pyqtSignal(str, list)
     file_deleted = pyqtSignal(str)
     table_item_deleted = pyqtSignal(str)
-    context_cleared = pyqtSignal()
+    table_closed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,7 +42,7 @@ class ResultsAreaWidget(QGroupBox):
 
         self.mini_browser = MiniFileBrowser()
         self.mini_browser.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.mini_browser.context_cleared.connect(self.context_cleared)
+        self.mini_browser.table_closed.connect(self._on_table_closed)
         left_layout.addWidget(self.mini_browser, 1)
         
         left_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -165,6 +165,10 @@ class ResultsAreaWidget(QGroupBox):
         self.update_header("", "", 0)
         self.right_stack.setCurrentWidget(self.empty_label)
         self.header_widget.setVisible(False)
+
+    def _on_table_closed(self):
+        self.clear_table()
+        self.table_closed.emit()
 
     def load_full_history(self, items: list[dict]):
         self.clear_table()

@@ -165,8 +165,7 @@ class MainWindow(QWidget):
 
         top_scroll.setWidget(top_content)
         self.results_area = ResultsAreaWidget(self)
-        self.results_area.context_cleared.connect(self._on_results_context_cleared)
-        #self.results_area.results_table.itemSelectionChanged.connect(self._on_result_selected)
+
         self._refresh_merge_targets()
 
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -213,9 +212,14 @@ class MainWindow(QWidget):
         self.results_area.file_loaded.connect(self._on_file_loaded)
         self.results_area.file_deleted.connect(self._on_file_deleted)
         self.results_area.table_item_deleted.connect(self._on_table_item_deleted)
+        self.results_area.table_closed.connect(self._on_table_closed)
         self.controls_widget.pause_neuronet_requested.connect(self._on_pause_neuronet_requested)
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
+
+    def _on_table_closed(self):
+        logger.info("Таблица закрыта пользователем...")
+        # Никакой логики контекста - просто UI действие
 
     def _save_current_queue_state(self):
         idx = self.queue_manager.get_current_index()

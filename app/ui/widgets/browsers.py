@@ -78,12 +78,11 @@ class BaseJsonFileBrowser(QWidget):
     def confirm_delete(self, filename: str) -> bool: return True
 
 class MiniFileBrowser(BaseJsonFileBrowser):
-    context_cleared = pyqtSignal()
+    table_closed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._is_editing = False
-        self._merge_target_path = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -111,10 +110,6 @@ class MiniFileBrowser(BaseJsonFileBrowser):
 
         self.refresh_files()
 
-    def set_merge_target(self, filepath: Optional[str]):
-        self._merge_target_path = filepath
-        self.refresh_files()
-
     def _on_double_click(self, item):
         if item and not self._is_editing:
             self.file_list.setCurrentItem(item)
@@ -139,7 +134,7 @@ class MiniFileBrowser(BaseJsonFileBrowser):
             self.delete_selected_file()
         elif action == act_clear:
             self.file_list.clearSelection()
-            self.context_cleared.emit()
+            self.table_closed.emit()
 
     def _start_rename(self, item):
         widget = self.file_list.itemWidget(item)
@@ -149,18 +144,15 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         if not name_label: return
 
         layout = widget.layout()
-        old_name = name_label.text().replace("★ ", "")
+        old_name = name_label.text()
 
-        # Сохраняем старое имя
         item.setData(Qt.ItemDataRole.UserRole + 2, old_name)
 
-        # Создаём редактор
         name_edit = QLineEdit(old_name)
         name_edit.setObjectName("name_edit")
         name_edit.setFrame(False)
         name_edit.setValidator(FilenameValidator())
 
-        # Правильный масштаб и стиль
         name_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         name_edit.setFixedHeight(24)
         name_edit.setStyleSheet(InputComponents.text_input() + """
@@ -170,20 +162,16 @@ class MiniFileBrowser(BaseJsonFileBrowser):
             }
         """)
 
-        # Заменяем в layout
         layout_index = layout.indexOf(name_label)
         layout.removeWidget(name_label)
         name_label.hide()
         layout.insertWidget(layout_index, name_edit, 3)
 
-        # Устанавливаем флаг редактирования
         self._is_editing = True
 
-        # Фокус и выделение
         name_edit.setFocus()
         name_edit.selectAll()
 
-        # Подключаем сигнал
         name_edit.editingFinished.connect(lambda: self._finish_rename(item, name_edit))
 
     def _finish_rename(self, item, name_edit):
@@ -201,7 +189,6 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         old_path = old_filename
         new_path = os.path.join(RESULTS_DIR, new_filename)
 
-        # Проверяем что имя изменилось
         if old_path == new_path:
             self.refresh_files()
             return
@@ -219,9 +206,6 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         base = os.path.basename(filename)
         dn = base.replace("avito_", "").replace(".json", "")
 
-        is_merge_target = (self._merge_target_path and 
-                          os.path.abspath(filename) == os.path.abspath(self._merge_target_path))
-
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, filename)
         item.setData(Qt.ItemDataRole.UserRole + 3, dn)
@@ -236,9 +220,7 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         widget_layout.setSpacing(6)
         widget_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        prefix = "★ " if is_merge_target else ""
-
-        name_label = QLabel(prefix + dn)
+        name_label = QLabel(dn)
         name_label.setObjectName("name_label")
         name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)

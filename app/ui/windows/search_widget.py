@@ -157,9 +157,6 @@ class SearchWidget(QWidget):
         self.ignore_tags_input.tags_changed.connect(lambda t: self.ignore_tags_changed.emit(t))
 
     def _on_search_tags_changed(self, tags):
-        self.cached_scanned_categories = []
-        self.cached_forced_categories = []
-        self._save_categories_cache()
         self.tags_changed.emit(tags)
 
     def _on_scan_categories(self):
@@ -167,6 +164,10 @@ class SearchWidget(QWidget):
         if not tags:
             QMessageBox.warning(self, "Ошибка", "Введите теги для сканирования!")
             return
+        
+        self.cached_forced_categories = []
+        self._save_categories_cache()
+
         self.scan_categories_requested.emit(tags)
 
     def _on_view_categories(self):

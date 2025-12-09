@@ -4,7 +4,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
 
 from app.core.worker import ParserWorker, CategoryScannerWorker
 from app.core.ai.ai_manager import AIManager
-from app.core.ai.prompts import PromptBuilder, AnalysisPriority
+from app.core.ai.prompts import PromptBuilder
 from app.core.log_manager import logger
 
 
@@ -134,8 +134,7 @@ class ParserController(QObject):
             forced_categories=config.get('forced_categories'),
             filter_defects=config.get('filter_defects', False),
             skip_duplicates = config.get('skip_duplicates', False),
-            allow_rewrite_duplicates = config.get('allow_rewrite_duplicates', False),
-            merge_with_table=config.get('context_table')
+            allow_rewrite_duplicates = config.get('allow_rewrite_duplicates', False)
         )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)

@@ -118,12 +118,10 @@ class QueueStateManager(QObject):
             "use_blacklist": False,
             "sort_type": "date",
             "queue_enabled": True, 
-            "merge_with_table": None,
             "rewrite_duplicates": False,
             "skip_duplicates": False,
             "allow_rewrite_duplicates": False,
-            "split_results": False, # Новое поле
-            "context_table": None
+            "split_results": False
         }
     
     # ============ Bulk Operations ============
