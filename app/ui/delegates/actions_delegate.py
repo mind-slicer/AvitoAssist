@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import QStyledItemDelegate, QStyle
 from PyQt6.QtCore import Qt, QPoint, QRect
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
-from app.ui.styles import Palette, Components
+from app.ui.styles import Palette, Components, Typography
 
 class ActionsDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -18,65 +18,51 @@ class ActionsDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         painter.save()
         
+        # Получаем данные
         item = index.data(Qt.ItemDataRole.UserRole)
         is_favorite = item.get('is_favorite', False) if isinstance(item, dict) else False
         
         rect = option.rect
         row = index.row()
         
+        # Логика ховера/нажатия
         is_star_hovered = (self.hovered_row == row and self.hovered_side == 'star')
         is_trash_hovered = (self.hovered_row == row and self.hovered_side == 'trash')
-        is_star_pressed = (self.pressed_row == row and self.pressed_side == 'star')
-        is_trash_pressed = (self.pressed_row == row and self.pressed_side == 'trash')
         
-        star_rect = QRect(rect.x() + 5, rect.y(), rect.width()//2 - 5, rect.height())
-        trash_rect = QRect(rect.x() + rect.width()//2, rect.y(), rect.width()//2 - 5, rect.height())
+        # Зоны клика (делим ячейку пополам)
+        star_rect = QRect(rect.left(), rect.top(), rect.width()//2, rect.height())
+        trash_rect = QRect(rect.left() + rect.width()//2, rect.top(), rect.width()//2, rect.height())
         
-        if is_star_pressed:
-            painter.fillRect(star_rect, QColor(Palette.PRIMARY_DARK))
-        elif is_star_hovered:
-            painter.fillRect(star_rect, QColor(Palette.with_alpha(Palette.PRIMARY, 0.3)))
+        # --- ОТРИСОВКА ФОНОВ КНОПОК ---
+        if is_star_hovered:
+            painter.fillRect(star_rect, QColor(Palette.with_alpha(Palette.WARNING, 0.15)))
         
-        if is_trash_pressed:
-            painter.fillRect(trash_rect, QColor(Palette.with_alpha(Palette.ERROR, 0.6)))
-        elif is_trash_hovered:
-            painter.fillRect(trash_rect, QColor(Palette.with_alpha(Palette.ERROR, 0.3)))
-        
-        star_icon = self.star_icon_filled if is_favorite else self.star_icon_empty
-        
-        font = painter.font()
-        original_size = font.pointSize()
-        base_icon_size = original_size + 2
-        
-        if is_star_pressed:
-            font.setPointSize(base_icon_size + 2)  # Еще +2 при нажатии
-            painter.setFont(font)
-            painter.setPen(QColor(Palette.WARNING))
-        elif is_star_hovered:
-            font.setPointSize(base_icon_size + 1)  # +1 при hover
-            painter.setFont(font)
-            painter.setPen(QColor(Palette.WARNING))
+        if is_trash_hovered:
+            painter.fillRect(trash_rect, QColor(Palette.with_alpha(Palette.ERROR, 0.15)))
+
+        # --- НАСТРОЙКА ШРИФТА (Ключевой момент!) ---
+        # Игнорируем шрифт таблицы (Monospace) и берем UI шрифт для иконок
+        icon_font = QFont(Typography.UI) 
+        icon_font.setPixelSize(16) # Фиксированный размер иконки
+        # Для эмодзи/символов важно, чтобы шрифт их поддерживал
+        icon_font.setStyleHint(QFont.StyleHint.SansSerif) 
+        painter.setFont(icon_font)
+
+        # --- РИСУЕМ ЗВЕЗДУ ---
+        if is_favorite:
+            painter.setPen(QColor(Palette.WARNING)) # Желтая/Оранжевая
+            icon = self.star_icon_filled
         else:
-            font.setPointSize(base_icon_size)  # Базовый увеличенный размер
-            painter.setFont(font)
-            painter.setPen(QColor(Palette.TEXT))
+            # Если не избрано - серый цвет, но при наведении - оранжевый
+            color = Palette.WARNING if is_star_hovered else Palette.TEXT_MUTED
+            painter.setPen(QColor(color))
+            icon = self.star_icon_empty
+            
+        painter.drawText(star_rect, Qt.AlignmentFlag.AlignCenter, icon)
 
-        painter.drawText(star_rect, Qt.AlignmentFlag.AlignCenter, star_icon)
-
-        # Корзина
-        if is_trash_pressed:
-            font.setPointSize(base_icon_size + 2)
-            painter.setFont(font)
-            painter.setPen(QColor(Palette.ERROR))
-        elif is_trash_hovered:
-            font.setPointSize(base_icon_size + 1)
-            painter.setFont(font)
-            painter.setPen(QColor(Palette.ERROR))
-        else:
-            font.setPointSize(base_icon_size)
-            painter.setFont(font)
-            painter.setPen(QColor(Palette.TEXT))
-
+        # --- РИСУЕМ КОРЗИНУ ---
+        color = Palette.ERROR if is_trash_hovered else Palette.TEXT_MUTED
+        painter.setPen(QColor(color))
         painter.drawText(trash_rect, Qt.AlignmentFlag.AlignCenter, self.trash_icon)
 
         painter.restore()

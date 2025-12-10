@@ -1,7 +1,7 @@
 {
   "0": {
     "search_tags": [
-      "монитор"
+      "блок питания"
     ],
     "ignore_tags": [],
     "min_price": 0,
@@ -11,12 +11,11 @@
     "include_ai": false,
     "store_in_memory": false,
     "max_pages": 0,
-    "max_items": 0,
-    "all_regions": true,
+    "max_items": 20,
+    "all_regions": false,
     "filter_defects": false,
     "forced_categories": [
-      "монитор 27",
-      "монитор 24"
+      "блок питания ← Блоки питания для компьютера"
     ],
     "split_ads_count": 0,
     "use_queue_manager": false,
@@ -28,7 +27,7 @@
     "allow_rewrite_duplicates": false,
     "split_results": false,
     "merge_with_table": null,
-    "context_table": "E:\\wip2\\results\\avito_search_20251210_123503.json",
+    "context_table": "E:\\wip2\\results\\avito_search_20251210_144511.json",
     "original_index": 0,
     "debug_mode": false,
     "ai_debug_mode": false,

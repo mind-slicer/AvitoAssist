@@ -53,7 +53,21 @@ class ProgressAndLogsPanel(QWidget):
 
         # --- Табы с логами ---
         self.tabs = QTabWidget()
-        self.tabs.setStyleSheet(Components.panel())
+        self.tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {Palette.BORDER_SOFT}; background-color: {Palette.BG_DARK_2}; }}
+            QTabBar::tab {{
+                background-color: {Palette.BG_DARK};
+                color: {Palette.TEXT_MUTED};
+                padding: 6px 12px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }}
+            QTabBar::tab:selected {{
+                background-color: {Palette.BG_DARK_2};
+                color: {Palette.TEXT};
+                border-bottom: 2px solid {Palette.PRIMARY};
+            }}
+        """)
         
         self.main_log_widget = SmartLogWidget()
         self.tabs.addTab(self.main_log_widget, "Журнал событий")

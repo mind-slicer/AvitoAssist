@@ -141,6 +141,7 @@ class MainWindow(QWidget):
         top_scroll = QScrollArea()
         top_scroll.setWidgetResizable(True)
         top_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        top_scroll.setStyleSheet(Components.scroll_area())
         top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         top_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
@@ -1066,11 +1067,31 @@ class MainWindow(QWidget):
 
     def _load_settings(self):
         path = os.path.join(BASE_APP_DIR, "app_settings.json")
+        settings = {}
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f: return json.load(f)
+                with open(path, "r", encoding="utf-8") as f: 
+                    settings = json.load(f)
             except: pass
-        return {}
+        
+        # --- FIX: Валидация путей при переносе на другой ПК ---
+        model_path = settings.get("ai_model_path")
+        if model_path:
+            # Если путь не существует (например, другая буква диска или юзер),
+            # но файл лежит в папке models рядом с exe
+            if not os.path.exists(model_path):
+                from app.config import MODELS_DIR
+                filename = os.path.basename(model_path)
+                local_candidate = os.path.join(MODELS_DIR, filename)
+                
+                if os.path.exists(local_candidate):
+                    logger.info(f"Путь к модели восстановлен локально: {local_candidate}")
+                    settings["ai_model_path"] = local_candidate
+                else:
+                    logger.warning(f"Модель не найдена по пути: {model_path}. Сброс.")
+                    settings["ai_model_path"] = "" # Сбрасываем, чтобы не крашить AI менеджер
+                    
+        return settings
         
     def _save_settings(self):
         path = os.path.join(BASE_APP_DIR, "app_settings.json")

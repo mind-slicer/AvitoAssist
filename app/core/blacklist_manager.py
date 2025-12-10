@@ -10,8 +10,11 @@ class BlacklistEntry:
     """Одна запись в черном списке: seller_id + имя"""
 
     def __init__(self, seller_id: str, custom_name: str = ""):
-        self.seller_id = str(seller_id).strip()
-        self.custom_name = custom_name.strip() or f"Seller_{seller_id}"
+        self.seller_id = str(seller_id).strip().lower()
+        if not self.seller_id:
+            raise ValueError("Seller ID cannot be empty")
+            
+        self.custom_name = custom_name.strip() or f"Seller_{self.seller_id}"
         self.added_at = datetime.now().isoformat()
 
     def to_dict(self) -> dict:

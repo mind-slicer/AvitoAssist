@@ -96,6 +96,8 @@ class ServerManager(QObject):
 
     # TODO КОНТЕКСТ ЗДЕСЬ!
     def start_server(self, ctx_size: int = 2048, gpu_layers: int = -1, batch_size: int = 512, gpu_device: int = 0, backend_preference: str = "auto"):
+        import time # Добавить импорт, если нет в начале файла
+
         if self.is_running():
             self.server_started.emit()
             return
@@ -112,10 +114,11 @@ class ServerManager(QObject):
         backend_name, server_exe = self._detect_server_executable(backend_preference)
         
         if not server_exe:
-            self.error_occurred.emit("Не найден исполняемый файл llama-server (ни CUDA, ни Vulkan, ни CPU)!")
+            self.error_occurred.emit("Не найден исполняемый файл llama-server! Проверьте папку backends.")
             return
 
-        logger.info(f"Выбранный бэкенд для ИИ: {backend_name.upper()} ({server_exe}), GPU: {gpu_device}...")
+        logger.info(f"Запуск AI бэкенда: {backend_name.upper()}")
+        logger.dev(f"Exe: {server_exe}")
 
         final_gpu_layers = gpu_layers
         if backend_name == "cpu":
@@ -139,17 +142,35 @@ class ServerManager(QObject):
             env["GGML_VULKAN_DEVICE"] = str(gpu_device)
 
         try:
+            # FIX: stdin=subprocess.DEVNULL обязателен для --windowed
             self.process = subprocess.Popen(
                 cmd,
                 env=env, 
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                stderr=subprocess.PIPE, # Читаем ошибки
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                text=True # Чтобы stderr читался как текст
             )
+            
+            # --- ДИАГНОСТИКА ПАДЕНИЯ ---
+            # Ждем 1 секунду и проверяем, жив ли процесс
+            time.sleep(1.0)
+            
+            if self.process.poll() is not None:
+                # Процесс умер! Читаем предсмертную записку
+                _, stderr = self.process.communicate()
+                error_msg = stderr if stderr else f"Код выхода: {self.process.returncode}"
+                logger.error(f"AI сервер упал при старте: {error_msg}")
+                self.error_occurred.emit(f"Сбой старта AI: {error_msg[:200]}...")
+                self.process = None
+                return
+
             self.server_started.emit()
+            logger.info(f"AI сервер успешно работает на порту {self.actual_port}")
             
         except Exception as e:
-            self.error_occurred.emit(f"Ошибка запуска сервера: {e}")
+            self.error_occurred.emit(f"Ошибка Popen: {e}")
 
     def stop_server(self):
         if self.process:

@@ -900,10 +900,9 @@ class AvitoParser(QObject):
         page = 1
         ignore_keywords = ignore_keywords or []
         blacklist_manager = get_blacklist_manager()
-        blocked_seller_ids = blacklist_manager.get_active_seller_ids()
 
         while True:
-            # --- РАСЧЕТ ПРОГРЕССА (ДЛЯ UI) ---
+            blocked_seller_ids = blacklist_manager.get_active_seller_ids()
             current_progress = 0
             if total_expected_items and total_expected_items > 0:
                 total_done = len(results_list)
@@ -980,8 +979,9 @@ class AvitoParser(QObject):
                         continue
                 
                 # --- 3. ПРОВЕРКА BLACKLIST ---
-                item_seller_id = item.get('seller_id', '')
-                if item_seller_id and item_seller_id in blocked_seller_ids:
+                raw_seller_id = str(item.get('seller_id', ''))
+                if raw_seller_id and raw_seller_id.lower() in blocked_seller_ids:
+                    logger.info(f"Пропущен продавец из ЧС: {raw_seller_id}...")
                     continue
                 
                 # --- 4. ФИЛЬТРЫ ---
@@ -1002,6 +1002,11 @@ class AvitoParser(QObject):
                         continue # Если не удалось получить детали (или забанили), пропускаем
                     
                     item.update(details)
+
+                    real_seller_id = str(item.get('seller_id', ''))
+                    if real_seller_id and real_seller_id.lower() in blocked_seller_ids:
+                        logger.info(f"Пропущен продавец из ЧС (этап 2, DeepDive): {real_seller_id}...")
+                        continue
 
                 # --- 6. СОХРАНЕНИЕ РЕЗУЛЬТАТА ---
                 if item['id'] not in seen_ids:

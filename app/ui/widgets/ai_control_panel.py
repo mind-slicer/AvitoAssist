@@ -62,6 +62,7 @@ class AIControlPanel(QWidget):
         self.init_ui()
         
     def init_ui(self):
+        self.setStyleSheet(f"background-color: {Palette.BG_DARK};")
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
         main_layout.setSpacing(Spacing.LG)
@@ -136,8 +137,12 @@ class AIControlPanel(QWidget):
         # Chat Area
         self.chat_area = QScrollArea()
         self.chat_area.setWidgetResizable(True)
-        self.chat_area.setStyleSheet(f"""
-            QScrollArea {{ background-color: {Palette.BG_DARK_2}; border: 1px solid {Palette.BORDER_SOFT}; border-radius: {Spacing.RADIUS_NORMAL}px; }}
+        self.chat_area.setStyleSheet(Components.scroll_area() + f"""
+            QScrollArea {{ 
+                background-color: {Palette.BG_DARK_2}; 
+                border: 1px solid {Palette.BORDER_SOFT}; 
+                border-radius: {Spacing.RADIUS_NORMAL}px; 
+            }}
         """)
         self.chat_container = QWidget()
         self.chat_vbox = QVBoxLayout(self.chat_container)
@@ -171,7 +176,14 @@ class AIControlPanel(QWidget):
         self.text_instructions = QTextEdit()
         self.text_instructions.setPlaceholderText("Особые условия для AI...")
         self.text_instructions.setMaximumHeight(50)
-        self.text_instructions.setStyleSheet(f"background: {Palette.BG_DARK_2}; border: 1px solid {Palette.BORDER_SOFT}; color: {Palette.TEXT}; border-radius: 4px;")
+        self.text_instructions.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {Palette.BG_DARK_2}; 
+                border: 1px solid {Palette.BORDER_SOFT}; 
+                color: {Palette.TEXT}; 
+                border-radius: 4px;
+            }}
+        """)
         right_layout.addWidget(self.text_instructions)
 
         main_layout.addWidget(right_widget, 1)

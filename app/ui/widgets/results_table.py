@@ -304,6 +304,8 @@ class ResultsTable(QTableView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setStyleSheet(Components.table())
+        self.setAlternatingRowColors(True)
         self.source_model = ResultsModel()
         self.proxy_model = CustomSortFilterProxyModel()
         self.proxy_model.setSourceModel(self.source_model)

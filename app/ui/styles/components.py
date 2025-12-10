@@ -286,6 +286,8 @@ class Components:
 
     @staticmethod
     def styled_list_widget() -> str:
+        """Списки (лог, файлы)"""
+        scrollbar_style = Components.global_scrollbar()
         return (
             f"QListWidget {{\n"
             f"    background-color: {Palette.BG_DARK_2};\n"
@@ -294,18 +296,14 @@ class Components:
             f"    color: {Palette.TEXT};\n"
             f"    outline: none;\n"
             f"}}\n"
-            f"QListWidget::item {{\n"
-            f"    padding: {Spacing.XS}px {Spacing.SM}px;\n"
-            f"    border-bottom: 2px solid {Palette.with_alpha(Palette.BORDER_SOFT, 0.75)}\n"
-            f"}}\n"
-            f"QListWidget::item:hover {{\n"
-            f"    background-color: {Palette.with_alpha(Palette.TEXT, 0.05)};\n"
-            f"}}\n"
-            f"QListWidget::item:selected {{\n"
-            f"    background-color: {Palette.with_alpha(Palette.PRIMARY, 0.15)};\n"
+            f"QListWidget::item {{ padding: 5px; border-bottom: 1px solid {Palette.with_alpha(Palette.BORDER_SOFT, 0.5)}; }}\n"
+            f"QListWidget::item:hover {{ background-color: {Palette.with_alpha(Palette.TEXT, 0.05)}; }}\n"
+            f"QListWidget::item:selected {{ \n"
+            f"    background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)};\n"
             f"    color: {Palette.PRIMARY};\n"
-            f"    border-left: 2px solid {Palette.PRIMARY};\n"
-            f"}}"
+            f"    border-left: 3px solid {Palette.PRIMARY};\n"
+            f"}}\n"
+            f"{scrollbar_style}\n"
         )
 
     @staticmethod
@@ -394,10 +392,12 @@ class Components:
 
     @staticmethod
     def table() -> str:
-        """Таблица с улучшенными эффектами - ЭТАП 4"""
+        """Таблица с исправленным фоном и скроллбарами"""
+        scrollbar_style = Components.global_scrollbar() # Встраиваем стиль скролла прямо в таблицу
         return (
-            f"QTableWidget {{\n"
+            f"QTableView {{\n"
             f"    background-color: {Palette.BG_DARK_2};\n"
+            f"    alternate-background-color: {Palette.BG_DARK_3};\n" # Цвет чередующихся строк
             f"    gridline-color: {Palette.BORDER_PRIMARY};\n"
             f"    border: 1px solid {Palette.BORDER_PRIMARY};\n"
             f"    color: {Palette.TEXT};\n"
@@ -415,47 +415,51 @@ class Components:
             f"    border-right: 1px solid {Palette.BORDER_PRIMARY};\n"
             f"    padding: 6px 8px;\n"
             f"    font-weight: {Typography.WEIGHT_BOLD};\n"
-            f"    font-size: {Typography.SIZE_MD}px;\n"
-            f"    letter-spacing: {Typography.SPACING_WIDE};\n"
             f"}}\n"
-            f"QHeaderView::section:hover {{\n"  # ДОБАВЛЕНО: hover для заголовка
-            f"    background-color: {Palette.with_alpha(Palette.SECONDARY, 0.15)};\n"
+            f"QTableCornerButton::section {{ background-color: {Palette.BG_DARK_3}; border: none; }}\n"
+            f"{scrollbar_style}\n" # Принудительно добавляем стиль скролла
+        )
+
+    @staticmethod
+    def scroll_area() -> str:
+        """Прозрачная область прокрутки"""
+        scrollbar_style = Components.global_scrollbar()
+        return (
+            f"QScrollArea {{ border: none; background-color: transparent; }}\n"
+            f"QScrollArea > QWidget > QWidget {{ background-color: transparent; }}\n"
+            f"{scrollbar_style}\n"
+        )
+
+    @staticmethod
+    def global_scrollbar() -> str:
+        """Глобальный стиль скроллбаров для всего приложения"""
+        return (
+            f"QScrollBar:vertical, QScrollBar:horizontal {{\n"
+            f"    background-color: {Palette.BG_DARK};\n"
+            f"    border: none;\n"
+            f"    margin: 0px;\n"
             f"}}\n"
-            f"QTableWidget::item {{\n"
-            f"    padding: 4px 6px;\n"
-            f"    border-bottom: 1px solid {Palette.with_alpha(Palette.BORDER_SOFT, 0.3)};\n"
-            #f"    color: {Palette.TEXT};\n"
-            f"}}\n"
-            f"QTableWidget::item:hover {{\n"
-            f"    background-color: {Palette.with_alpha(Palette.SECONDARY, 0.15)};\n"
-            f"}}\n"
-            f"QTableWidget::item:selected {{\n"
-            f"    background-color: {Palette.with_alpha(Palette.PRIMARY, 0.3)};\n"
-            f"    color: {Palette.TEXT};\n"
-            f"}}\n"
-            f"QScrollBar:vertical {{\n"
-            f"    width: 10px;\n"
-            f"    background-color: {Palette.BG_DARK_2};\n"
-            f"    border-radius: 5px;\n"
-            f"}}\n"
-            f"QScrollBar::handle:vertical {{\n"
+            f"QScrollBar:vertical {{ width: 10px; }}\n"
+            f"QScrollBar:horizontal {{ height: 10px; }}\n"
+            f"QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{\n"
             f"    background-color: {Palette.SECONDARY};\n"
             f"    border-radius: 5px;\n"
             f"    min-height: 20px;\n"
+            f"    min-width: 20px;\n"
             f"}}\n"
-            f"QScrollBar::handle:vertical:hover {{\n"
-            f"    background-color: {Palette.SECONDARY_LIGHT};\n"
-            f"}}\n"
-            f"QScrollBar::up-arrow, QScrollBar::down-arrow {{\n"
-            f"    width: 0px;\n"
-            f"    height: 0px;\n"
-            f"    background: transparent;\n"
-            f"    border: none;\n"
+            f"QScrollBar::handle:hover {{\n"
+            f"    background-color: {Palette.PRIMARY};\n"
             f"}}\n"
             f"QScrollBar::add-line, QScrollBar::sub-line {{\n"
-            f"    width: 0px;\n"
-            f"    height: 0px;\n"
-            f"    background: transparent;\n"
+            f"    width: 0px; height: 0px;\n"
+            f"    background: none;\n"
+            f"}}\n"
+            f"QScrollBar::add-page, QScrollBar::sub-page {{\n"
+            f"    background: none;\n"
+            f"}}\n"
+            # Фикс для уголков
+            f"QAbstractScrollArea::corner {{\n"
+            f"    background: {Palette.BG_DARK};\n"
             f"    border: none;\n"
             f"}}\n"
         )
