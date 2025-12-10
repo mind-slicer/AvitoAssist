@@ -1,1 +1,14 @@
-{}
+{
+  "request_delay": 500,
+  "max_retries": 3,
+  "page_timeout": 15,
+  "ai_ctx_size": 8192,
+  "ai_gpu_layers": -1,
+  "ai_gpu_device": 0,
+  "ai_backend": "vulkan",
+  "ai_model": "google_gemma-3-4b-it-Q8_0.gguf",
+  "debug_mode": false,
+  "ai_debug": false,
+  "parser_debug": false,
+  "favorites_monitor_interval": 15
+}

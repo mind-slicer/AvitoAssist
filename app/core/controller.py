@@ -91,6 +91,8 @@ class ParserController(QObject):
         self.queue_state.queues_config = configs
         self.queue_state.total_queues = len(configs)
         self.queue_state.current_queue_index = 0
+        
+        self.session_seen_ids = set() 
 
         self.sequence_started.emit()
         self.ui_lock_requested.emit(True)
@@ -134,7 +136,7 @@ class ParserController(QObject):
         max_items = config.get('max_items', 0)
     
         if max_items and max_items > 0:
-             calc_pages = math.ceil(max_items / 50)
+             calc_pages = (math.ceil(max_items / 50) * 5) + 3
         else:
              calc_pages = 100
 
@@ -153,7 +155,8 @@ class ParserController(QObject):
             forced_categories=config.get('forced_categories'),
             filter_defects=config.get('filter_defects', False),
             skip_duplicates = config.get('skip_duplicates', False),
-            allow_rewrite_duplicates = config.get('allow_rewrite_duplicates', False)
+            allow_rewrite_duplicates = config.get('allow_rewrite_duplicates', False),
+            existing_ids=self.session_seen_ids
         )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
@@ -168,6 +171,11 @@ class ParserController(QObject):
         self.worker_thread.start()
     
     def _on_queue_finished(self, results: List[Dict], queue_idx: int, config: Dict):
+        if results:
+            for item in results:
+                if 'id' in item:
+                    self.session_seen_ids.add(str(item['id']))
+        
         is_split = config.get('is_split', False)
 
         if self._handle_neuro_filter(results, config, queue_idx, is_split):

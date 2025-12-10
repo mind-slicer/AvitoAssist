@@ -115,7 +115,6 @@ class AIChatWorker(QThread):
 
 # --- Главный менеджер (Оркестратор) ---
 class AIManager(QObject):
-    # Сигналы для совместимости с UI
     progress_signal = pyqtSignal(str)
     ai_progress_value = pyqtSignal(int)
     result_signal = pyqtSignal(int, str, dict)
@@ -144,6 +143,11 @@ class AIManager(QObject):
         self.health_timer.timeout.connect(self._check_health_and_notify)
         self._server_ready = False
 
+        self._ctx_size = AI_CTX_SIZE
+        self._gpu_layers = AI_GPU_LAYERS or -1
+        self._gpu_device = 0
+        self._backend = "auto"
+
     def _find_default_model(self) -> Optional[str]:
         if not os.path.exists(MODELS_DIR):
             os.makedirs(MODELS_DIR, exist_ok=True)
@@ -161,11 +165,30 @@ class AIManager(QObject):
         if os.path.exists(path):
             self.current_model_path = path
             self._model_name = filename
-            # Перезапускаем менеджер с новой моделью
-            self.server_manager.stop_server()
-            self.server_manager = ServerManager(path, port=AI_SERVER_PORT)
-            self.server_manager.server_started.connect(self._on_server_started_process)
-            self.server_manager.error_occurred.connect(self.error_signal.emit)
+            
+            self.server_manager.set_model_path(path)
+            
+            if self.server_manager.is_running():
+                self.server_manager.stop_server()
+
+    def update_config(self, settings: dict):
+        model_name = settings.get("ai_model")
+        self._ctx_size = settings.get("ai_ctx_size", AI_CTX_SIZE)
+        self._gpu_layers = settings.get("ai_gpu_layers", -1)
+        self._gpu_device = settings.get("ai_gpu_device", 0)
+        self._backend = settings.get("ai_backend", "auto")
+        
+        should_restart = False
+
+        if model_name and model_name != self._model_name:
+            self.set_model(model_name)
+            should_restart = True
+
+        else:
+            if self.server_manager.is_running() or should_restart:
+                logger.info("Применение новых настроек ИИ сервера...")
+                self.server_manager.stop_server()
+                QTimer.singleShot(500, self.ensure_server)
 
     def ensure_server(self):
         """Запускает сервер, если он лежит"""
@@ -175,20 +198,21 @@ class AIManager(QObject):
 
         if not self.server_manager.is_running():
             self.progress_signal.emit("Запуск локального AI сервера...")
-            self.server_manager.start_server(ctx_size=AI_CTX_SIZE, gpu_layers=AI_GPU_LAYERS)
+            self.server_manager.start_server(
+                ctx_size=self._ctx_size, 
+                gpu_layers=self._gpu_layers,
+                gpu_device=self._gpu_device,
+                backend_preference=self._backend
+            )
         elif self._server_ready:
             self.server_ready_signal.emit()
 
     def _on_server_started_process(self):
-        """Процесс запущен, начинаем поллинг /health"""
         self.progress_signal.emit("Ожидание загрузки модели...")
-        self.health_timer.start(1000) # Проверять каждую секунду
+        self.health_timer.start(1000)
 
     def _check_health_and_notify(self):
         """Асинхронно проверяем хелсчек (через запуск одноразовой таски или клиента)"""
-        # Здесь мы немного упростим и используем requests в потоке таймера, 
-        # но по-хорошему тут тоже нужен async. Для простоты оставим requests с малым таймаутом,
-        # так как это происходит редко.
         import requests
         try:
             port = self.server_manager.get_port()
@@ -201,23 +225,17 @@ class AIManager(QObject):
         except:
             pass
 
-    # --- Обработка товаров ---
     def start_processing(self, items: List[Dict], prompt: Optional[str], debug_mode: bool, context: Dict):
         self.ensure_server()
         
-        # Если сервер еще не готов, сохраняем задачу и ждем сигнала
         if not self._server_ready:
             self.server_ready_signal.connect(lambda: self.start_processing(items, prompt, debug_mode, context), Qt.ConnectionType.SingleShotConnection)
             return
 
-        # Подготовка промптов (RAG)
         prompts_list = []
-        
-        # Если это простой анализ
         if prompt: 
             prompts_list = [prompt] * len(items)
         else:
-            # Если сложный анализ через PromptBuilder
             priority = context.get('priority', 1)
             user_instructions = context.get('user_instructions', "")
             for item in items:
@@ -226,7 +244,7 @@ class AIManager(QObject):
                     rag_context = self.memory_manager.get_stats_for_title(item.get('title', ''))
                 
                 p = PromptBuilder.build_analysis_prompt(
-                    items=[item], # Передаем как список из 1 элемента, т.к. билдер ожидает список
+                    items=[item],
                     priority=AnalysisPriority(priority),
                     current_item=item,
                     user_instructions=user_instructions,
@@ -234,7 +252,6 @@ class AIManager(QObject):
                 )
                 prompts_list.append(p)
 
-        # Запуск воркера
         if self.processing_worker and self.processing_worker.isRunning():
             self.processing_worker.stop()
             self.processing_worker.wait()
@@ -283,10 +300,10 @@ class AIManager(QObject):
         ram = self.server_manager.get_memory_info()
         return {
             "loaded": self._server_ready,
-            "backend": "auto",
+            "backend": self._backend,
             "model_name": self._model_name,
             "ram_mb": round(ram, 1),
-            "vram_mb": 0.0, # Можно дописать через nvidia-smi, если нужно
+            "vram_mb": 0.0,
             "cpu_percent": 0.0,
             "gpu_percent": 0.0
         }

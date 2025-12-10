@@ -289,7 +289,7 @@ class ControlsWidget(QWidget):
         grid = QGridLayout()
         grid.setSpacing(Spacing.SM)
         grid.addWidget(self._create_split_results_toggle(), 0, 0, 1, 2)
-        lbl_add_to = QLabel("ДОБАВИТЬ К ТАБЛИЦЕ:")
+        lbl_add_to = QLabel("ДОБАВИТЬ К ТАБЛИЦЕ")
         lbl_add_to.setStyleSheet(Components.subsection_title())
         grid.addWidget(lbl_add_to, 1, 0, 1, 2)
         self.merge_table_combo = NoScrollComboBox()
@@ -412,46 +412,66 @@ class ControlsWidget(QWidget):
     def _create_limits_column(self) -> QVBoxLayout:
         layout = QVBoxLayout()
         layout.setSpacing(Spacing.MD)
+        
         limits_card, limits_layout = self._create_param_card("ЛИМИТЫ")
+        
         grid = QGridLayout()
         grid.setSpacing(Spacing.SM)
+        
+        # 1. Настройка инпута (фиксируем ширину, чтобы не растягивался)
         self.max_items_input = QSpinBox()
-        self.max_items_input.setMinimumWidth(80)
+        self.max_items_input.setFixedWidth(80)  # <-- ФИКС: Ограничиваем ширину
         self.max_items_input.setRange(0, 99_999)
         self.max_items_input.setSpecialValueText("∞")
         self.max_items_input.setSingleStep(10)
         self.max_items_input.setStyleSheet(Components.text_input())
         self.max_items_input.valueChanged.connect(self._update_pages_info)
-        grid.addWidget(ParamInput("Объявлений", self.max_items_input), 0, 0)
         
-        # Информационный лейбл с формулой
+        # Обертка ParamInput должна подстраиваться под контент, а не растягиваться
+        input_wrapper = ParamInput("Объявлений", self.max_items_input)
+        input_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        
+        grid.addWidget(input_wrapper, 0, 0)
+        
+        # 2. Настройка инфо-блока (делаем его больше и ровнее)
         self.pages_info_lbl = QLabel()
-        self.pages_info_lbl.setStyleSheet(Typography.style(
-            family=Typography.UI,
-            size=Typography.SIZE_SMALL,
-            color=Palette.TEXT_MUTED
-        ))
-        self.pages_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Убираем жесткий стиль здесь, он будет задаваться через HTML в _update_pages_info
+        self.pages_info_lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED};")
+        self.pages_info_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        # Оборачиваем лейбл в контейнер для выравнивания
         info_container = QWidget()
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
-        info_layout.setSpacing(4)
-        lbl_caption = QLabel("Расход:")
-        lbl_caption.setStyleSheet(Typography.style(family=Typography.UI, size=Typography.SIZE_SMALL, color=Palette.TEXT_SECONDARY))
+        info_layout.setSpacing(2) # Чуть плотнее
+        
+        lbl_caption = QLabel("Обходим")
+        lbl_caption.setStyleSheet(
+            Typography.style(
+                family=Typography.UI,
+                size=Typography.SIZE_NORMAL, # Чуть крупнее заголовок
+                color=Palette.TEXT_SECONDARY,
+            )
+        )
         info_layout.addWidget(lbl_caption)
         info_layout.addWidget(self.pages_info_lbl)
-
+        
+        # Добавляем во вторую колонку
         grid.addWidget(info_container, 0, 1)
 
-        # ---------------------------------------------------------------------------------
-
+        # 3. Нижний ряд (Toggle buttons)
         grid.addWidget(self._create_region_toggle(), 1, 0)
         grid.addWidget(self._create_defects_toggle(), 1, 1)
+
+        # 4. ВАЖНО: Настройка растяжения колонок
+        # Колонка 0 (Инпут) занимает минимум места
+        # Колонка 1 (Инфо) занимает всё остальное место
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+        
         limits_layout.addLayout(grid)
         layout.addWidget(limits_card)
 
+        # Сортировка и нейро-опции (без изменений)
         sort_card, sort_layout = self._create_param_card("СОРТИРОВКА")
         self.sort_combo = NoScrollComboBox()
         self.sort_combo.setMinimumWidth(80)
@@ -467,6 +487,7 @@ class ControlsWidget(QWidget):
                 break
         sort_layout.addWidget(self.sort_combo)
         layout.addWidget(sort_card)
+        
         neuro_card, neuro_layout = self._create_param_card("НЕЙРО-ОПЦИИ")
         neuro_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         neuro_grid = QGridLayout()
@@ -476,6 +497,7 @@ class ControlsWidget(QWidget):
         neuro_grid.setRowStretch(1, 1)
         neuro_layout.addLayout(neuro_grid)
         layout.addWidget(neuro_card, stretch=1)
+        
         return layout
 
     def update_category_count(self, count: int):
@@ -493,29 +515,45 @@ class ControlsWidget(QWidget):
             if not self._parent.search_widget.cached_scanned_categories and not self._parent.search_widget.cached_forced_categories:
                 categories = 1
 
+        is_all_regions = False
+        if hasattr(self, 'search_all_regions_checkbox'):
+            is_all_regions = self.search_all_regions_checkbox.isChecked()
+        
+        # Множитель: 2 если все регионы, 1 если только Москва
+        region_mult = 2 if is_all_regions else 1
+        
+        # Кол-во "задач" для парсера (Category * Mult)
+        tasks_count = categories * region_mult
+        # --- UPDATED LOGIC END ---
+
         if items == 0:
-            # Бесконечный режим
             items_per_cat = "∞"
             pages_per_cat = 100
             total_items = "∞"
         else:
             items_per_cat = items
             pages_per_cat = math.ceil(items / 50)
-            total_items = categories * items
+            total_items = tasks_count * items
 
-        # Новое форматирование для отображения расхода
+        region_suffix = " <span style='color:#e67e22;'>(x2 рег.)</span>" if is_all_regions else ""
+
         text = f"""
         <html>
         <head/>
         <body>
-        <p align="center" style="margin:0px;"><b>{categories}</b> кат. ✕ <b>{items_per_cat}</b> об.</p>
-        <p align="center" style="margin:0px;"><b>{pages_per_cat}</b> стр. <span style="font-size:10px; color:{Palette.TEXT_MUTED};">(по 50 об.)</span></p>
-        <p align="center" style="margin:4px 0px 0px 0px; font-size:12px; color:{Palette.PRIMARY};">Суммарно: <b>{total_items}</b> об.</p>
+        <div style="line-height: 120%">
+            <span style="font-size:13px; color:{Palette.TEXT};"><b>{categories}</b> кат.{region_suffix}</span><br>
+            <span style="font-size:13px; color:{Palette.TEXT};">✕ <b>{items_per_cat}</b> об.</span><br>
+            <span style="font-size:11px; color:{Palette.TEXT_MUTED};">(<b>{pages_per_cat}</b> стр.)</span>
+        </div>
+        <div style="margin-top:6px;">
+            <span style="font-size:14px; color:{Palette.PRIMARY};">Всего: <b>{total_items}</b></span>
+        </div>
         </body>
         </html>
         """
         self.pages_info_lbl.setText(text)
-        self.pages_info_lbl.setToolTip(f"Будет проверено до {categories} категорий по {items_per_cat} объявлений в каждой...")
+        self.pages_info_lbl.setToolTip(f"Будет проверено {tasks_count} направлений (Категории x Регионы)...")
 
     def _create_rag_toggle(self) -> QWidget:
         container = QWidget()
@@ -595,10 +633,13 @@ class ControlsWidget(QWidget):
         self.region_status_label = QLabel("Москва")
         self._update_toggle_label(self.region_status_label, False)
         self.region_status_label.setText("Москва")
-        
         self.search_all_regions_checkbox.stateChanged.connect(
             lambda s: self._update_region_label(s)
         )
+        self.search_all_regions_checkbox.stateChanged.connect(
+            lambda: self._update_pages_info()
+        )
+        
         row_layout.addWidget(self.search_all_regions_checkbox)
         row_layout.addWidget(self.region_status_label)
         layout.addLayout(row_layout)

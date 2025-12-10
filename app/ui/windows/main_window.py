@@ -292,9 +292,6 @@ class MainWindow(QWidget):
         self.search_widget.set_ignore_tags(state.get("ignore_tags", []))
 
         forced_cats = state.get("forced_categories", [])
-        if forced_cats and not self.search_widget.cached_scanned_categories:
-            forced_cats = []
-            state["forced_categories"] = []
 
         self.search_widget.set_forced_categories(forced_cats)
 
@@ -979,13 +976,16 @@ class MainWindow(QWidget):
         if dlg.exec():
             self.app_settings = dlg.get_settings()
             self._save_settings()
-
+            self.controller.ensure_ai_manager()
+            
             if self.controller.ai_manager:
-                self.controller.set_ai_debug_mode(self.app_settings.get("ai_debug", False))
-
-                selected_model = self.app_settings.get("ai_model")
-                if selected_model:
-                    self.controller.ai_manager.set_model(selected_model)
+                self.controller.ai_manager.update_config(self.app_settings)
+                
+                #debug_mode = self.app_settings.get("ai_debug", False)
+                #self.controller.ai_manager._debug_logs = debug_mode
+                
+            #if hasattr(self.controller, 'set_ai_debug_mode'):
+                #self.controller.set_ai_debug_mode(self.app_settings.get("ai_debug", False))
 
     def _on_model_downloaded(self, file_path: str):
         self._model_was_just_downloaded = True

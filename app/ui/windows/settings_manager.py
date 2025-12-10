@@ -245,7 +245,11 @@ class SettingsDialog(QDialog):
         
         self.ctx_size_spin = self._add_spin_row(layout, "Размер контекста:", 512, 32768, AI_CTX_SIZE)
         self.ctx_size_spin.setSingleStep(512)
+
         self.gpu_layers_spin = self._add_spin_row(layout, "GPU слои (-1 = все):", -1, 100, AI_GPU_LAYERS or -1)
+
+        self.gpu_device_spin = self._add_spin_row(layout, "ID GPU (индекс устройства):", 0, 16, 0)
+        self.gpu_device_spin.setToolTip("0 - обычно дискретная карта, 1 - встройка (или наоборот).\nПопробуйте поменять, если запускается не на той карте.")
         
         brow = QHBoxLayout()
         brow.addWidget(QLabel("Бэкенд:"))
@@ -300,6 +304,7 @@ class SettingsDialog(QDialog):
         self.page_timeout_spin.setValue(self.current_settings.get("page_timeout", 15))
         self.ctx_size_spin.setValue(self.current_settings.get("ai_ctx_size", AI_CTX_SIZE))
         self.gpu_layers_spin.setValue(self.current_settings.get("ai_gpu_layers", -1))
+        self.gpu_device_spin.setValue(self.current_settings.get("ai_gpu_device", 0))
         backend = self.current_settings.get("ai_backend", "auto")
         idx = self.backend_combo.findText(backend)
         if idx >= 0: self.backend_combo.setCurrentIndex(idx)
@@ -319,6 +324,7 @@ class SettingsDialog(QDialog):
             "page_timeout": self.page_timeout_spin.value(),
             "ai_ctx_size": self.ctx_size_spin.value(),
             "ai_gpu_layers": self.gpu_layers_spin.value(),
+            "ai_gpu_device": self.gpu_device_spin.value(),
             "ai_backend": self.backend_combo.currentText(),
             "ai_model": self.model_combo.currentText(),
             "debug_mode": self.debug_mode_check.isChecked(),
@@ -326,7 +332,8 @@ class SettingsDialog(QDialog):
             "parser_debug": self.parser_debug_check.isChecked(),
             "favorites_monitor_interval": self.fav_monitor_spin.value(),
         }
+        self.current_settings = settings
         self.settings_changed.emit(settings)
         self.accept()
     
-    def get_settings(self) -> dict: return self.current_settings # (updated via apply)
+    def get_settings(self) -> dict: return self.current_settings

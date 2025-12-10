@@ -252,8 +252,9 @@ class SearchNavigator:
         # ИСПРАВЛЕНИЕ: Всегда переходим, если нужно
         if need_navigation:
             logger.dev("Переход на главную страницу Авито...")
-            self.driver.get("https://www.avito.ru/moskva")
-            PageLoader.wait_for_load(self.driver, timeout=10)
+            if not PageLoader.safe_get(self.driver, "https://www.avito.ru/moskva"):
+                logger.warning("Не удалось загрузить главную страницу")
+                return None
             time.sleep(0.5 if fast_mode else 2)
 
         # ИСПРАВЛЕНИЕ: Более надежный поиск элемента
@@ -404,311 +405,190 @@ class SearchNavigator:
         collected_urls = []
         try:
             logger.info(f"Умный поиск: '{keywords}'...", token="smart_search")
-    
+
             items = self._type_query(keywords)
-            if items is None:
-                logger.warning("Не удалось выполнить поиск. Использую запасной вариант...")
-                return []
-    
             if not items:
-                logger.warning("Категории не появились. Использую запасной вариант...")
+                logger.warning("Меню категорий не открылось.")
                 return []
-    
-            # ✅ Собираем информацию о категориях (ТЕКСТ + ЭЛЕМЕНТ + HREF)
+
             candidates = []
             seen_texts = set()
-    
+
+            # Нормализация текста для сравнения
+            def normalize(s): 
+                return str(s).replace('\xa0', ' ').replace('\n', ' ').strip().lower()
+
             for i, item in enumerate(items):
                 try:
                     text = item.text.replace("\n", " ").strip()
-                    if not text or text in seen_texts:
-                        continue
+                    if not text: continue
                     
-                    seen_texts.add(text)
+                    # Сохраняем, даже если текст повторяется (на случай разных ссылок/типов)
+                    # Но для seen_texts используем оригинал
+                    if text not in seen_texts:
+                        seen_texts.add(text)
+
                     has_icon = len(item.find_elements(By.TAG_NAME, "img")) > 0
                     has_arrow = "←" in text or "→" in text
                     item_type = "CATEGORY" if has_icon else ("GENERAL" if has_arrow else "QUERY")
-    
-                    # ✅ Получаем href ДО клика
                     href = item.get_attribute("href") or ""
-    
+
                     candidates.append({
-                        'index': i,
-                        'text': text,
-                        'type': item_type,
-                        'is_main': has_icon,
-                        'href': href,
-                        'element': item
+                        'index': i, 'text': text, 'type': item_type,
+                        'is_main': has_icon, 'href': href, 'element': item
                     })
-    
-                    logger.dev(f"Кандидат: '{text}' | type={item_type} | href={href[:50] if href else 'NO HREF'}")
-    
-                except Exception as e:
-                    logger.dev(f"Ошибка сбора кандидата {i}: {e}")
-                    pass
-                
-            if not candidates:
-                logger.info("Подходящих категорий не найдено...", token="smart_search")
-                return []
-    
-            # ✅ Определяем ТЕКСТЫ целевых категорий
+                except: pass
+
+            if not candidates: return []
+
             target_texts = []
-    
+            
+            # --- ЛОГИКА ВЫБОРА КАТЕГОРИЙ ---
             if forced_filters:
-                logger.info(f"Принудительные фильтры: {forced_filters}")
+                logger.info(f"Ищем выбранные категории ({len(forced_filters)} шт)...")
                 for f in forced_filters:
-                    found = False
-                    for c in candidates:
-                        if f.lower() in c['text'].lower() or c['text'].lower() in f.lower():
-                            if c['text'] not in target_texts:
-                                target_texts.append(c['text'])
-                                logger.info(f"Найдено совпадение: '{c['text']}' для фильтра '{f}'...")
-                                found = True
-                                break
-                    if not found:
-                        logger.warning(f"Не найдено совпадение для фильтра '{f}'...")
-    
-            # ✅ ИСПРАВЛЕНИЕ 4: Улучшенный выбор категории
-            if not target_texts:
-                logger.info("Используется основная категория...")
-                main = None
-    
-                # Приоритет 1: КАТЕГОРИЯ с иконкой (is_main=True)
-                for c in candidates:
-                    if c['is_main'] and c['type'] == "CATEGORY":
-                        main = c
-                        logger.dev(f"Выбрана главная категория (с иконкой): '{c['text']}'")
-                        break
+                    f_norm = normalize(f)
+                    matched_candidate = None
                     
-                # Приоритет 2: СПЕЦИАЛЬНАЯ категория (со стрелкой ←)
-                if main is None:
+                    # 1. Точное совпадение (приоритет)
                     for c in candidates:
-                        if c['type'] == "GENERAL":
-                            main = c
-                            logger.dev(f"Выбрана специальная категория (со стрелкой): '{c['text']}'")
+                        if f_norm == normalize(c['text']):
+                            matched_candidate = c
                             break
-                        
-                # Приоритет 3: Первая КАТЕГОРИЯ (без стрелки, но с иконкой)
-                if main is None:
+                    
+                    # 2. Частичное совпадение (если точного нет)
+                    if not matched_candidate:
+                        for c in candidates:
+                            c_norm = normalize(c['text'])
+                            if f_norm in c_norm or c_norm in f_norm:
+                                matched_candidate = c
+                                break
+                    
+                    if matched_candidate:
+                        if matched_candidate['text'] not in target_texts:
+                            target_texts.append(matched_candidate['text'])
+                            logger.dev(f"✓ Категория найдена: '{f}' -> '{matched_candidate['text']}'")
+                    else:
+                        logger.warning(f"⚠ Категория '{f}' не найдена в списке Авито для этого запроса.")
+                        # Выводим кандидатов, чтобы понять причину (в dev режиме)
+                        # debug_names = [c['text'] for c in candidates]
+                        # logger.dev(f"Доступные: {debug_names}")
+
+            # Если ничего не выбрали или фильтры не заданы - автовыбор (старая логика)
+            if not target_texts and not forced_filters:
+                main = None
+                # Приоритет: Категория с иконкой -> Общая -> Любая
+                for c in candidates:
+                    if c['is_main'] and c['type'] == "CATEGORY": main = c; break
+                if not main:
                     for c in candidates:
-                        if c['type'] == "CATEGORY":
-                            main = c
-                            logger.dev(f"Выбрана категория (без иконки): '{c['text']}'")
-                            break
-                        
-                # Fallback: Первый элемент (если ничего не найдено)
-                if main is None and candidates:
-                    main = candidates[0]
-                    logger.warning(f"Не найдено категорий, использую первый элемент: '{main['text']}'")
-    
-                if main:
-                    target_texts = [main['text']]
-    
-            if not target_texts:
-                logger.warning("Не удалось определить целевые категории...")
+                        if c['type'] == "GENERAL": main = c; break
+                if not main:
+                    for c in candidates:
+                        if c['type'] == "CATEGORY": main = c; break
+                if not main and candidates: main = candidates[0]
+
+                if main: target_texts = [main['text']]
+
+            if not target_texts: 
+                logger.warning("Не выбрано ни одной категории для перехода.")
                 return []
-    
-            # ✅ УЛУЧШЕННАЯ ЛОГИКА ПЕРЕХОДА
+
+            # --- ЦИКЛ ПЕРЕХОДА ---
+            # Используем target_texts, который теперь точно содержит всё, что мы нашли
             for idx, target_text in enumerate(target_texts):
                 try:
-                    # Для первого клика используем уже загруженные элементы
-                    if idx == 0:
-                        target_candidate = next((c for c in candidates if c['text'] == target_text), None)
-                    else:
-                        # Для последующих кликов делаем новый поиск
-                        items = self._type_query(keywords, fast_mode=True)
-                        if not items:
-                            logger.warning(f"Не удалось получить список категорий (попытка {idx+1})")
-                            continue
-                        
-                        # Ищем элемент по ТЕКСТУ
-                        target_element = None
-                        target_href = None
-                        for item in items:
-                            try:
-                                item_text = item.text.replace("\n", " ").strip()
-                                if item_text == target_text:
-                                    target_element = item
-                                    target_href = item.get_attribute("href") or ""
-                                    break
-                            except:
-                                pass
-                            
-                        if not target_element:
-                            logger.warning(f"Категория '{target_text}' не найдена в новом списке")
-                            continue
-                        
-                        target_candidate = {
-                            'text': target_text,
-                            'href': target_href,
-                            'element': target_element,
-                            'index': 0  # Для последующих кликов индекс неизвестен
-                        }
-    
-                    if not target_candidate:
-                        logger.warning(f"Не найден кандидат для '{target_text}'")
-                        continue
-                    
                     logger.info(f"Переход {idx+1}/{len(target_texts)}: {target_text}")
-    
-                    # СТРАТЕГИЯ 1: Попробовать использовать href напрямую
-                    if target_candidate.get('href') and self._is_valid_url(target_candidate['href']):
-                        logger.dev(f"Используем прямой href: {target_candidate['href']}")
-                        old_url = self.driver.current_url
-    
-                        self.driver.get(target_candidate['href'])
-                        PageLoader.wait_for_load(self.driver, timeout=10)
-                        time.sleep(2.0)
-    
-                        current_url = self.driver.current_url
-                        if current_url != old_url and self._is_valid_url(current_url):
-                            collected_urls.append(current_url)
-                            logger.success(f"✓ URL получен (прямой переход): {current_url}")
-                            continue
-                        else:
-                            logger.warning(f"Прямой переход не удался, пробуем навигацию...")
-    
-                    # СТРАТЕГИЯ 2: Эмуляция клавиатурного выбора
-                    target_element = target_candidate['element']
-                    old_url = self.driver.current_url.split('#')[0]
-                    navigation_success = False
                     
-                    # Метод 1: Клавиатурная навигация (самый надежный)
-                    logger.dev(f"Метод 1: Клавиатурная навигация...")
+                    # 1. Быстрый путь: href из кэша
+                    cached_candidate = next((c for c in candidates if c['text'] == target_text), None)
+                    
+                    if cached_candidate and cached_candidate.get('href') and self._is_valid_url(cached_candidate['href']):
+                        try:
+                            logger.dev(f"Быстрый переход по href: {cached_candidate['href']}")
+                            self.driver.get(cached_candidate['href'])
+                            PageLoader.wait_for_load(self.driver, timeout=10)
+                            time.sleep(1.5)
+                            
+                            if self._is_valid_url(self.driver.current_url):
+                                collected_urls.append(self.driver.current_url)
+                                continue 
+                        except Exception as e:
+                            logger.dev(f"Ошибка быстрого перехода: {e}")
+
+                    # 2. Медленный путь (UI)
+                    target_candidate = None
+                    if idx == 0 and cached_candidate:
+                        target_candidate = cached_candidate
+                    else:
+                        items = self._type_query(keywords, fast_mode=True)
+                        if items:
+                            for item in items:
+                                try:
+                                    if item.text.replace("\n", " ").strip() == target_text:
+                                        target_candidate = {
+                                            'text': target_text,
+                                            'href': item.get_attribute("href") or "",
+                                            'element': item,
+                                            'index': 0 
+                                        }
+                                        break
+                                except: pass
+
+                    if not target_candidate:
+                        logger.warning(f"Элемент '{target_text}' потерян при повторном поиске")
+                        continue
+
+                    # Навигация (Клавиатура -> Клик -> JS)
+                    nav_success = False
+                    
+                    # Попытка клавиатурой (самая надежная для меню)
                     try:
-                        # Получаем индекс целевого элемента
-                        target_index = target_candidate.get('index', 0)
-                        
-                        # Находим поисковую строку заново
                         search_input = None
                         for selector in AvitoSelectors.SEARCH_INPUTS:
                             try:
-                                search_input = self.driver.find_element(By.CSS_SELECTOR, selector)
-                                if search_input.is_displayed():
-                                    break
-                                search_input = None
-                            except:
-                                continue
-                            
+                                el = self.driver.find_element(By.CSS_SELECTOR, selector)
+                                if el.is_displayed():
+                                    search_input = el; break
+                            except: continue
+                        
                         if search_input:
-                            # Фокусируемся на поисковой строке
                             search_input.click()
                             time.sleep(0.3)
-                            
-                            # Нажимаем стрелку вниз нужное количество раз
-                            for _ in range(target_index + 1):
+                            # Важно: индекс может сместиться, но пробуем по старому
+                            target_idx = target_candidate.get('index', 0)
+                            for _ in range(target_idx + 1):
                                 search_input.send_keys(Keys.ARROW_DOWN)
-                                time.sleep(0.15)
-                            
-                            # Нажимаем Enter
+                                time.sleep(0.05)
                             search_input.send_keys(Keys.ENTER)
-                            logger.dev("✓ Клавиатурная навигация выполнена (Arrow Down + Enter)")
-                            
-                            # Ждем навигации
                             time.sleep(1.5)
-                            navigation_success = True
-                        else:
-                            logger.dev("✗ Поисковая строка не найдена")
-                    except Exception as e:
-                        logger.dev(f"✗ Клавиатурная навигация: {e}")
-                    
-                    # Метод 2: Прямой клик + принудительный переход
-                    if not navigation_success:
-                        logger.dev(f"Метод 2: Прямой клик по элементу...")
+                            nav_success = True
+                    except: pass
+
+                    if not nav_success:
                         try:
-                            self.driver.execute_script(
-                                "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", 
-                                target_element
-                            )
-                            time.sleep(0.5)
-                            
-                            # Пробуем ActionChains
-                            ActionChains(self.driver).move_to_element(target_element).pause(0.3).click().perform()
-                            logger.dev("✓ ActionChains клик выполнен")
+                            self.driver.execute_script("arguments[0].click();", target_candidate['element'])
                             time.sleep(1.5)
-                            navigation_success = True
-                        except Exception as e:
-                            logger.dev(f"✗ Клик: {e}")
-                    
-                    # Метод 3: JavaScript клик (запасной вариант)
-                    if not navigation_success:
-                        logger.dev(f"Метод 3: JavaScript клик...")
-                        try:
-                            self.driver.execute_script("arguments[0].click();", target_element)
-                            logger.dev("✓ JS клик выполнен")
-                            time.sleep(1.5)
-                            navigation_success = True
-                        except Exception as e:
-                            logger.dev(f"✗ JS клик: {e}")
-                    
-                    # Если все методы провалились, все равно проверяем URL
-                    if not navigation_success:
-                        logger.warning(f"Все методы навигации провалились для '{target_text}', проверяем URL...")
-                    
-                    # ✅ ПРОВЕРКА ИЗМЕНЕНИЯ URL
-                    max_wait = 15
+                            nav_success = True
+                        except: pass
+
+                    # Сбор URL
                     waited = 0
-                    url_changed = False
-    
-                    while waited < max_wait:
+                    while waited < 8:
                         time.sleep(0.5)
                         waited += 0.5
-                        current_url = self.driver.current_url.split('#')[0]
-    
-                        # Проверяем не только изменение, но и валидность
-                        if current_url != old_url:
-                            logger.dev(f"URL изменился после {waited:.1f}s: {current_url}")
-    
-                            # Дополнительная проверка: URL должен быть валидным
-                            if self._is_valid_url(current_url):
-                                url_changed = True
-                                break
-                            else:
-                                logger.dev("URL изменился, но не прошел валидацию, продолжаем ждать...")
-    
-                    if not url_changed:
-                        logger.warning(f"URL не изменился после всех попыток (ждали {max_wait}s)")
-                        logger.dev(f"Старый URL: {old_url}")
-                        logger.dev(f"Текущий URL: {self.driver.current_url}")
-    
-                        # Последняя попытка: может быть, страница загрузилась с якорем?
-                        current_full = self.driver.current_url
-                        if self._is_valid_url(current_full):
-                            logger.info("URL с якорем валиден, используем его...")
-                            collected_urls.append(current_full)
-                            continue
-                        else:
-                            # Окончательно не удалось
-                            logger.error(f"Не удалось получить валидный URL для '{target_text}'")
-                            continue
-                        
-                    # ✅ URL изменился и валиден - добавляем в результат
-                    PageLoader.wait_for_load(self.driver, timeout=5)
-                    time.sleep(1.5)
-                    
-                    current_url = self.driver.current_url
-                    if self._is_valid_url(current_url):
-                        collected_urls.append(current_url)
-                        logger.success(f"✓ URL получен (навигация): {current_url}")
-                    else:
-                        logger.warning(f"✗ URL не прошел валидацию: {current_url}")
-                        logger.dev(f"Проверка валидности:")
-                        logger.dev(f" - avito.ru in url: {'avito.ru' in current_url}")
-                        logger.dev(f" - path segments: {urlparse(current_url).path.count('/')}")
-                        logger.dev(f" - query params: {parse_qs(urlparse(current_url).query)}")
-    
+                        if self._is_valid_url(self.driver.current_url) and self.driver.current_url not in collected_urls:
+                            collected_urls.append(self.driver.current_url)
+                            break
+
                 except Exception as e:
-                    logger.error(f"Ошибка перехода к '{target_text}': {e}")
-                    import traceback
-                    logger.dev(f"Traceback:\n{traceback.format_exc()}")
+                    logger.error(f"Сбой перехода '{target_text}': {e}")
                     continue
-                                    
+
             return collected_urls
-    
+
         except Exception as e:
-            logger.error(f"Ошибка умного поиска: {e}")
-            import traceback
-            logger.dev(f"Traceback:\n{traceback.format_exc()}")
+            logger.error(f"Критическая ошибка умного поиска: {e}")
             return []
 
 # --- Item Parser ---
@@ -752,16 +632,33 @@ class ItemParser:
 
             seller_id = ""
             sel_link = soup_element.select_one(AvitoSelectors.PREVIEW_SELLER_LINK)
+            #if sel_link:
+            #    href = sel_link.get('href')
+            #    if href: 
+            #        match_user = re.search(r'/(?:user|companies|brands)/([^/]+)', href)
+            #        if match_user:
+            #            seller_id = match_user.group(1)
+            #            seller_id = seller_id.split('?')[0]
+            #        else:
+            #            match_profile = re.search(r'/profile/([^/?]+)', href)
+            #            if match_profile:
+            #                seller_id = match_profile.group(1)
             if sel_link:
                 href = sel_link.get('href')
-                m = re.search(r'/profile/(\w+)', href)
-                if m: seller_id = m.group(1)
+                if href:
+                    # Robust ID extraction handles /user/, /companies/, /brands/
+                    parts = [p for p in href.split('/') if p and p not in ['profile', 'user', 'brands', 'companies']]
+                    if parts:
+                        seller_id = parts[-1].split('?')[0]
+            
+            views = 0
 
             return {
                 'id': ad_id, 'link': link, 'price': price,
                 'title': title, 'date_text': date_text,
                 'description': description, 'city': city, 'condition': 'неизвестно',
                 'seller_id': seller_id,
+                'views': views,
                 'parsed_at': datetime.now().isoformat()
             }
         except Exception:
@@ -817,7 +714,8 @@ class AvitoParser(QObject):
         forced_categories: List[str] | None,
         sort_type: str,
     ) -> List[tuple[str, str]]:
-        target_urls = []
+        
+        category_urls = []
         if isinstance(keywords, (list, tuple)): query_str = " ".join(keywords)
         else: query_str = str(keywords)
 
@@ -831,15 +729,16 @@ class AvitoParser(QObject):
             smart_urls = navigator.perform_smart_search(query_str)
 
         if smart_urls:
-            for url in smart_urls: target_urls.append((url, "Категория"))
+            for url in smart_urls: category_urls.append((url, "Категория"))
         else:
             params = {"q": query_str}
             fallback = f"{BASE_URL_MOSCOW}?{urlencode(params)}"
-            target_urls.append((fallback, "Поиск (Fallback)"))
+            category_urls.append((fallback, "Поиск"))
 
         final_tasks: List[tuple[str, str]] = []
-        unique_task_urls: set[str] = set()
-
+        unique_check: set[str] = set()
+        
+        # TODO
         sort_map = {
             "default": None, 
             "price_asc": "1",
@@ -847,109 +746,103 @@ class AvitoParser(QObject):
             "date": "104",
             "discount": None,
         }
-        sort_code = sort_map.get(sort_type)
+        sort_code = sort_map.get(sort_type, None)
 
-        for raw_url, label in target_urls:
+        for raw_url, cat_label in category_urls:
             try:
-                if "avito.ru/moskva" in raw_url and len(raw_url) < 40 and "q=" not in raw_url:
-                    continue
-
                 parsed = urlparse(raw_url)
                 qs = parse_qs(parsed.query)
-
-                if min_price:
-                    qs["pmin"] = [str(min_price)]
-                if max_price:
-                    qs["pmax"] = [str(max_price)]
+                if min_price: qs["pmin"] = [str(min_price)]
+                if max_price: qs["pmax"] = [str(max_price)]
+                if sort_code: qs["s"] = [sort_code]
                 
-                if sort_code is not None:
-                    qs["s"] = [sort_code]
-
                 path = parsed.path
+                path_parts = [p for p in path.strip('/').split('/') if p]
+                
+                qs_encoded = urlencode(qs, doseq=True)
+                
+                if path_parts and path_parts[0] not in ['rossiya']: # Если это не РФ сразу
+                    url_local = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{qs_encoded}"
+                     
+                    if url_local not in unique_check:
+                        unique_check.add(url_local)
+                        final_tasks.append((url_local, f"{cat_label} (Локально)"))
+
+                # --- ЗАДАЧА 2: ВСЕ РЕГИОНЫ (Если включено) ---
                 if search_all_regions:
-                    if "/moskva/" in path:
-                        path = path.replace("/moskva/", "/rossiya/")
-                    elif "/sankt-peterburg/" in path:
-                        path = path.replace("/sankt-peterburg/", "/rossiya/")
-                    elif not path.startswith("/rossiya/"):
-                        pass
-                else:
-                    if "/rossiya/" in path:
-                        path = path.replace("/rossiya/", "/moskva/")
+                    # Подменяем регион на 'rossiya'
+                    if path_parts:
+                        path_parts_global = list(path_parts)
+                        path_parts_global[0] = "rossiya" # Меняем первый сегмент (регион)
+                        new_path = "/" + "/".join(path_parts_global)
+                    else:
+                        new_path = "/rossiya"
+                    
+                    url_global = f"{parsed.scheme}://{parsed.netloc}{new_path}?{qs_encoded}"
+                    
+                    if url_global not in unique_check:
+                        unique_check.add(url_global)
+                        final_tasks.append((url_global, f"{cat_label} (РФ)"))
 
-                new_qs = urlencode(qs, doseq=True)
-                final_url = f"{parsed.scheme}://{parsed.netloc}{path}?{new_qs}"
-
-                if final_url not in unique_task_urls:
-                    unique_task_urls.add(final_url)
-                    final_tasks.append((final_url, label))
-            except Exception:
-                if raw_url not in unique_task_urls:
-                    unique_task_urls.add(raw_url)
-                    final_tasks.append((raw_url, label))
-
-        if not final_tasks:
-            params = {"q": query_str}
-            fb_url = f"{BASE_URL_MOSCOW}?{urlencode(params)}"
-            if sort_code is not None:
-                fb_url += f"&s={sort_code}"
-            final_tasks.append((fb_url, "Emergency Global"))
+            except Exception as e:
+                logger.error(f"Ошибка задач для {raw_url}: {e}")
+                final_tasks.append((raw_url, cat_label))
 
         return final_tasks
 
     def run_tasks(self, final_tasks, **kwargs) -> List[Dict[str, Any]]:
         all_results = []
         seen_ids = set()
+        
         existing_ids_base = kwargs.get('existing_ids_base', set())
+        if existing_ids_base:
+            seen_ids.update(existing_ids_base)
+            logger.info(f"Загружено {len(existing_ids_base)} исключений (ранее найденные товары).")
+        
         total_tasks = len(final_tasks)
         max_total_global = self.max_total_items
-        max_per_category = max_total_global  # Убрали разделение на категории
-
-        if max_total_global:
-            # Больше не делим на количество категорий
-            # max_per_category = max_total_global // total_tasks
-            max_per_category = max_total_global
-            logger.info(f"Получение до {max_per_category} товаров в каждой из {total_tasks} категорий...")
-
-        # Рассчитываем общий ожидаемый результат для прогресс-бара
-        total_expected_items = max_total_global * total_tasks if max_total_global else None
-
-        kwargs_filtered = {k: v for k, v in kwargs.items() if k != 'max_total_items'}
-
+        
+        current_limit_ceiling = 0
+        
+        kwargs_filtered = {
+            k: v for k, v in kwargs.items() 
+            if k not in ['max_total_items', 'existing_ids_base']
+        }
+        
         for i, (url, label) in enumerate(final_tasks):
-            if self.is_stop_requested():
-                break
-            logger.info(f"Категория {i+1}/{total_tasks}: {label}...")
-            category_results = []
+            if self.is_stop_requested(): break
+            
+            if max_total_global:
+                current_limit_ceiling += max_total_global
+            else:
+                current_limit_ceiling = None
+
+            logger.info(f"Задача {i+1}/{total_tasks}: {label}...")
+            
             self.process_region(
                 base_url=url,
                 seen_ids=seen_ids,
-                results_list=category_results,
+                results_list=all_results,
                 existing_ids_base=existing_ids_base,
-                max_total_items=max_per_category,
-                total_expected_items=total_expected_items,
+                max_total_items=current_limit_ceiling,
+                total_expected_items=current_limit_ceiling,
                 current_task_index=i,
                 total_tasks=total_tasks,
                 **kwargs_filtered
             )
-            all_results.extend(category_results)
-            logger.success(f"Категория {i+1}: получено {len(category_results)} товаров...")
-
-        logger.success(f"Итого собрано: {len(all_results)} товаров из {total_tasks} категорий...")
+            
         return all_results
 
     def search_items(self, keywords, ignore_keywords=None, **kwargs) -> List[Dict[str, Any]]:
         if self._is_running: return []
         self._is_running = True
         self._stop_requested = False
-        
-        # Сброс прогресса
         self.progress_value.emit(0)
 
-        logger.success(f"--- ЗАПУСК ПАРСЕРА: {keywords} ---")
+        logger.success(f"--- ЗАПУСК: {keywords} ---")
 
         try:
-            logger.progress("Инициализация браузера...", token="init")
+            logger.progress("Браузер...", token="init")
             self.driver_manager._initialize_driver()
             
             forced_cats = kwargs.get('forced_categories')
@@ -964,7 +857,6 @@ class AvitoParser(QObject):
             
             self.max_total_items = kwargs.get('max_total_items')
             self.deep_checks_done = 0
-
             kwargs['ignore_keywords'] = ignore_keywords or []
 
             results = self.run_tasks(final_tasks, **kwargs)
@@ -972,11 +864,11 @@ class AvitoParser(QObject):
 
         except Exception as e:
             self.error_occurred.emit(str(e))
-            logger.error(f"Критическая ошибка: {e}")
+            logger.error(f"Error: {e}")
             return []
         finally:
             self._is_running = False
-            logger.info("Парсинг завершен...")
+            logger.info("Готово.")
 
     def process_region(
         self, 
@@ -1006,18 +898,15 @@ class AvitoParser(QObject):
              page_limit = min(max_pages, ALL_PAGES_LIMIT)
         
         page = 1
-        
         ignore_keywords = ignore_keywords or []
-
         blacklist_manager = get_blacklist_manager()
         blocked_seller_ids = blacklist_manager.get_active_seller_ids()
 
         while True:
+            # --- РАСЧЕТ ПРОГРЕССА (ДЛЯ UI) ---
             current_progress = 0
             if total_expected_items and total_expected_items > 0:
-                items_done_in_current = len(results_list)
-                items_done_in_previous = current_task_index * max_total_items
-                total_done = items_done_in_previous + items_done_in_current
+                total_done = len(results_list)
                 if total_done >= total_expected_items:
                     current_progress = 100
                 else:
@@ -1035,7 +924,16 @@ class AvitoParser(QObject):
 
             self.progress_value.emit(current_progress)
 
+            # --- ПРОВЕРКА ЛИМИТА ДО ЗАГРУЗКИ СТРАНИЦЫ ---
+            if max_total_items and len(results_list) >= max_total_items:
+                logger.info(f"Лимит задачи достигнут ({len(results_list)}/{max_total_items}).")
+                break
+
             if self.is_stop_requested(): 
+                break
+
+            if page > page_limit:
+                logger.info("Лимит страниц достигнут.")
                 break
 
             logger.progress(f"Сканирование страницы {page}...", token="parser_page")
@@ -1050,47 +948,49 @@ class AvitoParser(QObject):
             )
 
             if not ok:
+                # Если страница не грузится, пробуем следующую
                 page += 1
                 continue
 
             PageLoader.scroll_page(self.driver_manager.driver, self.is_stop_requested)
             
             page_items = self._parse_page()
-            if not page_items: break
+            if not page_items:
+                logger.info("Товары на странице не найдены (возможно, конец списка).")
+                break
 
             items_added_on_page = 0
+            
             for item in page_items:
                 if self.is_stop_requested(): break
+
+                # --- 1. ПРОВЕРКА НА ЛИМИТ (Сразу) ---
                 if max_total_items and len(results_list) >= max_total_items:
-                    if total_expected_items:
-                         items_done_in_current = max_total_items
-                         items_done_in_previous = current_task_index * max_total_items
-                         total_done = items_done_in_previous + items_done_in_current
-                         p = int((total_done / total_expected_items) * 100)
-                         self.progress_value.emit(p)
-                    else:
-                         self.progress_value.emit(100)
-                    return
+                    logger.info("Лимит товаров достигнут в процессе обработки страницы.")
+                    return # Выходим полностью, задача выполнена
 
                 ad_id = str(item.get("id") or "").strip()
 
+                # --- 2. ПРОВЕРКА ДУБЛИКАТОВ ---
+                if ad_id in seen_ids:
+                    continue
+                
                 if ad_id and existing_ids_base and ad_id in existing_ids_base:
                     if skip_duplicates and not allow_rewrite_duplicates:
                         continue
                 
-                if ad_id in seen_ids:
-                    continue
-
+                # --- 3. ПРОВЕРКА BLACKLIST ---
                 item_seller_id = item.get('seller_id', '')
                 if item_seller_id and item_seller_id in blocked_seller_ids:
-                    # logger.dev(f"Seller blocked: {item_seller_id}")
                     continue
                 
+                # --- 4. ФИЛЬТРЫ ---
                 if self._should_skip(item, min_price, max_price, ignore_keywords, filter_defects):
                     continue
                 
+                # --- 5. DEEP DIVE (Глубокий анализ) ---
                 if is_deep_mode:
-                    if max_total_items and self.deep_checks_done >= max_total_items: return
+                    # Лимит на количество "глубоких" запросов (если нужно, можно привязать к max_total_items)
                     self.deep_checks_done += 1
                     
                     short = item["title"][:30]
@@ -1099,33 +999,34 @@ class AvitoParser(QObject):
                     
                     details = self._deep_dive_get_details(item["link"])
                     if not details:
-                        continue
+                        continue # Если не удалось получить детали (или забанили), пропускаем
                     
                     item.update(details)
-                
-                if ad_id not in seen_ids:
-                    seen_ids.add(ad_id)
+
+                # --- 6. СОХРАНЕНИЕ РЕЗУЛЬТАТА ---
+                if item['id'] not in seen_ids:
+                    seen_ids.add(item['id'])
                     results_list.append(item)
                     items_added_on_page += 1
 
+                    # Отправка сигнала прогресса
                     if total_expected_items and total_expected_items > 0:
-                        items_done_in_current = len(results_list)
-                        items_done_in_previous = current_task_index * max_total_items
-                        total_done = items_done_in_previous + items_done_in_current
-                        
+                        total_done = len(results_list)
                         p = min(100, int((total_done / total_expected_items) * 100))
                         self.progress_value.emit(p)
-                        
                     elif max_total_items and max_total_items > 0:
                         p = min(100, int((len(results_list) / max_total_items) * 100))
                         self.progress_value.emit(p)
                     
-                if max_items_per_page and items_added_on_page >= max_items_per_page: break
+                if max_items_per_page and items_added_on_page >= max_items_per_page: 
+                    break
 
             if items_added_on_page > 0:
                 logger.info(f"Стр {page}: +{items_added_on_page} товаров", token=f"page_done_{page}")
 
-            if not self._has_next_page(page): break
+            if not self._has_next_page(page): 
+                break
+            
             page += 1
 
     def _deep_dive_get_details(self, url):
@@ -1180,21 +1081,20 @@ class AvitoParser(QObject):
                 'city': 'неизвестно',
                 'condition': 'неизвестно',
                 'date_text': 'неизвестно',
+                'views': 0,
+                'seller_id': ''
             }
 
-            seller_id = ""
             try:
-                seller_link = self.driver_manager.driver.find_element(
-                    By.CSS_SELECTOR,
-                    "a[data-marker='seller-info/label'], a[href*='/profile/']"
-                )
-                href = seller_link.get_attribute('href')
-                if href:
-                    match = re.search(r'/profile/(\w+)', href)
-                    if match: seller_id = match.group(1)
+                seller_links = self.driver_manager.driver.find_elements(By.CSS_SELECTOR, "a[href*='/user/'], a[href*='/companies/'], a[href*='/brands/']")
+                for link in seller_links:
+                    href = link.get_attribute('href')
+                    if href:
+                        match = re.search(r'/(?:user|companies|brands)/([^/]+)', href)
+                        if match:
+                            details['seller_id'] = match.group(1).split('?')[0]
+                            break
             except: pass
-            
-            if seller_id: details['seller_id'] = seller_id
 
             try:
                 desc_el = self.driver_manager.driver.find_element(
@@ -1232,6 +1132,18 @@ class AvitoParser(QObject):
                 )
                 details['date_text'] = date_el.text.replace("· ", "").strip()
             except: pass
+
+            try:
+                views_el = self.driver_manager.driver.find_element(By.CSS_SELECTOR, "[data-marker='item-view/total-views']")
+                txt = views_el.text
+                m = re.search(r'(\d+)', txt.replace(' ', ''))
+                if m: details['views'] = int(m.group(1))
+            except:
+                try:
+                    src = self.driver_manager.driver.page_source
+                    m = re.search(r'(\d+)\s+просмотр', src)
+                    if m: details['views'] = int(m.group(1))
+                except: pass
 
             return details
 

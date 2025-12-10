@@ -24,7 +24,7 @@ class SearchWidget(QWidget):
         super().__init__(parent)
         from app.ui.windows.controls_widget import SearchModeWidget
         self.search_mode_widget = SearchModeWidget()
-        self.cached_scanned_categories: List[str] = []
+        self.cached_scanned_categories: List[dict] = [] # Теперь точно List[dict]
         self.cached_forced_categories: List[str] = []
         self.tag_presets: Dict[str, List[str]] = {}
         self.ignore_tag_presets: Dict[str, List[str]] = {}
@@ -35,40 +35,36 @@ class SearchWidget(QWidget):
         self._connect_signals()
         self._emit_categories_changed()
     
+    # ... (Методы _init_ui, attach_ai_stats, _create_search_group, _create_ignore_group, _create_tool_btn, _show_tooltip, _connect_signals
+    #      остаются БЕЗ ИЗМЕНЕНИЙ. Копируй их из предыдущего файла)
+    
     def _init_ui(self):
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(Spacing.GAP_NORMAL)
-        
         main_panel = QFrame()
         main_panel.setStyleSheet(Components.panel())
         main_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         main_panel.setMinimumHeight(200)
-        
         panel_layout = QVBoxLayout(main_panel)
         panel_layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
         panel_layout.setSpacing(Spacing.GAP_NORMAL)
-        
         title = QLabel("КЛЮЧЕВЫЕ СЛОВА")
         title.setStyleSheet(Components.section_title())
         panel_layout.addWidget(title)
-
         tags_area = QHBoxLayout()
         tags_area.setSpacing(Spacing.GAP_NORMAL)
         self.search_group = self._create_search_group()
         tags_area.addWidget(self.search_group, stretch=1)
-        
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         sep.setStyleSheet(f"background-color: {Palette.DIVIDER}; width: 1px;")
         tags_area.addWidget(sep)
-        
         self.ignore_group = self._create_ignore_group()
         tags_area.addWidget(self.ignore_group, stretch=1)
         panel_layout.addLayout(tags_area)
         root_layout.addWidget(main_panel, stretch=1)
-        
         self.right_placeholder = QWidget()
         self.right_placeholder.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
         self.right_layout = QVBoxLayout(self.right_placeholder)
@@ -87,22 +83,18 @@ class SearchWidget(QWidget):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.SM)
-        
         def validate_search(text: str) -> bool:
             if text in self.ignore_tags_input.get_tags():
                 self._show_tooltip(self.search_tags_input, f"'{text}' уже в игнор-листе!")
                 return False
             return True
-
         self.search_tags_input = TagsInput(title="ИЩЕМ", tag_color=Palette.TERTIARY, validator=validate_search)
         self.search_tags_input.setMinimumHeight(120)
-        
         toolbar = self.search_tags_input.header_layout
         self.btn_scan = self._create_tool_btn("🔍", "Сканировать категории")
         self.btn_cats = self._create_tool_btn("≡", "Выбрать категории (из кэша)")
         self.btn_presets = self._create_tool_btn("★", "Пресеты поиска")
         self.btn_clear_search = self._create_tool_btn("✖", "Очистить")
-        
         toolbar.addStretch()
         toolbar.addWidget(self.btn_scan)
         toolbar.addWidget(self.btn_cats)
@@ -116,20 +108,16 @@ class SearchWidget(QWidget):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.SM)
-        
         def validate_ignore(text: str) -> bool:
             if text in self.search_tags_input.get_tags():
                 self._show_tooltip(self.ignore_tags_input, f"'{text}' уже в списке поиска!")
                 return False
             return True
-
         self.ignore_tags_input = TagsInput(title="ИСКЛЮЧАЕМ", tag_color=Palette.ERROR, validator=validate_ignore)
         self.ignore_tags_input.setMinimumHeight(120)
-        
         toolbar = self.ignore_tags_input.header_layout
         self.btn_presets_ignore = self._create_tool_btn("★", "Пресеты игнора")
         self.btn_clear_ignore = self._create_tool_btn("✖", "Очистить")
-        
         toolbar.addStretch()
         toolbar.addWidget(self.btn_presets_ignore)
         toolbar.addWidget(self.btn_clear_ignore)
@@ -163,7 +151,6 @@ class SearchWidget(QWidget):
             self.cached_scanned_categories = []
             self.cached_forced_categories = []
             self._emit_categories_changed()
-        
         self.tags_changed.emit(tags)
 
     def _on_scan_categories(self):
@@ -171,11 +158,8 @@ class SearchWidget(QWidget):
         if not tags:
             QMessageBox.warning(self, "Ошибка", "Введите теги для сканирования!")
             return
-        
-        # Сброс перед новым сканированием
         self.cached_scanned_categories = []
         self.cached_forced_categories = []
-        
         self.scan_categories_requested.emit(tags)
 
     def _on_view_categories(self):
@@ -186,7 +170,8 @@ class SearchWidget(QWidget):
         dlg = CategorySelectionDialog(
             self.cached_scanned_categories, 
             self, 
-            selected_categories=self.cached_forced_categories
+            selected_categories=self.cached_forced_categories,
+            on_clear=self._clear_categories_cache
         )
         if dlg.exec():
             selected = dlg.get_selected()
@@ -195,10 +180,36 @@ class SearchWidget(QWidget):
                 self.categories_selected.emit(selected)
                 self._emit_categories_changed()
 
-    def set_scanned_categories(self, categories: List[str]):
-        if categories != self.cached_scanned_categories:
-            self.cached_scanned_categories = categories
-            self._emit_categories_changed()
+    def _clear_categories_cache(self):
+        self.cached_scanned_categories = []
+        self.cached_forced_categories = []
+        self._emit_categories_changed()
+
+    def set_scanned_categories(self, categories: List[dict]):
+        """
+        Принимает список словарей категорий и автоматически выбирает одну 'ГЛАВНУЮ' (или первую).
+        """
+        self.cached_scanned_categories = categories
+        
+        # Умный выбор дефолтной категории
+        best_choice = None
+        
+        # 1. Ищем помеченную как ГЛАВНАЯ
+        for cat in categories:
+            if cat.get('type') == 'ГЛАВНАЯ':
+                best_choice = cat.get('text')
+                break
+        
+        # 2. Если нет, берем первую попавшуюся
+        if not best_choice and categories:
+            best_choice = categories[0].get('text')
+            
+        if best_choice:
+            self.cached_forced_categories = [best_choice]
+        else:
+            self.cached_forced_categories = []
+            
+        self._emit_categories_changed()
 
     def get_forced_categories(self) -> List[str]: return self.cached_forced_categories
     def set_forced_categories(self, categories: List[str]):
@@ -214,6 +225,10 @@ class SearchWidget(QWidget):
     def get_category_count(self) -> int:
         return self._current_category_count
 
+    # ... (Остальные методы: _on_tag_presets_clicked, _on_ignore_tag_presets_clicked, 
+    #      _show_presets_menu, _open_tag_presets_editor, _load/save json...)
+    # Копируй их без изменений
+    
     def _on_tag_presets_clicked(self):
         self._show_presets_menu(self.btn_presets, self.tag_presets, self.search_tags_input, is_ignore=False)
 
