@@ -1054,6 +1054,7 @@ class AvitoParser(QObject):
                 "return document.body.innerText;"
             ).lower()
 
+            # TODO
             stop_phrases = [
                 "снято с публикации",
                 "товар зарезервирован",
@@ -1082,8 +1083,28 @@ class AvitoParser(QObject):
                 'condition': 'неизвестно',
                 'date_text': 'неизвестно',
                 'views': 0,
-                'seller_id': ''
+                'seller_id': '',
+                'price': 0
             }
+
+            try:
+                # Пробуем через микроразметку (самый надежный способ)
+                price_meta = self.driver_manager.driver.find_element(By.CSS_SELECTOR, "[itemprop='price']")
+                price_val = price_meta.get_attribute("content")
+                if price_val:
+                    details['price'] = int(price_val)
+                else:
+                    # Если content пуст, берем текст
+                    text_price = price_meta.text.replace('\xa0', '').replace(' ', '').replace('₽', '')
+                    details['price'] = int(text_price)
+            except:
+                try:
+                    # Запасной вариант: Avito data-marker
+                    price_el = self.driver_manager.driver.find_element(By.CSS_SELECTOR, "[data-marker='item-view/item-price']")
+                    text_price = price_el.text.replace('\xa0', '').replace(' ', '').replace('₽', '')
+                    details['price'] = int(text_price)
+                except:
+                    pass
 
             try:
                 seller_links = self.driver_manager.driver.find_elements(By.CSS_SELECTOR, "a[href*='/user/'], a[href*='/companies/'], a[href*='/brands/']")

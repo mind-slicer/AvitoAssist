@@ -11,6 +11,8 @@ from PyQt6.QtGui import QCursor
 
 from app.core.controller import ParserController
 from app.core.memory import MemoryManager
+from app.core.telegram_notifier import TelegramNotifier
+from app.core.tracker import AdTracker
 from app.config import BASE_APP_DIR, RESULTS_DIR
 from app.ui.pages.analytics import AnalyticsWidget
 from app.ui.windows.search_widget import SearchWidget
@@ -42,6 +44,12 @@ class MainWindow(QWidget):
         self.parser_progress_timer = None
         self.current_search_mode = "full"
         self.app_settings = self._load_settings()
+        tg_token = self.app_settings.get("telegram_token", "")
+        tg_chat_id = self.app_settings.get("telegram_chat_id", "")
+        self.notifier = TelegramNotifier(tg_token, tg_chat_id)
+        self.tracker = AdTracker(self.app_settings, self.notifier)
+        self.tracker.item_updated.connect(self._on_tracker_item_updated)
+        self.tracker.start()
         self.init_ui()
         self._connect_signals()
         self._restore_queues_from_state()
@@ -217,6 +225,7 @@ class MainWindow(QWidget):
         self.results_area.file_deleted.connect(self._on_file_deleted)
         self.results_area.table_item_deleted.connect(self._on_table_item_deleted)
         self.results_area.table_closed.connect(self._on_table_closed)
+        self.results_area.item_starred.connect(self._on_item_starred)
         self.controls_widget.pause_neuronet_requested.connect(self._on_pause_neuronet_requested)
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
@@ -831,11 +840,6 @@ class MainWindow(QWidget):
     def _on_ai_all_finished(self):
         logger.info(f"ИИ завершил анализ...")
 
-        ai_column_index = 7
-        #self.results_area.results_table.sortItems(ai_column_index, Qt.SortOrder.DescendingOrder)
-
-        #self.progress_panel.ai_log.info("Таблица отсортирована: лучшие предложения вверху")
-
     def _on_ai_result_with_memory(self, idx: int, ai_json: str, context: dict):
         """Обработка результата AI: разделение на UI и Память"""
         
@@ -898,6 +902,9 @@ class MainWindow(QWidget):
             count=len(data)
         )
 
+        if hasattr(self, 'tracker') and path:
+            self.tracker.update_items_from_current_table(self.current_results, path)
+
         self._refresh_merge_targets()
 
     def _on_file_deleted(self, path):
@@ -928,15 +935,79 @@ class MainWindow(QWidget):
         self._save_results_to_file()
 
     def _on_item_starred(self, item_id, is_starred):
+        target_item = None
         for x in self.current_results:
             if str(x.get("id")) == str(item_id):
                 x["starred"] = is_starred
+                target_item = x
                 break
         self._save_results_to_file()
+        
+        # --- ОБНОВЛЕНИЕ ТРЕКЕРА ---
+        if hasattr(self, 'tracker'):
+            # Передаем текущий список и ПУТЬ К ТЕКУЩЕМУ ФАЙЛУ
+            # Это важно, чтобы трекер знал, в какой файл писать изменения
+            if self.current_json_file:
+                self.tracker.update_items_from_current_table(self.current_results, self.current_json_file)
+            
+            if is_starred and target_item:
+                self.notifier.send_new_favorite(target_item)
 
     def _on_request_increment(self, p_count, ai_count):
         self.cnt_parser += p_count
         self.cnt_neuro += ai_count
+
+    def _on_tracker_item_updated(self, updated_item):
+        source_file = updated_item.get('_source_file')
+        item_id = str(updated_item.get('id', ''))
+        
+        # Сценарий 1: Товар из текущей открытой таблицы
+        if self.current_json_file and source_file == self.current_json_file:
+            for i, item in enumerate(self.current_results):
+                if str(item.get('id', '')) == item_id:
+                    self.current_results[i].update(updated_item)
+                    # Чистим служебное поле перед сохранением, если нужно
+                    # if '_source_file' in self.current_results[i]: del self.current_results[i]['_source_file']
+                    break
+            
+            self._save_results_to_file()
+            self.results_area.load_full_history(self.current_results) # Обновляем UI
+            logger.info(f"Трекер обновил товар {item_id} (в текущем окне).")
+
+        # Сценарий 2: Товар из файла, который сейчас ЗАКРЫТ
+        elif source_file and os.path.exists(source_file):
+            try:
+                # Загружаем файл тихо
+                import gzip
+                data = []
+                is_gzip = False
+                try:
+                    with open(source_file, 'r', encoding='utf-8') as f: data = json.load(f)
+                except:
+                    with gzip.open(source_file, 'rt', encoding='utf-8') as f: data = json.load(f)
+                    is_gzip = True
+                
+                # Обновляем запись
+                updated = False
+                for i, item in enumerate(data):
+                    if str(item.get('id', '')) == item_id:
+                        data[i].update(updated_item)
+                        if '_source_file' in data[i]: del data[i]['_source_file'] # Чистим мусор
+                        updated = True
+                        break
+                
+                # Если обновили - сохраняем обратно
+                if updated:
+                    if is_gzip:
+                        with gzip.open(source_file, 'wt', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                    else:
+                        with open(source_file, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Трекер обновил товар {item_id} в фоновом файле: {os.path.basename(source_file)}")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка фонового обновления файла {source_file}: {e}")
 
     def _refresh_merge_targets(self):
         if hasattr(self.results_area, "mini_browser"):
@@ -965,27 +1036,24 @@ class MainWindow(QWidget):
         self.btn_analytics.setChecked(index == 1)
         
         if index == 1:
-            # Обновляем все вкладки аналитики
             self.analytics_widget.refresh_data()
 
     def _on_settings_clicked(self):
         dlg = SettingsDialog(self.app_settings, self)
 
         dlg.model_downloaded.connect(self._on_model_downloaded)
+        dlg.factory_reset_requested.connect(self.close)
 
         if dlg.exec():
             self.app_settings = dlg.get_settings()
             self._save_settings()
-            self.controller.ensure_ai_manager()
             
+            self.controller.ensure_ai_manager()
             if self.controller.ai_manager:
                 self.controller.ai_manager.update_config(self.app_settings)
-                
-                #debug_mode = self.app_settings.get("ai_debug", False)
-                #self.controller.ai_manager._debug_logs = debug_mode
-                
-            #if hasattr(self.controller, 'set_ai_debug_mode'):
-                #self.controller.set_ai_debug_mode(self.app_settings.get("ai_debug", False))
+            
+            if hasattr(self, 'tracker'):
+                self.tracker.update_settings(self.app_settings)
 
     def _on_model_downloaded(self, file_path: str):
         self._model_was_just_downloaded = True
@@ -1044,5 +1112,7 @@ class MainWindow(QWidget):
         self._save_current_queue_state()
         self._sync_queues_with_ui() 
         self.queue_manager.save_current_state()
+        if hasattr(self, 'tracker'):
+            self.tracker.stop()
         self.controller.cleanup()
         event.accept()

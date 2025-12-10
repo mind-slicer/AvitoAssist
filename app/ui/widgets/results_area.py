@@ -18,6 +18,7 @@ class ResultsAreaWidget(QGroupBox):
     file_deleted = pyqtSignal(str)
     table_item_deleted = pyqtSignal(str)
     table_closed = pyqtSignal()
+    item_starred = pyqtSignal(str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -155,10 +156,7 @@ class ResultsAreaWidget(QGroupBox):
         self.results_table.item_favorited.connect(self._on_item_favorited)
 
     def _on_item_favorited(self, item_id: str, is_favorite: bool):
-        # TODO: Реализовать сохранение в файл
-        # Пока просто логируем
-        action = "добавлен в" if is_favorite else "удален из"
-        print(f"Элемент {item_id} {action} избранное")
+        self.item_starred.emit(item_id, is_favorite)
 
     def clear_table(self):
         self.results_table.source_model.clear()

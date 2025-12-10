@@ -10,5 +10,7 @@
   "debug_mode": false,
   "ai_debug": false,
   "parser_debug": false,
-  "favorites_monitor_interval": 15
+  "telegram_token": "8441189542:AAFcL-onBi91Ct683zX3QenGlMuWQ1InES0",
+  "telegram_chat_id": "1160715662",
+  "telegram_check_interval": 60
 }
