@@ -17,14 +17,9 @@ class SingletonMeta(type(QObject)):
 class LogManager(QObject, metaclass=SingletonMeta):
     """
     Единый центр управления логами.
-    - Отправляет красивые сообщения в UI (через сигналы).
-    - Пишет технические подробности в файл debug.log.
     """
     
     # Сигнал для UI: (token, text, style, replace_existing)
-    # token - уникальный ID строки (нужен для обновления, например, прогресс-бара)
-    # style - 'info', 'success', 'warning', 'error', 'process'
-    # replace - True, если нужно заменить строку с таким же token
     ui_log_signal = pyqtSignal(str, str, str, bool) 
 
     def __init__(self):
@@ -34,18 +29,15 @@ class LogManager(QObject, metaclass=SingletonMeta):
             self._initialized = True
 
     def _init_logger(self):
-        # Настройка системного логгера (для файла и консоли)
         self.dev_logger = logging.getLogger("AvitoAssist")
         self.dev_logger.setLevel(logging.DEBUG)
-        self.dev_logger.propagate = False # Чтобы не дублировалось в рут логгере
+        self.dev_logger.propagate = False
         
-        # Очищаем старые хендлеры, если были
         if self.dev_logger.hasHandlers():
             self.dev_logger.handlers.clear()
         
         formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
         
-        # 1. Хендлер файла (пишет всё подряд)
         log_path = os.path.join(BASE_APP_DIR, "debug.log")
         try:
             fh = logging.FileHandler(log_path, encoding='utf-8')
@@ -55,42 +47,42 @@ class LogManager(QObject, metaclass=SingletonMeta):
         except Exception as e:
             print(f"Ошибка создания лог-файла: {e}")
         
-        # 2. Хендлер консоли (IDE)
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(formatter)
         ch.setLevel(logging.INFO)
         self.dev_logger.addHandler(ch)
 
-    # --- Публичное API для использования в коде ---
+    # --- Публичное API ---
 
     def info(self, text: str, token: str = None):
-        """Обычное сообщение (синий/белый)"""
+        """Обычное сообщение (синий/белый). Если token передан, заменяет строку."""
         self.dev_logger.info(f"[UI:INFO] {text}")
-        self.ui_log_signal.emit(token, text, "info", token is not None)
+        replace = token is not None
+        self.ui_log_signal.emit(token, text, "info", replace)
 
-    def success(self, text: str):
-        """Успех (зеленый)"""
+    def success(self, text: str, token: str = None):
+        """Успех (зеленый). Если token передан, заменяет строку (например, завершает прогресс)."""
         self.dev_logger.info(f"[UI:OK] {text}")
-        self.ui_log_signal.emit(None, text, "success", False)
+        replace = token is not None
+        self.ui_log_signal.emit(token, text, "success", replace)
 
-    def warning(self, text: str):
-        """Предупреждение (желтый)"""
+    def warning(self, text: str, token: str = None):
+        """Предупреждение (желтый)."""
         self.dev_logger.warning(f"[UI:WARN] {text}")
-        self.ui_log_signal.emit(None, text, "warning", False)
+        replace = token is not None
+        self.ui_log_signal.emit(token, text, "warning", replace)
 
-    def error(self, text: str, exc_info=False):
-        """Ошибка (красный)"""
+    def error(self, text: str, token: str = None, exc_info=False):
+        """Ошибка (красный)."""
         self.dev_logger.error(f"[UI:ERR] {text}", exc_info=exc_info)
-        self.ui_log_signal.emit(None, text, "error", False)
+        replace = token is not None
+        self.ui_log_signal.emit(token, text, "error", replace)
 
     def progress(self, text: str, token: str):
         """
-        Обновляемая строка с анимацией. 
-        Обязательно передавать token (например, 'parser_progress'), 
-        чтобы строка обновлялась, а не дублировалась.
+        Создает или обновляет строку с анимацией загрузки (спиннером).
+        Обязательно передавать token.
         """
-        # В файл не пишем каждый шаг прогресса, чтобы не замусорить диск
-        # Но можно писать в консоль IDE с возвратом каретки, если хочется
         self.ui_log_signal.emit(token, text, "process", True)
 
     def dev(self, text: str, level="DEBUG"):
@@ -99,5 +91,5 @@ class LogManager(QObject, metaclass=SingletonMeta):
         elif level == "INFO": self.dev_logger.info(text)
         elif level == "ERROR": self.dev_logger.error(text)
 
-# Глобальный экземпляр для импорта
+# Глобальный экземпляр
 logger = LogManager()

@@ -9,15 +9,17 @@ import threading
 from app.ui.styles import Components, Palette, Typography, Spacing
 from app.core.memory import MemoryManager
 from app.ui.widgets.rag_status_widget import RAGStatusWidget
-from app.ui.widgets.ai_control_panel import AIControlPanel # <-- IMPORT
+from app.ui.widgets.ai_control_panel import AIControlPanel
+from app.core.log_manager import logger
 
 class AnalyticsWidget(QWidget):
     send_message_signal = pyqtSignal(list) 
     rebuild_finished_signal = pyqtSignal(int)
 
-    def __init__(self, memory_manager: MemoryManager, parent=None):
+    def __init__(self, memory_manager: MemoryManager, controller=None, parent=None):
         super().__init__(parent)
         self.memory = memory_manager
+        self.controller = controller
         self.rebuild_finished_signal.connect(self.on_rebuild_finished)
         self.init_ui()
 
@@ -46,32 +48,60 @@ class AnalyticsWidget(QWidget):
                 border-bottom: 2px solid {Palette.SECONDARY};
             }}
             QTabBar::tab:hover {{ color: {Palette.TEXT}; }}
+            QTabBar::tab:disabled {{ color: {Palette.with_alpha(Palette.TEXT_MUTED, 0.3)}; }}
         """)
 
-        # Tab 1: RAG Status
-        self.rag_status_widget = RAGStatusWidget(self.memory)
-        self.rag_status_widget.rebuild_requested.connect(self.on_rebuild_requested)
-        self.tabs.addTab(self.rag_status_widget, "RAG-Статус")
-
-        # Tab 2: AI Control (Settings + Chat)
+        # 1. Управление ИИ (бывший Tab 2) - теперь первый
         self.ai_control = AIControlPanel()
-        # Пробрасываем сигнал отправки сообщения из панели наружу (в контроллер)
         self.ai_control.send_message_signal.connect(self.send_message_signal.emit)
         self.tabs.addTab(self.ai_control, "Управление ИИ")
 
-        # Tab 3: Knowledge Base (Table)
+        self.ai_control.cultivate_requested.connect(self.on_cultivation_requested)
+        self.ai_control.cultivation_finished.connect(self.on_cultivation_finished)
+        self.ai_control.set_memory_manager(self.memory)
+        
+        if self.controller:
+            self.controller.cultivation_finished.connect(self.ai_control.cultivation_finished.emit)
+
+        # 2. Тренды (бывший RAG-Статус) - теперь второй
+        self.rag_status_widget = RAGStatusWidget(self.memory)
+        self.rag_status_widget.rebuild_requested.connect(self.on_rebuild_requested)
+        self.tabs.addTab(self.rag_status_widget, "Тренды")
+
+        # 3. WIP (бывшая База Знаний) - заблокирован
         self.knowledge_widget = self.create_knowledge_widget()
-        self.tabs.addTab(self.knowledge_widget, "База Знаний")
+        idx_wip1 = self.tabs.addTab(self.knowledge_widget, "WIP")
+        self.tabs.setTabEnabled(idx_wip1, False)
+        self.tabs.setTabToolTip(idx_wip1, "В разработке")
+
+        # 4. WIP2 - заблокирован
+        wip2_widget = QWidget() # Пустой виджет
+        idx_wip2 = self.tabs.addTab(wip2_widget, "WIP2")
+        self.tabs.setTabEnabled(idx_wip2, False)
+        self.tabs.setTabToolTip(idx_wip2, "В разработке")
 
         main_layout.addWidget(self.tabs)
 
     def on_ai_reply(self, text: str):
-        """Получаем ответ от AI (из контроллера) и передаем в панель"""
-        # ВАЖНО: Мы не рисуем пузырь сами, а просим AIControlPanel это сделать
+        """Получаем ответ от AI и передаем в панель"""
         if hasattr(self, 'ai_control'):
             self.ai_control.on_ai_reply(text)
 
-    # --- Knowledge Base Methods ---
+    def on_cultivation_requested(self):
+        if not self.controller:
+            logger.error("Контроллер не передан в виджет Аналитики...", token="ai-cult")
+            return
+
+        logger.info("Запуск агрегации памяти...", token="ai-cult")
+        self.controller.start_cultivation()
+        self.controller.cultivation_finished.connect(self.on_cultivation_finished)
+    
+    def on_cultivation_finished(self):
+        """Обработчик завершения культивации"""
+        if hasattr(self, 'ai_control'):
+            self.ai_control._reset_cultivate_button()
+
+    # --- Knowledge Base Methods (Logic kept for future) ---
 
     def create_knowledge_widget(self) -> QWidget:
         widget = QWidget()
@@ -148,7 +178,6 @@ class AnalyticsWidget(QWidget):
 
     def _rebuild_bg(self):
         try:
-            # Если метода нет, возвращаем заглушку. Если есть - вызываем.
             if hasattr(self.memory, 'rebuild_statistics_cache'):
                 count = self.memory.rebuild_statistics_cache()
             else:

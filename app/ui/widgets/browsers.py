@@ -1,13 +1,12 @@
 import os
 from typing import Optional
 from datetime import datetime
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton, QListWidgetItem, QMessageBox, QMenu, QLineEdit, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton, QListWidgetItem, QMessageBox, QMenu, QLineEdit, QSizePolicy, QFrame
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QValidator
 from app.ui.styles import Components, Palette, Typography, Spacing, InputComponents
 from app.config import RESULTS_DIR
 from app.core.log_manager import logger
-
 
 class FilenameValidator(QValidator):
     def validate(self, text, pos):
@@ -79,6 +78,9 @@ class BaseJsonFileBrowser(QWidget):
 
 class MiniFileBrowser(BaseJsonFileBrowser):
     table_closed = pyqtSignal()
+    analyze_file_requested = pyqtSignal(str)
+    addmemory_file_requested = pyqtSignal(str)
+    export_file_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,16 +90,20 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.SM)
 
-        h = QHBoxLayout()
-        h.setContentsMargins(0, 0, 2, 0)
+        # Header Container matching Table Header Height
+        header_container = QWidget()
+        header_container.setFixedHeight(46) # Approximate height of section title area in ResultsArea
+        h = QHBoxLayout(header_container)
+        h.setContentsMargins(0, Spacing.SM, 0, Spacing.SM)
+        
         title_lbl = QLabel("РЕЗУЛЬТАТЫ")
         title_lbl.setStyleSheet(Components.section_title())
         h.addWidget(title_lbl)
         h.addStretch()
-        layout.addLayout(h)
+        layout.addWidget(header_container)
 
         self.file_list = QListWidget()
-        self.file_list.setMinimumWidth(300)
+        self.file_list.setMinimumWidth(345)
         self.file_list.setUniformItemSizes(True)
         self.file_list.setWordWrap(False)
         self.file_list.setStyleSheet(Components.styled_list_widget())
@@ -124,17 +130,31 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         act_clear = menu.addAction("Закрыть таблицу")
         act_rename = menu.addAction("Переименовать")
         menu.addSeparator()
+        act_analyze = menu.addAction("🔍 Проанализировать")
+        act_addmemory = menu.addAction("🧠 Добавить в память ИИ")
+        act_export = menu.addAction("📊 Выгрузить в таблицу")
+        menu.addSeparator()
         act_delete = menu.addAction("Удалить")
 
         action = menu.exec(self.file_list.mapToGlobal(pos))
 
         if action == act_rename: self._start_rename(item)
+        elif action == act_analyze:
+            self.file_list.setCurrentItem(item)
+            self.analyze_file_requested.emit(item.data(Qt.ItemDataRole.UserRole))
+        elif action == act_addmemory:
+            self.file_list.setCurrentItem(item)
+            self.addmemory_file_requested.emit(item.data(Qt.ItemDataRole.UserRole))
+        elif action == act_export:
+            self.file_list.setCurrentItem(item)
+            self.export_file_requested.emit(item.data(Qt.ItemDataRole.UserRole))
         elif action == act_delete:
             self.file_list.setCurrentItem(item)
             self.delete_selected_file()
         elif action == act_clear:
             self.file_list.clearSelection()
             self.table_closed.emit()
+        
 
     def _start_rename(self, item):
         widget = self.file_list.itemWidget(item)
@@ -202,7 +222,7 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         self.refresh_files()
 
     def create_item_widget(self, filename: str, mtime: float, size_kb: float):
-        dt = datetime.fromtimestamp(mtime).strftime('%m-%d %H:%M')
+        dt = datetime.fromtimestamp(mtime).strftime("%d-%m-%Y %H:%M")
         base = os.path.basename(filename)
         dn = base.replace("avito_", "").replace(".json", "")
 
@@ -224,32 +244,16 @@ class MiniFileBrowser(BaseJsonFileBrowser):
         name_label.setObjectName("name_label")
         name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        name_label.setStyleSheet(Typography.style(
-            family=Typography.MONO, size=Typography.SIZE_MD,
-            color=Palette.TEXT, weight=Typography.WEIGHT_SEMIBOLD
-        ))
+        name_label.setStyleSheet(Typography.style(family=Typography.MONO, size=Typography.SIZE_LG, color=Palette.TEXT, weight=Typography.WEIGHT_SEMIBOLD))
 
-        date_label = QLabel(f"[{dt}]")
+        date_label = QLabel(f"{dt}")
         date_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        date_label.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
-        date_label.setFixedWidth(70)
-        date_label.setStyleSheet(Typography.style(
-            family=Typography.MONO, size=Typography.SIZE_SM,
-            weight=Typography.WEIGHT_SEMIBOLD, color=Palette.TEXT_MUTED
-        ))
-
-        size_label = QLabel(f"{size_kb:4.0f} KB")
-        size_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        size_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        size_label.setFixedWidth(50)
-        size_label.setStyleSheet(Typography.style(
-            family=Typography.MONO, size=Typography.SIZE_SM,
-            weight=Typography.WEIGHT_SEMIBOLD, color=Palette.TEXT_MUTED
-        ))
+        date_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        date_label.setFixedWidth(120)
+        date_label.setStyleSheet(Typography.style(family=Typography.MONO, size=Typography.SIZE_MD, weight=Typography.WEIGHT_SEMIBOLD, color=Palette.TEXT_MUTED))
 
         widget_layout.addWidget(name_label, 3)
         widget_layout.addWidget(date_label, 0)
-        widget_layout.addWidget(size_label, 0)
 
         item.setSizeHint(QSize(widget.sizeHint().width(), 36))
 

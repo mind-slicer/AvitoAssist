@@ -1,7 +1,7 @@
 {
   "0": {
     "search_tags": [
-      "блок питания"
+      "монитор Benq"
     ],
     "ignore_tags": [],
     "min_price": 0,
@@ -9,28 +9,26 @@
     "search_mode": "primary",
     "ai_criteria": "",
     "include_ai": false,
-    "store_in_memory": false,
+    "store_in_memory": true,
     "max_pages": 0,
-    "max_items": 20,
+    "max_items": 100,
     "all_regions": false,
     "filter_defects": false,
-    "forced_categories": [
-      "блок питания ← Блоки питания для компьютера"
-    ],
+    "forced_categories": [],
     "split_ads_count": 0,
     "use_queue_manager": false,
     "use_blacklist": false,
-    "sort_type": "default",
+    "sort_type": "date",
     "queue_enabled": true,
     "rewrite_duplicates": false,
     "skip_duplicates": false,
     "allow_rewrite_duplicates": false,
     "split_results": false,
     "merge_with_table": null,
-    "context_table": "E:\\wip2\\results\\avito_search_20251210_144511.json",
     "original_index": 0,
     "debug_mode": false,
     "ai_debug_mode": false,
+    "context_table": "E:\\wip2\\results\\avito_search_20251212_141518.json",
     "ai_offset": 0
   }
 }

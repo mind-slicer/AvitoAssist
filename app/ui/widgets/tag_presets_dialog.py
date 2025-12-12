@@ -38,13 +38,21 @@ class TagPresetsDialog(QDialog):
         left.addWidget(self.list_widget)
 
         btn_row = QHBoxLayout()
-        for txt, func in [("+", self._add_preset), ("R", self._rename_preset), ("-", self._delete_preset)]:
+        btn_style = f"""
+            QPushButton {{ background-color: {Palette.BG_DARK_3}; border: 1px solid {Palette.BORDER_PRIMARY}; border-radius: {Spacing.RADIUS_NORMAL}px; color: {Palette.TEXT}; font-size: 12px; font-weight: {Typography.WEIGHT_BOLD}; padding: 0; }}
+            QPushButton:hover {{ background-color: {Palette.BG_LIGHT}; border-color: {Palette.PRIMARY}; color: {Palette.PRIMARY}; }}
+            QPushButton:pressed {{ background-color: {Palette.BG_DARK_2}; }}
+            QPushButton:disabled {{ background-color: {Palette.BG_DARK}; border-color: {Palette.DIVIDER}; color: {Palette.TEXT_MUTED}; }}
+        """
+        for txt, func in [("✚", self._add_preset), ("━", self._delete_preset), ("Переименовать", self._rename_preset)]:
             b = QPushButton(txt)
-            b.setFixedSize(30, 30)
-            b.setStyleSheet(Components.small_button())
+            b.setMinimumSize(30, 25)
+            b.setStyleSheet(btn_style)
             b.clicked.connect(func)
+            b.setAutoDefault(False)
+            b.setDefault(False)
             btn_row.addWidget(b)
-        btn_row.addStretch()
+        btn_row.addStretch(0)
         left.addLayout(btn_row)
 
         # RIGHT
@@ -56,17 +64,17 @@ class TagPresetsDialog(QDialog):
         self.tags_input = TagsInput(tag_color=tag_color)
         right.addWidget(self.tags_input)
         self.tags_input.tags_changed.connect(self._on_tags_changed)
+        self.tags_input.input_field.setFocus()
 
         btn_box = QHBoxLayout()
-        b_ok = QPushButton("Сохранить")
-        b_ok.setStyleSheet(Components.small_button())
-        b_ok.clicked.connect(self.accept)
-        b_cancel = QPushButton("Отмена")
-        b_cancel.setStyleSheet(Components.small_button())
-        b_cancel.clicked.connect(self.reject)
+        b_close = QPushButton("Закрыть")
+        b_close.setMinimumSize(30, 25)
+        b_close.setStyleSheet(btn_style)
+        b_close.clicked.connect(self.accept)
+        b_close.setAutoDefault(False)
+        b_close.setDefault(False)
         btn_box.addStretch()
-        btn_box.addWidget(b_cancel)
-        btn_box.addWidget(b_ok)
+        btn_box.addWidget(b_close)
         right.addLayout(btn_box)
 
         layout.addLayout(left, 1)
@@ -85,6 +93,16 @@ class TagPresetsDialog(QDialog):
         if item:
             name = item.data(Qt.ItemDataRole.UserRole)
             self.presets[name] = [t for t in tags if t]
+        else:
+            if tags:
+                name, ok = QInputDialog.getText(self, "Новый набор", "Имя:")
+                if ok and name.strip():
+                    self.presets[name] = [t for t in tags if t]
+                    self._add_list_item(name)
+                    self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+                    self.tags_input.input_field.setFocus()
+                else:
+                    self.tags_input.clear_tags()
 
     def _on_preset_changed(self, curr, prev):
         if not curr: 
@@ -98,6 +116,8 @@ class TagPresetsDialog(QDialog):
         if ok and name.strip():
             self.presets[name] = []
             self._add_list_item(name)
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+            self.tags_input.input_field.setFocus()
 
     def _rename_preset(self):
         item = self.list_widget.currentItem()

@@ -1,12 +1,15 @@
 from app.ui.styles import Palette, Spacing, Typography
+from pathlib import Path
 
 class Components:
     """
     Система компонентов для единообразного стиля UI.
     """
-    
+
+    ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
     # White Checkmark (16x16)
-    ICON_CHECK_PNG = "url(C:/Users/MindSlicer/Desktop/3388530.png)"
+    ICON_CHECK_PNG = "url({ROOT_DIR / 'icons' / 'checked.png'})"
     
     # White Down Arrow (12x12)
     ICON_ARROW_DOWN_PNG = "url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH5QwWBBs0k/R8gQAAAB1pVFh0Q29tbWVudAAAAAAAQ3JlYXRlZCB3aXRoIEdJTVBkLmUHAAAAXUlEQVQoz2NgoDH4z8DAwMTAwCDDAA0G+P///4+B8T8D438Gxv8MjP8ZGP8zMP5nYPzPwPifgfE/A+N/Bsb/DIz/GRj/MzD+Z2D8z8D4n4HxPwPjf4Q0/v///z8DAPQDE4U0727kAAAAAElFTkSuQmCC)"
@@ -417,7 +420,7 @@ class Components:
             f"    font-weight: {Typography.WEIGHT_BOLD};\n"
             f"}}\n"
             f"QTableCornerButton::section {{ background-color: {Palette.BG_DARK_3}; border: none; }}\n"
-            f"{scrollbar_style}\n" # Принудительно добавляем стиль скролла
+            f"{scrollbar_style}\n"
         )
 
     @staticmethod

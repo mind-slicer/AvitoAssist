@@ -588,7 +588,7 @@ class ControlsWidget(QWidget):
         lbl.setStyleSheet(Components.subsection_title() + f" color: {Palette.SECONDARY};")
         layout.addWidget(lbl)
         self.ai_criteria_input = QPlainTextEdit()
-        self.ai_criteria_input.setPlaceholderText("Например: только на гарантии, белый цвет...")
+        self.ai_criteria_input.setPlaceholderText("Например: только на гарантии, полная предоплата...")
         self.ai_criteria_input.setMinimumHeight(120)
         self.ai_criteria_input.setStyleSheet(Components.text_input())
         layout.addWidget(self.ai_criteria_input, stretch=1)

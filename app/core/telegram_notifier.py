@@ -49,7 +49,7 @@ class TelegramNotifier:
                 f"📌 <b>Добавлено в отслеживание</b>\n\n"
                 f"📦 <b>{title}</b>\n"
                 f"💰 {price:,} ₽\n"
-                f"📍 {city}\n\n"
+                #f"📍 {city}\n\n"
                 f"🔗 <a href='{link}'>Открыть объявление</a>"
             ).replace(",", " ")
             self._send(msg)

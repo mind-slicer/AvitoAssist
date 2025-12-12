@@ -173,35 +173,54 @@ class ServerManager(QObject):
             self.error_occurred.emit(f"Ошибка Popen: {e}")
 
     def stop_server(self):
-        if self.process:
+        if not self.process:
+            return
+
+        try:
+            if logger:
+                logger.info("AI: Остановка llama-server...")
+
             try:
-                if logger:
-                    logger.info("Останавливаем сервер...")
-            except:
+                # 1) Акуратно пытаемся завершить всё дерево процессов
+                parent = psutil.Process(self.process.pid)
+                children = parent.children(recursive=True)
+                for p in children:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+
+                parent.terminate()
+
+                # 2) Ждем до 3 секунд
+                gone, alive = psutil.wait_procs([parent] + children, timeout=3)
+                if alive:
+                    # 3) Жестко убиваем, кто остался
+                    for p in alive:
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+            except psutil.NoSuchProcess:
                 pass
-            
-            try:
-                if sys.platform == "win32":
-                     subprocess.run(
-                        f"taskkill /F /PID {self.process.pid} /T", 
-                        shell=True, 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL
-                    )
-                else:
-                    self.process.terminate()
-                    self.process.wait(timeout=3)
-            except Exception as e:
-                logger.dev(f"Ошибка при остановке сервера: {e}")
-                # Fallback
+
+            # На Windows можно дополнительно продублировать taskkill, если нужно:
+            if sys.platform == "win32":
                 try:
-                    self.process.kill()
-                except:
+                    subprocess.run(
+                        f"taskkill /F /PID {self.process.pid} /T",
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
                     pass
-            finally:
-                self.process = None
-                if (self):
-                    self.server_stopped.emit(0)
+
+        except Exception as e:
+            logger.dev(f"AI stop_server error: {e}", level="ERROR")
+        finally:
+            self.process = None
+            self.server_stopped.emit(0)
 
     def set_model_path(self, new_path: str):
         self.stop_server()

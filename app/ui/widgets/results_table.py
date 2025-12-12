@@ -301,6 +301,8 @@ class VerdictItem(QTableWidgetItem):
 class ResultsTable(QTableView):
     item_favorited = pyqtSignal(str, bool)
     item_deleted = pyqtSignal(str)
+    analyze_item_requested = pyqtSignal(dict)
+    addmemory_item_requested = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -332,6 +334,9 @@ class ResultsTable(QTableView):
         self.setItemDelegateForColumn(3, self.title_delegate)
         # Col 8: AI (Was 7, now 8)
         self.setItemDelegateForColumn(8, self.ai_delegate)
+
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.on_row_context_menu)
 
         self.setShowGrid(True)
         self.setGridStyle(Qt.PenStyle.SolidLine)
@@ -455,6 +460,37 @@ class ResultsTable(QTableView):
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
         super().mouseMoveEvent(event)
+
+    def on_row_context_menu(self, pos):
+        """Контекстное меню для строки таблицы"""
+        index = self.indexAt(pos)
+        if not index.isValid():
+            return
+
+        # Получить элемент
+        proxy_index = self.proxy_model.index(index.row(), 0)
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        source_row = source_index.row()
+        item = self.source_model.get_item(source_row)
+
+        if not item:
+            return
+
+        from PyQt6.QtWidgets import QMenu
+        from app.ui.styles import Palette
+
+        menu = QMenu(self)
+        menu.setStyleSheet(f"background: {Palette.BG_DARK_2}; color: {Palette.TEXT};")
+
+        act_analyze = menu.addAction("🔍 Проанализировать")
+        act_addmemory = menu.addAction("🧠 Добавить в память ИИ")
+
+        action = menu.exec(self.mapToGlobal(pos))
+
+        if action == act_analyze:
+            self.analyze_item_requested.emit(item)
+        elif action == act_addmemory:
+            self.addmemory_item_requested.emit(item)
 
     def leaveEvent(self, event):
         if hasattr(self.actions_delegate, 'hovered_row'):

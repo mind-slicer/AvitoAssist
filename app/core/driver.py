@@ -59,6 +59,8 @@ class DriverManager:
             self.config.cooldown_every_max
         )
         
+        self.speed_multiplier = 1.0
+
         if (
             self.config.use_cookies
             and self.config.delete_cookies_on_start
@@ -81,6 +83,9 @@ class DriverManager:
             self._initialize_driver()
         return self._driver
     
+    def set_speed_multiplier(self, multiplier: float):
+        self.speed_multiplier = max(0.1, multiplier)
+
     def _initialize_driver(self):
         if self._driver:
             return
@@ -227,24 +232,29 @@ class DriverManager:
         
         # Базовая задержка между запросами
         if time_since_last < cfg.min_request_delay:
-            base_delay = random.uniform(cfg.min_request_delay, cfg.max_request_delay)
+            # --- APPLY MULTIPLIER ---
+            base_delay = random.uniform(cfg.min_request_delay, cfg.max_request_delay) * self.speed_multiplier
+            
             # Иногда делаем паузу длиннее
             if random.random() < 0.1:
-                base_delay *= random.uniform(1.5, 2.0)
+                base_delay *= random.uniform(0.5, 1.0)
             
             remaining = base_delay - time_since_last
-            step = 0.2
-            elapsed = 0.0
             
-            while elapsed < remaining:
-                if stop_check and stop_check():
-                    return
-                sleep_time = min(step, remaining - elapsed)
-                time.sleep(sleep_time)
-                elapsed += sleep_time
+            # Если после ускорения мы уже "прождали" достаточно, задержка не нужна
+            if remaining > 0:
+                step = 0.2
+                elapsed = 0.0
+                
+                while elapsed < remaining:
+                    if stop_check and stop_check():
+                        return
+                    sleep_time = min(step, remaining - elapsed)
+                    time.sleep(sleep_time)
+                    elapsed += sleep_time
         
-        # Случайные движения мыши во время ожидания
-        if self.config.enable_human_behavior and random.random() < 0.3:
+        # Случайные движения мыши во время ожидания (шанс тоже можно уменьшить при ускорении, но оставим для безопасности)
+        if self.config.enable_human_behavior and random.random() < 0.15:
             self.random_mouse_movement()
         
         self._last_request_time = time.time()
@@ -253,12 +263,11 @@ class DriverManager:
         # Длительный кулдаун (эмуляция "перекура")
         if self._request_count >= self._next_cooldown:
             cd_min, cd_max = cfg.cooldown_range
-            cooldown = random.uniform(cd_min, cd_max)
+            # --- APPLY MULTIPLIER ---
+            cooldown = random.uniform(cd_min, cd_max) * self.speed_multiplier
             
             if random.random() < 0.05:
-                cooldown *= random.uniform(2.0, 3.0)
-            
-            # print(f"Cooldown: {cooldown:.1f}s") # debug
+                cooldown *= random.uniform(1.0, 2.0)
             
             step = 0.5
             elapsed = 0.0

@@ -101,7 +101,7 @@ class BlacklistManager:
     def _ensure_default_set(self):
         """Создает набор по умолчанию если нет наборов"""
         if not self.sets:
-            default_set = BlacklistSet("Основной набор")
+            default_set = BlacklistSet("ОСНОВНОЙ")
             default_set.is_active = True
             self.sets.append(default_set)
             self.active_set_index = 0

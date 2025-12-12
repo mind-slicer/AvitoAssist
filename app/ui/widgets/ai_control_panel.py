@@ -1,37 +1,40 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                            QComboBox, QSlider, QTextEdit, QFrame, QPushButton, 
-                           QScrollArea, QLineEdit, QSizePolicy)
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+                           QScrollArea, QLineEdit, QSizePolicy, QListWidget, QListWidgetItem)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
 from app.ui.styles import Components, Palette, Typography, Spacing
 
 class ChatBubble(QFrame):
     def __init__(self, text: str, is_user: bool = False, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
+        layout.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
         layout.setSpacing(Spacing.XS)
         
-        if not is_user:
-            name = QLabel("AI Assistant")
-            name.setStyleSheet(Typography.style(
-                family=Typography.UI, size=Typography.SIZE_SM, weight=Typography.WEIGHT_SEMIBOLD, color=Palette.SECONDARY))
-            layout.addWidget(name)
-            
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lbl.setStyleSheet(Typography.style(
-            family=Typography.UI, size=Typography.SIZE_MD, color=Palette.TEXT))
+            family=Typography.UI, size=Typography.SIZE_LG, color=Palette.TEXT)) 
         layout.addWidget(lbl)
         
-        bg = Palette.BG_DARK_3 if is_user else Palette.BG_DARK_2
-        border = Palette.BORDER_SOFT if is_user else Palette.SECONDARY
+        if is_user:
+            # USER: Справа, зеленый оттенок (или темный), хвостик справа внизу
+            bg = Palette.with_alpha(Palette.PRIMARY, 0.15) 
+            border = Palette.PRIMARY
+            # Скругляем все, кроме правого нижнего (или верхнего правого)
+            radius_style = f"border-radius: {Spacing.RADIUS_NORMAL}px; border-bottom-right-radius: 0px;"
+        else:
+            # AI: Слева, серый, хвостик слева внизу
+            bg = Palette.BG_DARK_3
+            border = Palette.BORDER_SOFT
+            radius_style = f"border-radius: {Spacing.RADIUS_NORMAL}px; border-bottom-left-radius: 0px;"
         
         self.setStyleSheet(f"""
             QFrame {{
                 background-color: {bg};
                 border: 1px solid {border};
-                border-radius: {Spacing.RADIUS_NORMAL}px;
+                {radius_style}
             }}
         """)
 
@@ -53,109 +56,135 @@ class MonitoringItem(QFrame):
         btn.clicked.connect(lambda: self.deleted.emit(self))
         layout.addWidget(btn)
 
+class RemovableListItem(QWidget):
+    removed = pyqtSignal(QListWidgetItem)
+    def __init__(self, text, item, parent=None, read_only=False, color=Palette.TEXT):
+        super().__init__(parent)
+        self.item = item
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8) 
+        layout.setSpacing(10)
+        
+        # Ключ (жирный) и текст (обычный) для знаний
+        if "||" in text:
+            key, body = text.split("||", 1)
+            display_html = f"<b>{key}</b><br><span style='color:{Palette.TEXT_MUTED}; font-size:12px;'>{body}</span>"
+        else:
+            display_html = text
+
+        lbl = QLabel(display_html)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"color: {color}; font-family: {Typography.UI}; font-size: 13px;")
+        layout.addWidget(lbl, 1)
+
+        btn_del = QPushButton("×")
+        btn_del.setFixedSize(24, 24)
+        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_del.setStyleSheet("QPushButton { border: none; color: #666; font-size: 18px; font-weight: bold; background: transparent; } QPushButton:hover { color: #ff5555; }")
+        btn_del.clicked.connect(self._on_remove)
+        layout.addWidget(btn_del)
+
+    def _on_remove(self):
+        self.removed.emit(self.item)
+
 class AIControlPanel(QWidget):
-    send_message_signal = pyqtSignal(list) # Сигнал для отправки сообщения в контроллер
+    send_message_signal = pyqtSignal(list, list)
+    cultivate_requested = pyqtSignal()
+    cultivation_finished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.chat_history = [] # Храним историю сообщений
+        self.chat_history = []
+        self.memory_manager = None
         self.init_ui()
-        
+         
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._refresh_knowledge_list)
+        self.refresh_timer.start(5000)
+
+    def set_memory_manager(self, manager):
+        self.memory_manager = manager
+        self._refresh_knowledge_list()
+    
+    def _on_cultivate_clicked(self):
+        if self.is_cultivating:
+            return
+        self.is_cultivating = True
+        self.btn_cultivate.setEnabled(False)
+        self.btn_cultivate.setText("Анализ...")
+        self.cultivate_requested.emit()
+        # Подключаем сигнал завершения культивации для разблокировки кнопки
+        self.cultivation_finished.connect(self._reset_cultivate_button)
+    
+    def _reset_cultivate_button(self):
+        self.is_cultivating = False
+        self.btn_cultivate.setEnabled(True)
+        self.btn_cultivate.setText("🧠 Анализ рынка")
+
     def init_ui(self):
         self.setStyleSheet(f"background-color: {Palette.BG_DARK};")
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
         main_layout.setSpacing(Spacing.LG)
+        
+        # Состояние кнопки для предотвращения многократных нажатий
+        self.is_cultivating = False
 
-        # --- LEFT COLUMN: Settings & Monitor ---
+        # --- КОЛОНКА 1: ИНСТРУКЦИИ (User Input) ---
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(Spacing.MD)
 
-        # 1. Strategy
-        lbl_strat = QLabel("Стратегия (Persona)")
-        lbl_strat.setStyleSheet(Components.section_title())
-        left_layout.addWidget(lbl_strat)
+        instr_group = QFrame()
+        instr_group.setStyleSheet(Components.panel())
+        instr_vbox = QVBoxLayout(instr_group)
         
-        self.combo_persona = QComboBox()
-        self.combo_persona.addItems(["💰 Перекуп", "💎 Качество", "🦄 Коллекционер"])
-        self.combo_persona.setStyleSheet(Components.styled_combobox())
-        left_layout.addWidget(self.combo_persona)
-        
-        # 2. Strictness
-        strict_h = QHBoxLayout()
-        self.lbl_strict_val = QLabel("Средний")
-        self.lbl_strict_val.setStyleSheet(f"color: {Palette.SECONDARY}; font-weight: bold;")
-        strict_h.addWidget(QLabel("Строгость:"))
-        strict_h.addWidget(self.lbl_strict_val)
-        strict_h.addStretch()
-        left_layout.addLayout(strict_h)
-        
-        self.slider_strict = QSlider(Qt.Orientation.Horizontal)
-        self.slider_strict.setRange(1, 5)
-        self.slider_strict.setValue(3)
-        self.slider_strict.valueChanged.connect(self.on_slider_change)
-        left_layout.addWidget(self.slider_strict)
+        instr_lbl = QLabel("Инструкции")
+        instr_lbl.setToolTip("Жесткие правила поведения для ИИ (System Prompt).")
+        instr_lbl.setStyleSheet(Components.subsection_title())
+        instr_vbox.addWidget(instr_lbl)
 
-        # 3. Monitor
-        lbl_mon = QLabel("Мониторинг")
-        lbl_mon.setStyleSheet(Components.section_title())
-        mon_header = QHBoxLayout()
-        mon_header.addWidget(lbl_mon)
-        mon_header.addStretch()
-        self.btn_add_mon = QPushButton("+")
-        self.btn_add_mon.setFixedSize(24, 24)
-        self.btn_add_mon.setStyleSheet(Components.small_button())
-        self.btn_add_mon.clicked.connect(self.add_monitor_item)
-        mon_header.addWidget(self.btn_add_mon)
-        left_layout.addLayout(mon_header)
+        self.instr_list = QListWidget()
+        self.instr_list.setStyleSheet(Components.styled_list_widget())
+        instr_vbox.addWidget(self.instr_list)
         
-        self.mon_scroll = QScrollArea()
-        self.mon_scroll.setWidgetResizable(True)
-        self.mon_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        self.mon_container = QWidget()
-        self.mon_vbox = QVBoxLayout(self.mon_container)
-        self.mon_vbox.setContentsMargins(0,0,0,0)
-        self.mon_vbox.addStretch()
-        self.mon_scroll.setWidget(self.mon_container)
-        left_layout.addWidget(self.mon_scroll)
+        self.new_instr_edit = QLineEdit()
+        self.new_instr_edit.setPlaceholderText("Пример: Будь краток...")
+        self.new_instr_edit.setStyleSheet(Components.text_input())
+        self.new_instr_edit.returnPressed.connect(self.add_instruction_from_edit)
+        instr_vbox.addWidget(self.new_instr_edit)
         
-        left_widget.setFixedWidth(280) # Фиксированная ширина настроек
+        left_layout.addWidget(instr_group)
+        left_widget.setFixedWidth(280)
         main_layout.addWidget(left_widget)
 
-        # --- RIGHT COLUMN: Chat & Instructions ---
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(Spacing.SM)
+        # --- КОЛОНКА 2: ЧАТ (Center) ---
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(0, 0, 0, 0)
         
-        lbl_chat = QLabel("Чат с Аналитиком")
+        lbl_chat = QLabel("ЧАТ С АНАЛИТИКОМ")
         lbl_chat.setStyleSheet(Components.section_title())
-        right_layout.addWidget(lbl_chat)
+        center_layout.addWidget(lbl_chat)
         
-        # Chat Area
         self.chat_area = QScrollArea()
         self.chat_area.setWidgetResizable(True)
-        self.chat_area.setStyleSheet(Components.scroll_area() + f"""
-            QScrollArea {{ 
-                background-color: {Palette.BG_DARK_2}; 
-                border: 1px solid {Palette.BORDER_SOFT}; 
-                border-radius: {Spacing.RADIUS_NORMAL}px; 
-            }}
-        """)
+        self.chat_area.setStyleSheet(Components.scroll_area())
+        
         self.chat_container = QWidget()
         self.chat_vbox = QVBoxLayout(self.chat_container)
-        self.chat_vbox.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
-        self.chat_vbox.setSpacing(Spacing.MD)
-        self.chat_vbox.addStretch()
-        self.chat_area.setWidget(self.chat_container)
-        right_layout.addWidget(self.chat_area, 1) # Растягиваем чат
         
-        # Input Area
+        # ВАЖНО: Пружина добавляется ПЕРВОЙ. Она давит сверху вниз.
+        self.chat_vbox.addStretch() 
+        self.chat_vbox.setSpacing(10) # Комфортный отступ между сообщениями
+        
+        self.chat_area.setWidget(self.chat_container)
+        center_layout.addWidget(self.chat_area)
+        
         input_layout = QHBoxLayout()
         self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Спроси про рынок или дай инструкцию...")
+        self.chat_input.setPlaceholderText("Спроси про цены, рынок или совет...")
         self.chat_input.setStyleSheet(Components.text_input())
         self.chat_input.returnPressed.connect(self.send_message)
         input_layout.addWidget(self.chat_input)
@@ -166,84 +195,147 @@ class AIControlPanel(QWidget):
         self.btn_send.clicked.connect(self.send_message)
         input_layout.addWidget(self.btn_send)
         
-        right_layout.addLayout(input_layout)
+        center_layout.addLayout(input_layout)
+        main_layout.addWidget(center_widget, 1)
+
+        # --- КОЛОНКА 3: ЗНАНИЯ (RAG Output) ---
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         
-        # System Prompt (Optional override)
-        lbl_sys = QLabel("Системный промпт (дополнительно):")
-        lbl_sys.setStyleSheet("color: #808080; font-size: 11px; margin-top: 5px;")
-        right_layout.addWidget(lbl_sys)
+        know_group = QFrame()
+        know_group.setStyleSheet(Components.panel())
+        know_vbox = QVBoxLayout(know_group)
         
-        self.text_instructions = QTextEdit()
-        self.text_instructions.setPlaceholderText("Особые условия для AI...")
-        self.text_instructions.setMaximumHeight(50)
-        self.text_instructions.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {Palette.BG_DARK_2}; 
-                border: 1px solid {Palette.BORDER_SOFT}; 
-                color: {Palette.TEXT}; 
-                border-radius: 4px;
-            }}
-        """)
-        right_layout.addWidget(self.text_instructions)
+        know_lbl = QLabel("ПАМЯТЬ ИИ")
+        know_lbl.setToolTip("Выводы, которые ИИ сделал сам. Удалите, если не согласны.")
+        know_lbl.setStyleSheet(Components.subsection_title())
+        know_vbox.addWidget(know_lbl)
+        
+        self.knowledge_list = QListWidget()
+        self.knowledge_list.setStyleSheet(Components.styled_list_widget())
+        know_vbox.addWidget(self.knowledge_list)
+        
+        btns_layout = QHBoxLayout()
+        self.btn_cultivate = QPushButton("🧠 Анализ рынка")
+        self.btn_cultivate.setToolTip("Запустить ИИ для анализа накопленных данных")
+        self.btn_cultivate.setStyleSheet(Components.small_button())
+        self.btn_cultivate.clicked.connect(self._on_cultivate_clicked)
+        
+        self.btn_refresh = QPushButton("⟳")
+        self.btn_refresh.setFixedSize(32, 28)
+        self.btn_refresh.setStyleSheet(Components.small_button())
+        self.btn_refresh.clicked.connect(self._refresh_knowledge_list)
+        
+        btns_layout.addWidget(self.btn_cultivate)
+        btns_layout.addWidget(self.btn_refresh)
+        know_vbox.addLayout(btns_layout)
 
-        main_layout.addWidget(right_widget, 1)
+        right_layout.addWidget(know_group)
+        right_widget.setFixedWidth(280)
+        main_layout.addWidget(right_widget)
 
-    def on_slider_change(self, val):
-        labels = {1: "Пофигист", 2: "Мягкий", 3: "Средний", 4: "Строгий", 5: "Параноик"}
-        self.lbl_strict_val.setText(labels.get(val, "Средний"))
+    # --- Logic ---
 
-    def add_monitor_item(self):
-        item = MonitoringItem()
-        item.deleted.connect(self.remove_monitor_item)
-        self.mon_vbox.insertWidget(0, item)
-    
-    def remove_monitor_item(self, widget):
-        widget.deleteLater()
+    def add_instruction_from_edit(self):
+        text = self.new_instr_edit.text().strip()
+        if not text: return
+        self.new_instr_edit.clear()
+        item = QListWidgetItem(self.instr_list)
+        widget = RemovableListItem(text, item, self, color=Palette.SUCCESS)
+        widget.removed.connect(self.remove_instruction)
+        item.setSizeHint(widget.sizeHint())
+        self.instr_list.addItem(item)
+        self.instr_list.setItemWidget(item, widget)
+
+    def remove_instruction(self, item):
+        row = self.instr_list.row(item)
+        self.instr_list.takeItem(row)
+
+    def _refresh_knowledge_list(self):
+        if not self.memory_manager: return
+        try:
+            knowledge = self.memory_manager.get_all_knowledge_summaries()
+            self.knowledge_list.clear()
+            for k in knowledge:
+                key = k['product_key']
+                summary = k['summary']
+                full_text = f"{key}||{summary}"
+                
+                item = QListWidgetItem(self.knowledge_list)
+                widget = RemovableListItem(full_text, item, self, color=Palette.TERTIARY)
+                widget.removed.connect(lambda i, ky=key: self.remove_knowledge(i, ky))
+                
+                item.setSizeHint(widget.sizeHint())
+                self.knowledge_list.addItem(item)
+                self.knowledge_list.setItemWidget(item, widget)
+        except: pass
+
+    def remove_knowledge(self, item, key):
+        if self.memory_manager:
+            self.memory_manager.delete_knowledge(key)
+        row = self.knowledge_list.row(item)
+        self.knowledge_list.takeItem(row)
 
     def send_message(self):
         text = self.chat_input.text().strip()
         if not text: return
         self.chat_input.clear()
         
-        # Добавляем сообщение юзера
+        # 1. Добавляем сообщение пользователя
         self.add_bubble(text, is_user=True)
         self.chat_history.append({"role": "user", "content": text})
         
-        # Эмитим сигнал (в контроллер)
-        # ВАЖНО: Мы тут должны передать историю + промпт.
-        # Пока передаем просто список сообщений для ChatCompletion
-        self.send_message_signal.emit(self.chat_history)
+        # 2. Собираем инструкции
+        current_instr = []
+        for i in range(self.instr_list.count()):
+            it = self.instr_list.item(i)
+            wdg = self.instr_list.itemWidget(it)
+            if wdg:
+                lbs = wdg.findChildren(QLabel)
+                if lbs: current_instr.append(lbs[0].text())
         
-        # Показываем "печатает..."
+        # 3. Отправляем сигнал
+        self.send_message_signal.emit(self.chat_history, current_instr)
+        
+        # 4. Показываем индикатор печати (удаляем старый, если вдруг завис)
+        if hasattr(self, 'typing_lbl') and self.typing_lbl:
+            self.typing_lbl.deleteLater()
+            
         self.typing_lbl = QLabel("AI печатает...")
-        self.typing_lbl.setStyleSheet("color: #808080; font-style: italic;")
+        self.typing_lbl.setStyleSheet("color: #808080; font-style: italic; margin-left: 10px; margin-bottom: 5px;")
+        
+        # Добавляем в самый низ
         self.chat_vbox.addWidget(self.typing_lbl)
         self.scroll_down()
 
     def on_ai_reply(self, text: str):
-        if hasattr(self, 'typing_lbl'):
+        # Удаляем индикатор печати
+        if hasattr(self, 'typing_lbl') and self.typing_lbl:
             self.typing_lbl.deleteLater()
-            del self.typing_lbl
+            self.typing_lbl = None
             
         self.add_bubble(text, is_user=False)
         self.chat_history.append({"role": "assistant", "content": text})
-        
+
     def add_bubble(self, text, is_user):
         bubble = ChatBubble(text, is_user)
         h = QHBoxLayout()
+        
         if is_user:
+            # USER -> СПРАВА
             h.addStretch()
             h.addWidget(bubble)
         else:
+            # AI -> СЛЕВА
             h.addWidget(bubble)
             h.addStretch()
-        self.chat_vbox.insertLayout(self.chat_vbox.count()-1, h)
-        if hasattr(self, 'typing_lbl'): # Если typing был последним, переставим его в конец
-             self.chat_vbox.removeWidget(self.typing_lbl)
-             self.chat_vbox.addWidget(self.typing_lbl)
-             
+            
+        # Просто добавляем в конец лейаута (после всех сообщений и пружины)
+        self.chat_vbox.addLayout(h)
         self.scroll_down()
 
     def scroll_down(self):
-        QTimer.singleShot(100, lambda: self.chat_area.verticalScrollBar().setValue(
-            self.chat_area.verticalScrollBar().maximum()))
+        if self.chat_area and self.chat_area.verticalScrollBar():
+            QTimer.singleShot(100, lambda: self.chat_area.verticalScrollBar().setValue(
+                self.chat_area.verticalScrollBar().maximum()))

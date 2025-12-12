@@ -10,6 +10,8 @@ from app.ui.styles import Palette, Components, Spacing, Typography
 from app.core.blacklist_manager import get_blacklist_manager
 
 class BlacklistWidget(QWidget):
+    enabled_toggled = pyqtSignal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.manager = get_blacklist_manager()
@@ -18,66 +20,29 @@ class BlacklistWidget(QWidget):
         main_frame = QGroupBox()
         main_frame.setStyleSheet(Components.panel())
         main_layout = QVBoxLayout(main_frame)
-        main_layout.setContentsMargins(*Spacing.PADDING_PANEL, *Spacing.PADDING_PANEL)
-        main_layout.setSpacing(Spacing.GAP_NORMAL)
+        # Уменьшаем отступы, чтобы было компактнее
+        main_layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
+        main_layout.setSpacing(Spacing.SM)
         
-        header = QWidget()
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        header_layout.setSpacing(Spacing.SM)
-        
+        # 1. Верхний ряд: Только Заголовок
         title = QLabel("ЧЕРНЫЙ СПИСОК")
         title.setStyleSheet(Components.section_title())
-        header_layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignLeft)
+        main_layout.addWidget(title)
         
-        header_layout.addStretch()
-        
-        buttons_widget = QWidget()
-        buttons_layout = QHBoxLayout(buttons_widget)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
-        buttons_layout.setSpacing(Spacing.SM)
-        
-        self.btn_sets = QPushButton("≡")
-        self.btn_sets.setToolTip("Управление наборами ЧС")
-        self.btn_sets.setFixedSize(28, 28)
-        self.btn_sets.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_sets.setStyleSheet(self._get_button_style())
-        self.btn_sets.clicked.connect(self._on_sets_clicked)
-        
-        self.btn_remove = QPushButton("-")
-        self.btn_remove.setFixedSize(28, 28)
-        self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_remove.setStyleSheet(self._get_button_style())
-        self.btn_remove.clicked.connect(self._on_remove_clicked)
-        
-        self.btn_add = QPushButton("+")
-        self.btn_add.setFixedSize(28, 28)
-        self.btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_add.setStyleSheet(self._get_button_style())
-        self.btn_add.clicked.connect(self._on_add_clicked)
-        
-        buttons_layout.addWidget(self.btn_add)
-        buttons_layout.addWidget(self.btn_remove)
-        buttons_layout.addWidget(self.btn_sets)
-        
-        header_layout.addWidget(buttons_widget, alignment=Qt.AlignmentFlag.AlignRight)
-        main_layout.addWidget(header)
-        
-        set_name_container = QWidget()
-        set_name_layout = QVBoxLayout(set_name_container)
-        set_name_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
-        set_name_layout.setSpacing(0)
-        
-        set_name_label = QLabel("ТЕКУЩИЙ НАБОР")
-        set_name_label.setStyleSheet(Typography.style(
-            family=Typography.UI,
-            size=Typography.SIZE_SMALL,
-            color=Palette.TEXT_MUTED,
-            weight=Typography.WEIGHT_NORMAL
-        ))
-        set_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        set_name_layout.addWidget(set_name_label)
-        
+        # 2. Список (по центру)
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet(Components.styled_list_widget() + """QListWidget::item { padding: 4px 8px; }""")
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
+        self.list_widget.itemSelectionChanged.connect(self._update_remove_button)
+        main_layout.addWidget(self.list_widget)
+
+        # 3. Нижний ряд: Имя набора (слева) и Кнопки (справа)
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setContentsMargins(0, 0, 0, 0)
+        bottom_bar.setSpacing(Spacing.SM)
+
+        # ЛЕВАЯ ЧАСТЬ: Имя активного набора
         self.active_set_label = QLabel()
         self.active_set_label.setStyleSheet(Typography.style(
             family=Typography.UI,
@@ -85,21 +50,72 @@ class BlacklistWidget(QWidget):
             color=Palette.PRIMARY,
             weight=Typography.WEIGHT_BOLD
         ))
-        self.active_set_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.active_set_label.setMinimumHeight(32)
-        set_name_layout.addWidget(self.active_set_label)
-        main_layout.addWidget(set_name_container)
+        bottom_bar.addWidget(self.active_set_label)
         
-        self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet(Components.styled_list_widget() + """QListWidget::item { padding: 4px 8px; }""")
-        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
-        self.list_widget.itemSelectionChanged.connect(self._update_remove_button)
-        main_layout.addWidget(self.list_widget)
+        bottom_bar.addStretch() # Распорка
+
+        # ПРАВАЯ ЧАСТЬ: Кнопки
+        
+        # Кнопка "+"
+        self.btn_add = QPushButton("+")
+        self.btn_add.setFixedSize(28, 28)
+        self.btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add.setStyleSheet(self._get_button_style())
+        self.btn_add.clicked.connect(self._on_add_clicked)
+        
+        # Кнопка "-"
+        self.btn_remove = QPushButton("-")
+        self.btn_remove.setFixedSize(28, 28)
+        self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_remove.setStyleSheet(self._get_button_style())
+        self.btn_remove.clicked.connect(self._on_remove_clicked)
+
+        # Кнопка "Меню наборов"
+        self.btn_sets = QPushButton("≡")
+        self.btn_sets.setToolTip("Управление наборами ЧС")
+        self.btn_sets.setFixedSize(28, 28)
+        self.btn_sets.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sets.setStyleSheet(self._get_button_style())
+        self.btn_sets.clicked.connect(self._on_sets_clicked)
+
+        # НОВАЯ КНОПКА: Глобальное включение/выключение
+        self.btn_toggle = QPushButton("⏻") # Символ Power
+        self.btn_toggle.setCheckable(True)
+        self.btn_toggle.setChecked(True) # По умолчанию включено
+        self.btn_toggle.setFixedSize(28, 28)
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.setToolTip("Вкл/Выкл фильтрацию по ЧС")
+        # Стиль для toggle кнопки (зеленый/серый)
+        self.btn_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.BORDER_PRIMARY};
+                border-radius: {Spacing.RADIUS_NORMAL}px;
+                color: {Palette.TEXT_MUTED};
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QPushButton:checked {{
+                background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)};
+                border: 1px solid {Palette.SUCCESS};
+                color: {Palette.SUCCESS};
+            }}
+            QPushButton:hover {{ border-color: {Palette.PRIMARY}; }}
+        """)
+        self.btn_toggle.toggled.connect(self.enabled_toggled.emit)
+
+        # Добавляем кнопки в ряд
+        bottom_bar.addWidget(self.btn_add)
+        bottom_bar.addWidget(self.btn_remove)
+        bottom_bar.addWidget(self.btn_sets)
+        bottom_bar.addWidget(self.btn_toggle) # Новая кнопка справа
+
+        main_layout.addLayout(bottom_bar)
         
         wrapper = QVBoxLayout(self)
         wrapper.setContentsMargins(0, 0, 0, 0)
         wrapper.addWidget(main_frame)
+        
         self._refresh_list()
         self._update_remove_button()
     
@@ -127,15 +143,24 @@ class BlacklistWidget(QWidget):
         self.list_widget.clear()
         active_set = self.manager.get_active_set()
         if not active_set:
-            self.active_set_label.setText("Нет активного набора")
+            self.active_set_label.setText("НЕТ НАБОРА")
             return
-        self.active_set_label.setText(f"{active_set.name}")
+        
+        self.active_set_label.setText(f"{active_set.name.upper()}")
         for entry in active_set.entries:
             display_text = f"{entry.custom_name} (ID: {entry.seller_id})"
             item = QListWidgetItem(display_text)
             item.setData(Qt.ItemDataRole.UserRole, entry.seller_id)
             self.list_widget.addItem(item)
     
+    def is_blacklist_enabled(self) -> bool:
+        return self.btn_toggle.isChecked()
+
+    def get_blocked_seller_ids(self) -> set:
+        if not self.is_blacklist_enabled():
+            return set()
+        return self.manager.get_active_seller_ids()
+
     def _update_remove_button(self):
         has_selection = len(self.list_widget.selectedItems()) > 0
         self.btn_remove.setEnabled(has_selection)
@@ -243,9 +268,6 @@ class BlacklistWidget(QWidget):
         layout.addLayout(btn_layout)
         result = dialog.exec()
         return line_edit.text().strip(), result == QDialog.DialogCode.Accepted
-    
-    def get_blocked_seller_ids(self) -> set:
-        return self.manager.get_active_seller_ids()
 
 class QueueItemWidget(QWidget):
     """

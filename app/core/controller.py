@@ -31,6 +31,7 @@ class ParserController(QObject):
     sequence_started = pyqtSignal()
     sequence_finished = pyqtSignal()
     queue_finished = pyqtSignal(list, int, bool)
+    cultivation_finished = pyqtSignal()
 
     filter_group_started = pyqtSignal(list)
     
@@ -56,6 +57,7 @@ class ParserController(QObject):
         self.zombie_threads: List[QThread] = []
         self.memory_manager = memory_manager
         self.parser_progress_callback = None
+        self._is_stopping = False
     
     def set_progress_callback(self, callback):
         self.parser_progress_callback = callback
@@ -74,6 +76,7 @@ class ParserController(QObject):
             self.ai_manager.result_signal.connect(self.ai_result_ready.emit)
             self.ai_manager.finished_signal.connect(self._on_ai_batch_finished)
             self.ai_manager.all_finished_signal.connect(self._on_ai_all_finished)
+            self.ai_manager.all_finished_signal.connect(self.cultivation_finished.emit)
             self.ai_manager.error_signal.connect(self.error_occurred.emit)
             self.ai_manager.chat_response_signal.connect(self.ai_chat_reply.emit)
 
@@ -85,6 +88,10 @@ class ParserController(QObject):
         self.ai_manager.set_model(model_name)
 
     def start_sequence(self, configs):
+        if self._is_stopping:
+            logger.warning("Дождитесь завершения остановки...")
+            return
+
         self.cleanup_worker()
 
         self.queue_state.is_sequence_running = True
@@ -100,20 +107,22 @@ class ParserController(QObject):
         self._execute_queue(0)
     
     def request_soft_stop(self):
+        if self._is_stopping: return
+        self._is_stopping = True
+        
         if not self.queue_state.is_sequence_running and not (self.worker_thread and self.worker_thread.isRunning()):
+            self._finalize_stop()
             return
 
         self.queue_state.is_sequence_running = False
         self.progress_updated.emit("Остановка по запросу пользователя...")
         if self.worker:
             self.worker.request_stop()
+        
+        QTimer.singleShot(2000, self._async_force_stop)
 
     def stop_sequence(self):
-        self.progress_updated.emit("Остановка...")
-        self.queue_state.is_sequence_running = False
-        if self.worker:
-            self.worker.request_stop()
-        QTimer.singleShot(100, self._async_force_stop)
+        self.request_soft_stop()
     
     def _execute_queue(self, queue_index: int):
         self.cleanup_worker()
@@ -171,10 +180,14 @@ class ParserController(QObject):
         self.worker_thread.start()
     
     def _on_queue_finished(self, results: List[Dict], queue_idx: int, config: Dict):
+        if self._is_stopping: return
+
         if results:
             for item in results:
                 if 'id' in item:
                     self.session_seen_ids.add(str(item['id']))
+        else:
+            logger.warning(f"Очередь {queue_idx + 1}: результатов не найдено...")
         
         is_split = config.get('is_split', False)
 
@@ -196,7 +209,10 @@ class ParserController(QObject):
         is_split: bool,
     ) -> bool:
         search_mode = config.get('search_mode', 'full')
-        if search_mode != 'neuro' or not results:
+        
+        if not results: return False
+
+        if search_mode != 'neuro':
             return False
 
         logger.info("Нейро-фильтрация...")
@@ -219,45 +235,50 @@ class ParserController(QObject):
         return True
 
     def maybe_start_post_ai_analysis(
-        self, results: List[Dict], config: Dict, queueidx: int, issplit: bool
-    ) -> bool:
-        """Start post-parsing AI analysis if enabled"""
+            self, results: List[Dict], config: Dict, queue_idx: int, is_split: bool
+        ) -> bool:
+        if not results: return False
         include_ai = config.get('include_ai', False)
         store_in_memory = config.get('store_in_memory', False)
-
-        if (not include_ai and not store_in_memory) or not results:
+        # Если ничего не требуется - выходим
+        if (not include_ai and not store_in_memory):
             return False
-
+        # ВАЖНОЕ ИЗМЕНЕНИЕ: Если нужно только сохранить в память, делаем это сразу здесь,
+        # не запуская тяжелый AI процесс.
+        if store_in_memory and not include_ai:
+            if self.memory_manager:
+                logger.info(f"Сохранение {len(results)} товаров в память (без AI анализа)...")
+                for item in results:
+                    self.memory_manager.add_item(item)
+            return False  # Возвращаем False, чтобы цепочка продолжилась (advance_or_finish)
+        # Если мы здесь, значит include_ai = True. Запускаем анализ.
+        # store_in_memory передаем в контекст, чтобы сохранить ПОСЛЕ анализа.
         user_instructions = config.get('ai_criteria', "")
         search_tags = config.get('search_tags', [])
-        has_rag = config.get('store_in_memory', False)
-
+        has_rag = config.get('store_in_memory', False) # Для анализа используем RAG если есть память
         priority = PromptBuilder.select_priority(
             table_size=len(results),
             user_instructions=user_instructions,
             has_rag=has_rag,
             search_tags=search_tags
         )
-
         ai_debug = config.get('ai_debug_mode', False)
         store = config.get('store_in_memory', False)
         base_offset = config.get('ai_offset', 0)
-
         context = {
             "mode": "analysis",
             "offset": base_offset,
-            "queueidx": queueidx,
-            "issplit": issplit,
-            "store_in_memory": store,
+            "queue_idx": queue_idx,
+            "is_split": is_split,
+            "store_in_memory": store, # Если True, результаты анализа тоже попадут в память
             "include_ai": include_ai,
             "priority": priority,
             "user_instructions": user_instructions,
             "has_rag": has_rag,
+            "items": results,
         }
-
         self.queue_state.waiting_for_ai_sequence = True
         self._run_ai_process(results, prompt=None, debug_mode=ai_debug, context=context)
-
         return True
 
     def _advance_or_finish(self, queue_idx: int):
@@ -289,24 +310,36 @@ class ParserController(QObject):
             self._finalize_stop()
 
     def _finalize_stop(self):
+        self.cleanup_worker()
+        self._is_stopping = False
+        self.queue_state.is_sequence_running = False
         self.ui_lock_requested.emit(False)
-        self.progress_updated.emit("Остановлено")
+        self.progress_updated.emit(0)
 
     def cleanup_worker(self):
         if self.worker:
+            self.worker.request_stop()
             self.worker.deleteLater()
             self.worker = None
+        
         if self.worker_thread:
-            old_thread = self.worker_thread
+            if self.worker_thread.isRunning():
+                self.worker_thread.quit()
+                self.worker_thread.wait(500) # Ждем полсекунды
+            
+            # Если все еще жив - в зомби его
+            if self.worker_thread.isRunning():
+                old_thread = self.worker_thread
+                self.zombie_threads.append(old_thread)
+                def on_zombie_finished():
+                    if old_thread in self.zombie_threads:
+                        self.zombie_threads.remove(old_thread)
+                        old_thread.deleteLater()
+                old_thread.finished.connect(on_zombie_finished)
+            else:
+                self.worker_thread.deleteLater()
+            
             self.worker_thread = None
-            self.zombie_threads.append(old_thread)
-            def on_zombie_finished():
-                if old_thread in self.zombie_threads:
-                    self.zombie_threads.remove(old_thread)
-                    old_thread.deleteLater()
-            old_thread.finished.connect(on_zombie_finished)
-            if old_thread.isRunning(): old_thread.quit()
-            else: on_zombie_finished()
     
     def _on_worker_error(self, msg: str):
         self.error_occurred.emit(msg)
@@ -337,22 +370,43 @@ class ParserController(QObject):
     
     def start_manual_ai_analysis(self, items: List[Dict], prompt: str, debug_mode: bool = False, store_in_memory: bool = False):
         if not items:
-            self.error_occurred.emit("Нет данных для анализа")
+            self.error_occurred.emit("Нет элементов для анализа")
             return
+
         self.ui_lock_requested.emit(True)
-        market_prompt = self._build_market_context_prompt(items, user_criteria=prompt)
-        
-        self._run_ai_process(items, market_prompt, debug_mode, context={
-            'mode': 'analysis', 'offset': 0, 'store_in_memory': store_in_memory
-        })
-    
-    def _start_ai_filter(self, items: List[Dict], prompt: str, queue_idx: int, is_split: bool, store_in_memory: bool = False):
+
+        priority = PromptBuilder.select_priority(
+            table_size=len(items),
+            user_instructions=prompt,
+            has_rag=False,
+            search_tags=[]
+        )
+
         context = {
-            'mode': 'filter',
-            'offset': 0,
-            'queue_idx': queue_idx,
-            'is_split': is_split,
-            'store_in_memory': store_in_memory,
+            "mode": "analysis",
+            "offset": 0,
+            "queue_idx": -1,
+            "is_split": False,
+            "store_in_memory": store_in_memory,
+            "include_ai": True,
+            "priority": priority,
+            "user_instructions": prompt,
+            "has_rag": False,
+            "items": items,
+        }
+
+        self._run_ai_process(items, prompt, debug_mode=debug_mode, context=context)
+    
+    def _start_ai_filter(self, items: List[Dict], prompt: str,
+                         queue_idx: int, is_split: bool,
+                         store_in_memory: bool = False):
+        context = {
+            "mode": "filter",
+            "offset": 0,
+            "queue_idx": queue_idx,
+            "is_split": is_split,
+            "store_in_memory": store_in_memory,
+            "items": items,
         }
 
         self.queue_state.waiting_for_ai_sequence = True
@@ -362,6 +416,7 @@ class ParserController(QObject):
             ai_debug = self.queue_state.queues_config[queue_idx].get('ai_debug_mode', False)
 
         self._run_ai_process(items, prompt, debug_mode=ai_debug, context=context)
+
     
     def _start_ai_analysis(self, items: List[Dict], prompt: str, parallel: bool, queue_idx: int, is_split: bool, store_in_memory: bool = False):
         context = {
@@ -404,6 +459,41 @@ class ParserController(QObject):
         self.ai_manager._debug_logs = debug_mode
         self.ai_manager.start_chat_request(messages)
 
+    def start_cultivation(self):
+        self.ensure_ai_manager()
+
+        if not self.ai_manager:
+            logger.error("Менеджер ИИ не инициализирован...", token="ai-cult")
+            self.error_occurred.emit("AI Manager не готов")
+            self.ui_lock_requested.emit(False)
+            self.cultivation_finished.emit()
+            return
+
+        if not self.ai_manager.has_model():
+            logger.error("Модель AI не загружена...", token="ai-cult")
+            self.error_occurred.emit("Модель AI не загружена")
+            self.ui_lock_requested.emit(False)
+            self.cultivation_finished.emit()
+            return
+
+        if self.ai_manager.has_pending_tasks():
+            logger.warning("AI уже выполняет задачу...", token="ai-cult")
+            self.error_occurred.emit("AI занят другой задачей")
+            self.ui_lock_requested.emit(False)
+            self.cultivation_finished.emit()
+            return
+
+        logger.info("Запуск культивации памяти...", token="ai-cult")
+        self.ui_lock_requested.emit(True)
+        self.ai_manager.start_cultivation()
+
+        # Подключаем сигнал завершения культивации для разблокировки UI
+        self.ai_manager.all_finished_signal.connect(self._on_cultivation_finished)
+    
+    def _on_cultivation_finished(self):
+        logger.info("Культивация завершена...", token="ai-cult")
+        self.ui_lock_requested.emit(False)
+
     def on_parser_worker_finished(self, results: list):
         self.parser_finished.emit(results) 
 
@@ -426,6 +516,8 @@ class ParserController(QObject):
         return self.queue_state.total_queues
     
     def cleanup(self):
+        self._is_stopping = True # Блокируем новые запуски
+        
         if self.queue_state.is_sequence_running:
             self.stop_sequence()
             
@@ -449,3 +541,10 @@ class ParserController(QObject):
             thread.deleteLater()
 
         self.zombie_threads.clear()
+
+        if self.ai_manager:
+            try:
+                self.ai_manager.cleanup()
+            except Exception as e:
+                logger.dev(f"AIManager cleanup error: {e}", level="ERROR")
+            self.ai_manager = None

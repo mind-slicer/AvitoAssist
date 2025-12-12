@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QGroupBox, QVBoxLayout, QWidget, QHBoxLayout, 
-                           QSizePolicy, QStackedLayout, QLabel, QLineEdit, QComboBox)
+                           QSizePolicy, QStackedLayout, QLabel, QLineEdit, QComboBox, QPushButton)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QWheelEvent
 from app.ui.widgets.browsers import MiniFileBrowser
@@ -19,6 +19,9 @@ class ResultsAreaWidget(QGroupBox):
     table_item_deleted = pyqtSignal(str)
     table_closed = pyqtSignal()
     item_starred = pyqtSignal(str, bool)
+    analyze_table_requested = pyqtSignal(list)
+    add_to_memory_requested = pyqtSignal(list)
+    export_table_requested = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,7 +39,7 @@ class ResultsAreaWidget(QGroupBox):
 
         # --- LEFT: Browser ---
         left_widget = QWidget()
-        left_widget.setMinimumWidth(300)
+        left_widget.setMinimumWidth(345)
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(Spacing.SM)
@@ -96,28 +99,59 @@ class ResultsAreaWidget(QGroupBox):
         
         header_layout.addWidget(meta_widget, 1)
 
+        actions_container = QWidget()
+        actions_layout = QHBoxLayout(actions_container)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(Spacing.SM)
+
+        self.analyze_btn = QPushButton("🔍 Проанализировать")
+        self.analyze_btn.setStyleSheet(Components.small_button())
+        self.analyze_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.analyze_btn.setToolTip("Запустить AI-анализ для всех элементов таблицы")
+        self.analyze_btn.clicked.connect(self.on_analyze_table)
+
+        self.addmemory_btn = QPushButton("🧠 Добавить в память ИИ")
+        self.addmemory_btn.setStyleSheet(Components.small_button())
+        self.addmemory_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.addmemory_btn.setToolTip("Добавить все элементы таблицы в RAG-память")
+        self.addmemory_btn.clicked.connect(self.on_add_to_memory)
+
+        self.export_btn = QPushButton("📊 Выгрузить в таблицу")
+        self.export_btn.setStyleSheet(Components.small_button())
+        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_btn.setToolTip("Экспортировать таблицу в CSV/Excel")
+        self.export_btn.clicked.connect(self.on_export_table)
+
+        actions_layout.addWidget(self.analyze_btn)
+        actions_layout.addWidget(self.addmemory_btn)
+        actions_layout.addWidget(self.export_btn)
+
+        header_layout.addWidget(actions_container, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
         # Search Controls
         search_container = QWidget()
         search_layout = QHBoxLayout(search_container)
         search_layout.setContentsMargins(0, 0, 0, 0)
         search_layout.setSpacing(Spacing.SM)
         
-        self.searchedit = QLineEdit()
-        self.searchedit.setPlaceholderText("Поиск...")
-        self.searchedit.setMinimumWidth(260)
-        self.searchedit.setMaximumHeight(30)
-        self.searchedit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.searchedit.setStyleSheet(Components.text_input())
-        self.searchedit.textChanged.connect(self._apply_search) # Сигнал текста
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Поиск по таблице...")
+        self.search_edit.setMinimumWidth(260)
+        self.search_edit.setMinimumHeight(36)
+        self.search_edit.setMaximumHeight(36)
+        self.search_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.search_edit.setStyleSheet(Components.text_input())
+        self.search_edit.textChanged.connect(self._apply_search) # Сигнал текста
 
         self.search_mode = NoScrollComboBox()
         self.search_mode.addItems(["По заголовку", "По цене", "По ID"])
-        self.search_mode.setFixedWidth(140)
-        self.search_mode.setMaximumHeight(30)
+        self.search_mode.setFixedWidth(180)
+        self.search_mode.setMinimumHeight(36)
+        self.search_mode.setMaximumHeight(36)
         self.search_mode.setStyleSheet(Components.styled_combobox())
-        self.search_mode.currentTextChanged.connect(lambda: self._apply_search(self.searchedit.text()))
+        self.search_mode.currentTextChanged.connect(lambda: self._apply_search(self.search_edit.text()))
 
-        search_layout.addWidget(self.searchedit)
+        search_layout.addWidget(self.search_edit)
         search_layout.addWidget(self.search_mode)
         
         header_layout.addWidget(search_container, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -168,6 +202,24 @@ class ResultsAreaWidget(QGroupBox):
         self.clear_table()
         self.table_closed.emit()
 
+    def on_analyze_table(self):
+        items = self.results_table.source_model.get_all_items()
+        if not items:
+            return
+        self.analyze_table_requested.emit(items)
+
+    def on_add_to_memory(self):
+        items = self.results_table.source_model.get_all_items()
+        if not items:
+            return
+        self.add_to_memory_requested.emit(items)
+
+    def on_export_table(self):
+        items = self.results_table.source_model.get_all_items()
+        if not items:
+            return
+        self.export_table_requested.emit(items)
+
     def load_full_history(self, items: list[dict]):
         self.clear_table()
         if not items:
@@ -202,5 +254,5 @@ class ResultsAreaWidget(QGroupBox):
         else:
             self.table_title_label.setText(table_name)
             self.table_date_label.setText(full_date)
-            self.table_count_label.setText(f"{count} объявлений")
+            self.table_count_label.setText(f"{count} шт.")
             self.header_widget.setVisible(True)

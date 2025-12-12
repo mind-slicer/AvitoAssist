@@ -4,7 +4,7 @@ import time
 from typing import List, Dict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget,
-    QSplitter, QScrollArea, QFrame, QApplication, QMessageBox
+    QSplitter, QScrollArea, QFrame, QApplication, QMessageBox, QLabel
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCursor
@@ -34,6 +34,8 @@ class MainWindow(QWidget):
         self.controller = ParserController(memory_manager=self.memory_manager)
         self.controller.set_progress_callback(self._on_parser_progress)
         self.controller.ai_result_ready.connect(self._on_ai_result_with_memory)
+
+        self._neuro_filtered: Dict[int, List[Dict]] = {}
         
         self.queue_manager = QueueStateManager()
         self.current_results = []
@@ -75,7 +77,7 @@ class MainWindow(QWidget):
         main_layout.addWidget(self.stack)
         self.parser_page = self._create_parser_page()
         self.stack.addWidget(self.parser_page)
-        self.analytics_page = self._create_analytics_page()
+        self.analytics_page = self.create_analytics_page()
         self.stack.addWidget(self.analytics_page)
         self.btn_parser.setChecked(True)
         self.stack.setCurrentIndex(0)
@@ -86,9 +88,8 @@ class MainWindow(QWidget):
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(Spacing.LG, Spacing.SM, Spacing.LG, Spacing.SM)
         
-        title = QPushButton("AVITO ASSIST")
-        title.setFlat(True)
-        title.setStyleSheet(f"color: {Palette.PRIMARY}; font-weight: bold; font-size: 16px; border: none; text-align: left;")
+        title = QLabel("AVITO ASSIST")
+        title.setStyleSheet(f"color: {Palette.PRIMARY}; font-weight: bold; font-size: 16px; border: none;")
         top_layout.addWidget(title)
         top_layout.addStretch()
         
@@ -156,17 +157,40 @@ class MainWindow(QWidget):
         self.controls_widget = ControlsWidget()
         top_layout.addWidget(self.controls_widget)
 
+        # --- STATS CONTAINER (MODIFIED) ---
         stats_container = QWidget()
         stats_layout = QHBoxLayout(stats_container)
         stats_layout.setContentsMargins(0, 0, 0, 0)
         stats_layout.setSpacing(Spacing.MD)
 
-        self.ai_stats_panel = AIStatsPanel(self)
-        stats_layout.addWidget(self.ai_stats_panel)
+        # OLD STATS WIDGETS COMMENTED OUT
+        #self.ai_stats_panel = AIStatsPanel(self)
+        # stats_layout.addWidget(self.ai_stats_panel)
 
-        self.rag_stats_panel = RAGStatsPanel(self)
-        self.rag_stats_panel.navigate_to_rag.connect(self._open_rag_tab)
-        stats_layout.addWidget(self.rag_stats_panel)
+        #self.rag_stats_panel = RAGStatsPanel(self)
+        #self.rag_stats_panel.navigate_to_rag.connect(self._open_rag_tab)
+        # stats_layout.addWidget(self.rag_stats_panel)
+        
+        # NEW WIP PLACEHOLDER
+        wip_frame = QFrame()
+        wip_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Palette.BG_DARK_2};
+                border: 1px dashed {Palette.BORDER_SOFT};
+                border-radius: {Spacing.RADIUS_NORMAL}px;
+            }}
+        """)
+        wip_frame.setFixedHeight(120) # Приличный размер
+        wip_layout = QVBoxLayout(wip_frame)
+        wip_label = QLabel("WIP (Work In Progress)")
+        wip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wip_label.setStyleSheet(Typography.style(
+            family=Typography.MONO, size=Typography.SIZE_XL, 
+            weight=Typography.WEIGHT_BOLD, color=Palette.TEXT_MUTED
+        ))
+        wip_layout.addWidget(wip_label)
+        
+        stats_layout.addWidget(wip_frame)
 
         self.search_widget.attach_ai_stats(stats_container)
 
@@ -190,12 +214,15 @@ class MainWindow(QWidget):
         layout.addWidget(splitter)
         return page
 
-    def _create_analytics_page(self) -> QWidget:
+    def create_analytics_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(Spacing.LG, Spacing.LG, Spacing.LG, Spacing.LG)
-        self.analytics_widget = AnalyticsWidget(self.memory_manager)
+        
+        # ИЗМЕНИ эту строку - передай controller
+        self.analytics_widget = AnalyticsWidget(self.memory_manager, self.controller)
         layout.addWidget(self.analytics_widget)
+        
         return page
 
     def _connect_signals(self):
@@ -208,7 +235,7 @@ class MainWindow(QWidget):
         self.controller.ui_lock_requested.connect(self.controls_widget.set_ui_locked)
         self.controller.request_increment.connect(self._on_request_increment)
         self.controller.ai_progress_updated.connect(self._on_ai_progress)
-        self.controller.ai_batch_finished.connect(lambda: self.progress_panel.ai_log.success("AI пакет обработан"))
+        self.controller.ai_batch_finished.connect(self._on_ai_batch_finished)
         self.controller.scan_finished.connect(self._on_scan_finished)
         self.controller.ai_all_finished.connect(self._on_ai_all_finished)
         self.search_widget.scan_categories_requested.connect(lambda tags: self.controller.scan_categories(tags))
@@ -227,9 +254,18 @@ class MainWindow(QWidget):
         self.results_area.table_item_deleted.connect(self._on_table_item_deleted)
         self.results_area.table_closed.connect(self._on_table_closed)
         self.results_area.item_starred.connect(self._on_item_starred)
+        self.results_area.analyze_table_requested.connect(self.on_analyze_table_requested)
+        self.results_area.add_to_memory_requested.connect(self.on_add_to_memory_requested)
+        self.results_area.export_table_requested.connect(self.on_export_table_requested)
+        self.results_area.mini_browser.analyze_file_requested.connect(self.on_analyze_file_requested)
+        self.results_area.mini_browser.addmemory_file_requested.connect(self.on_addmemory_file_requested)
+        self.results_area.mini_browser.export_file_requested.connect(self.on_export_file_requested)
+        self.results_area.results_table.analyze_item_requested.connect(self.on_analyze_item_requested)
+        self.results_area.results_table.addmemory_item_requested.connect(self.on_addmemory_item_requested)
         self.controls_widget.pause_neuronet_requested.connect(self._on_pause_neuronet_requested)
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
+        self.controller.ai_result_ready.connect(self.handle_ai_result)
 
     def _on_sequence_finished_ui(self):
         logger.info("Последовательность полностью завершена.")
@@ -476,44 +512,18 @@ class MainWindow(QWidget):
             config = self.controller.queue_state.queues_config[idx]
         else:
             config = self.controls_widget.get_parameters()
-            
-        split_results = config.get("split_results", False)
-        rewrite = config.get("rewrite_duplicates", False)
-        
-        if split_results:
-            timestamp = time.strftime('%Y%m%d_%H%M%S')
-            q_num = config.get('original_index', idx) + 1
-            filename = f"avito_search_q{q_num}_{timestamp}.json"
-            target_file = os.path.join(RESULTS_DIR, filename)
-            base_items = []
-            
-            merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
-            self._save_list_to_file(merged, target_file)
-            logger.success(f"Очередь #{q_num}: Сохранено в {filename}...")
-            
-        else:
-            if not self.current_json_file:
-                 self._create_new_results_file()
-            
-            base_items = self.current_results
-            merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
-            self.current_results = merged
-            
-            self._save_results_to_file()
-        
-        if not split_results:
-             self.results_area.load_full_history(self.current_results)
-             if self.current_json_file:
-                basename = os.path.basename(self.current_json_file).replace("avito_", "").replace(".json", "")
-                fulldate = time.strftime("%d.%m.%Y %H:%M")
-                self.results_area.update_header(
-                    table_name=basename,
-                    full_date=fulldate,
-                    count=len(self.current_results)
-                )
 
-        self.results_area.mini_browser.refresh_files()
-        
+        search_mode = config.get("search_mode", "full")
+
+        if search_mode == "neuro":
+            logger.info(
+                f"Очередь #{idx + 1}: парсинг завершен, ожидаем нейро-фильтр "
+                f"({len(results)} сырых элементов)..."
+            )
+            return
+
+        self._save_results_for_config(results, config, idx)
+
         if not self.controller.queue_state.is_sequence_running:
             self.controls_widget.set_ui_locked(False)
             self.is_sequence_running = False
@@ -526,7 +536,8 @@ class MainWindow(QWidget):
         self.current_json_file = os.path.join(RESULTS_DIR, filename)
 
     def _save_results_to_file(self):
-        if not self.current_json_file: return
+        if not self.current_json_file:
+            return
         self._save_list_to_file(self.current_results, self.current_json_file)
 
     def _save_list_to_file(self, data: list, filepath: str):
@@ -541,7 +552,9 @@ class MainWindow(QWidget):
 
     def _on_parser_started_logic(self):
         self.progress_panel.set_parser_mode(self.current_search_mode)
-        self.progress_panel.ai_bar.setValue(0)
+        self.progress_panel.reset_parser_progress()
+        self.progress_panel.reset_ai_progress()
+        #self.progress_panel.ai_bar.setValue(0)
         
     def _on_queue_finished(self, results, idx, is_split):
         config = {}
@@ -792,6 +805,23 @@ class MainWindow(QWidget):
         logger.warning(f"ИИ функции отключены: модель не найдена...")
         logger.info(f"Откройте 'Настройки → Нейросеть' для установки модели...")
 
+    def handle_ai_result(self, idx, json_text, context):
+        # Обновить таблицу
+        self.results_area.results_table.update_ai_column(idx, json_text)
+
+        # Сохранить в память если нужно
+        if context.get('storeinmemory'):
+            items = context.get('items', [])
+            if idx < len(items):
+                item = items[idx]
+                # Добавить вердикт из JSON
+                parsed = json.loads(json_text)
+                item['verdict'] = parsed.get('verdict')
+                item['reason'] = parsed.get('reason')
+                item['market_position'] = parsed.get('market_position')
+                item['defects'] = parsed.get('defects')
+                self.memory_manager.add_item(item)
+
     def on_chat_message_sent(self, messages: list):
         """Обработка отправки сообщения в чат"""
         if not self.controller.ai_manager:
@@ -841,32 +871,105 @@ class MainWindow(QWidget):
     def _on_ai_all_finished(self):
         logger.info(f"ИИ завершил анализ...")
 
-    def _on_ai_result_with_memory(self, idx: int, ai_json: str, context: dict):
-        """Обработка результата AI: разделение на UI и Память"""
+    def _on_ai_result_with_memory(self, index: int, json_text: str, context: dict):
+        from app.core.log_manager import logger
+        import json
+
+        mode = context.get('mode', 'analysis')
+        queue_idx = context.get('queue_idx', -1)
+        if queue_idx is None: queue_idx = context.get('queueidx', 0)
         
-        # Получаем флаги из контекста
-        include_ai = context.get('include_ai', True)
         store_in_memory = context.get('store_in_memory', False)
-
-        # 1. Если включен визуальный анализ - обновляем таблицу UI и JSON файл
-        if include_ai:
-            self._on_ai_result(idx, ai_json, context)
+        items = context.get('items') or []
         
-        # 2. Если включен RAG - сохраняем в базу знаний
-        if store_in_memory:
-            if 0 <= idx < len(self.current_results):
-                item = self.current_results[idx].copy() # Копия, чтобы не портить отображение, если include_ai=False
-                
-                # Парсим ответ AI
-                try:
-                    import json
-                    ai_data = json.loads(ai_json)
-                    item.update(ai_data) # Добавляем данные AI к товару
-                except Exception as e:
-                    pass
+        try:
+            data = json.loads(json_text) if isinstance(json_text, str) else json_text
+        except Exception as e:
+            logger.dev(f"AI JSON parse error: {e} | Payload: {str(json_text)[:200]}", level="ERROR")
+            return
 
-                # Сохраняем
-                success = self.memory_manager.add_item(item)
+        src_item = None
+        if isinstance(items, list) and 0 <= index < len(items):
+            src_item = items[index]
+
+        if mode == 'filter':
+            verdict = str(data.get("verdict", "")).upper()
+            reason = data.get("reason", "")
+            
+            if not src_item: return
+            
+            src_item['ai_filter_verdict'] = verdict
+            src_item['ai_filter_reason'] = reason
+            
+            if verdict == "GOOD":
+                bucket = self._neuro_filtered.setdefault(queue_idx, [])
+                bucket.append(src_item)
+            return
+
+        if mode == 'analysis':
+            if not src_item: return
+            
+            src_item["ai"] = data
+            src_item["verdict"] = data.get("verdict")
+            src_item["reason"] = data.get("reason")
+            src_item["market_position"] = data.get("market_position")
+            src_item["defects"] = data.get("defects")
+
+            if queue_idx == -1: 
+                self.results_area.results_table.update_ai_column(index, json_text)
+            
+            if self.current_results:
+                item_id = str(src_item.get('id'))
+                found = False
+                for existing in self.current_results:
+                    if str(existing.get('id')) == item_id:
+                        existing.update(src_item)
+                        found = True
+                        break
+                
+                if found and self.current_json_file:
+                     self._save_results_to_file()
+
+            if store_in_memory:
+                try:
+                    self.memory_manager.add_item(src_item)
+                except Exception as e:
+                    logger.dev(f"Memory add_item error: {e}", level="ERROR")
+
+    def _save_results_for_config(self, results: List[Dict], config: Dict, idx: int):
+        split_results = config.get("split_results", False)
+        rewrite = config.get("rewrite_duplicates", False)
+
+        if split_results:
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            q_num = config.get('original_index', idx) + 1
+            filename = f"avito_search_q{q_num}_{timestamp}.json"
+            target_file = os.path.join(RESULTS_DIR, filename)
+
+            base_items: List[Dict] = []
+            merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
+            self._save_list_to_file(merged, target_file)
+            logger.success(f"Очередь #{q_num}: Сохранено в {filename} (добавлено {added}, обновлено {updated}, пропущено {skipped})")
+        else:
+            if not self.current_json_file:
+                self._create_new_results_file()
+
+            base_items = self.current_results
+            merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
+            self.current_results = merged
+            self._save_results_to_file()
+
+            self.results_area.load_full_history(self.current_results)
+
+            if self.current_json_file:
+                basename = os.path.basename(self.current_json_file).replace("avito_", "").replace(".json", "")
+                fulldate = time.strftime("%d.%m.%Y %H:%M")
+                self.results_area.update_header(
+                    table_name=basename,
+                    full_date=fulldate,
+                    count=len(self.current_results)
+                )
+                self.results_area.mini_browser.refresh_files()
 
     def _open_rag_tab(self):
         """Переключиться на Аналитику → вкладка RAG‑статус"""
@@ -914,6 +1017,216 @@ class MainWindow(QWidget):
             self.current_results = []
             self.results_area.clear_table()
         self._refresh_merge_targets()
+
+    def on_analyze_table_requested(self, items: List[Dict]):
+        """Запустить AI-анализ для всех элементов таблицы"""
+        if not items:
+            QMessageBox.warning(self, "Ошибка", "Таблица пуста!")
+            return
+
+        # 1. Получаем текущие критерии из интерфейса
+        params = self.controls_widget.get_parameters()
+        user_criteria = params.get("ai_criteria", "")
+
+        logger.info(f"Запуск анализа для {len(items)} элементов (Критерии: {user_criteria[:30]}...)...")
+        
+        self.controller.start_manual_ai_analysis(
+            items=items,
+            prompt=user_criteria,  # <--- ФИКС: Передаем критерии
+            debug_mode=self.app_settings.get("ai_debug", False),
+            store_in_memory=params.get("store_in_memory", False) # Опционально: учитываем и галку памяти
+        )
+
+    def on_add_to_memory_requested(self, items: List[Dict]):
+        """Добавить все элементы в RAG-память"""
+        if not items:
+            QMessageBox.warning(self, "Ошибка", "Таблица пуста!")
+            return
+
+        added = 0
+        for item in items:
+            if self.memory_manager.add_item(item):
+                added += 1
+
+        logger.success(f"Добавлено {added} из {len(items)} элементов в память ИИ")
+        QMessageBox.information(self, "Успех", f"Добавлено {added} элементов в память ИИ")
+
+    def on_export_table_requested(self, items: List[Dict]):
+        """Экспортировать таблицу в файл"""
+        if not items:
+            QMessageBox.warning(self, "Ошибка", "Таблица пуста!")
+            return
+
+        from PyQt6.QtWidgets import QFileDialog
+        import csv
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить таблицу", "", "Excel файл (*.xlsx);;CSV файл (*.csv)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            if filepath.endswith('.csv'):
+                # Для CSV добавляем отдельную колонку со ссылкой
+                fieldnames = ['id', 'price', 'title', 'link', 'views', 'date', 'city', 'description', 'ai_verdict']
+                headers = ['ID', 'Цена', 'Название', 'Ссылка', 'Просмотров', 'Дата', 'Город', 'Описание', 'Вердикт ИИ']
+
+                with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(headers)
+                    for item in items:
+                        # Получить вердикт ИИ
+                        ai_data = item.get('ai', {})
+                        if isinstance(ai_data, str):
+                            import json
+                            try:
+                                ai_data = json.loads(ai_data)
+                            except:
+                                ai_data = {}
+
+                        verdict = ai_data.get('verdict', '')
+                        reason = ai_data.get('reason', '')
+                        ai_text = f"{verdict}: {reason}" if verdict else ""
+
+                        desc = item.get('description', '') or ''
+                        desc_short = desc[:100] + '...' if len(desc) > 100 else desc
+
+                        writer.writerow([
+                            item.get('id', ''),
+                            item.get('price', ''),
+                            item.get('title', ''),
+                            item.get('link', ''),  # Ссылка в отдельной колонке
+                            item.get('views', ''),
+                            item.get('date', ''),
+                            item.get('address', ''),
+                            desc_short,
+                            ai_text
+                        ])
+
+            elif filepath.endswith('.xlsx'):
+                try:
+                    import openpyxl
+                    from openpyxl.styles import Font, Alignment
+                except ImportError:
+                    QMessageBox.critical(self, "Ошибка", "Для экспорта в Excel установите библиотеку: pip install openpyxl")
+                    return
+
+                # Для Excel делаем название кликабельной ссылкой
+                headers = ['ID', 'Цена', 'Название (ссылка)', 'Просмотров', 'Дата', 'Город', 'Описание', 'Вердикт ИИ']
+
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.append(headers)
+
+                # Стиль для заголовков
+                for cell in ws[1]:
+                    cell.font = Font(bold=True)
+
+                for idx, item in enumerate(items, start=2):  # Начинаем со второй строки (первая - заголовки)
+                    # Получить вердикт ИИ
+                    ai_data = item.get('ai', {})
+                    if isinstance(ai_data, str):
+                        import json
+                        try:
+                            ai_data = json.loads(ai_data)
+                        except:
+                            ai_data = {}
+
+                    verdict = ai_data.get('verdict', '')
+                    reason = ai_data.get('reason', '')
+                    ai_text = f"{verdict}: {reason}" if verdict else ""
+
+                    desc = item.get('description', '') or ''
+                    desc_short = desc[:100] + '...' if len(desc) > 100 else desc
+
+                    title = item.get('title', '')
+                    link = item.get('link', '')
+
+                    # Добавляем строку
+                    ws.append([
+                        item.get('id', ''),
+                        item.get('price', ''),
+                        title,  # Сначала текст, потом добавим гиперссылку
+                        item.get('views', ''),
+                        item.get('date', ''),
+                        item.get('address', ''),
+                        desc_short,
+                        ai_text
+                    ])
+
+                    # Делаем название гиперссылкой (колонка C = 3)
+                    if link:
+                        cell = ws.cell(row=idx, column=3)
+                        cell.hyperlink = link
+                        cell.font = Font(color="0563C1", underline="single")  # Синий цвет и подчеркивание
+                        cell.value = title
+
+                # Автоширина колонок
+                for column in ws.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if cell.value:
+                                max_length = max(max_length, len(str(cell.value)))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)  # Ограничиваем максимальную ширину
+                    ws.column_dimensions[column_letter].width = adjusted_width
+
+                wb.save(filepath)
+
+            logger.success(f"Таблица экспортирована: {filepath}")
+            QMessageBox.information(self, "Успех", f"Таблица сохранена:\n{filepath}")
+        except Exception as e:
+            import traceback
+            logger.error(f"Ошибка экспорта: {e}")
+            traceback.print_exc()
+            QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать:\n{e}")
+
+    def on_analyze_file_requested(self, filepath: str):
+        """Проанализировать файл из мини-браузера"""
+        items = self._load_results_file_silent(filepath)
+        if items:
+            self.on_analyze_table_requested(items)
+
+    def on_addmemory_file_requested(self, filepath: str):
+        """Добавить файл в память из мини-браузера"""
+        items = self._load_results_file_silent(filepath)
+        if items:
+            self.on_add_to_memory_requested(items)
+
+    def on_export_file_requested(self, filepath: str):
+        """Экспортировать файл из мини-браузера"""
+        items = self._load_results_file_silent(filepath)
+        if items:
+            self.on_export_table_requested(items)
+
+    def on_analyze_item_requested(self, item: Dict):
+        """Запустить AI-анализ для одного элемента"""
+        # 1. Получаем текущие критерии из интерфейса
+        params = self.controls_widget.get_parameters()
+        user_criteria = params.get("ai_criteria", "")
+        
+        logger.info(f"Запуск анализа для элемента {item.get('id', 'N/A')}...")
+        
+        self.controller.start_manual_ai_analysis(
+            items=[item],
+            prompt=user_criteria,  # <--- ФИКС: Передаем критерии
+            debug_mode=self.app_settings.get("ai_debug", False),
+            store_in_memory=params.get("store_in_memory", False)
+        )
+
+    def on_addmemory_item_requested(self, item: Dict):
+        """Добавить один элемент в память"""
+        if self.memory_manager.add_item(item):
+            logger.success(f"Элемент {item.get('id', 'N/A')} добавлен в память ИИ")
+            QMessageBox.information(self, "Успех", "Элемент добавлен в память ИИ")
+        else:
+            logger.warning(f"Элемент {item.get('id', 'N/A')} уже в памяти")
+            QMessageBox.information(self, "Информация", "Элемент уже есть в памяти")
 
     def _on_results_context_cleared(self):
         self.current_json_file = None
@@ -1009,6 +1322,58 @@ class MainWindow(QWidget):
                     
             except Exception as e:
                 logger.error(f"Ошибка фонового обновления файла {source_file}: {e}")
+
+    def _on_ai_batch_finished(self):
+        # Базовый лог (можно оставить как было)
+        self.progress_panel.ai_log.success("AI пакет обработан")
+
+        qs = self.controller.queue_state
+        if not qs.waiting_for_ai_sequence:
+            # Это мог быть ручной анализ/чат — игнорируем
+            return
+
+        idx = qs.current_queue_index
+        if idx >= len(qs.queues_config):
+            return
+
+        config = qs.queues_config[idx]
+        search_mode = config.get("search_mode", "full")
+
+        # Интересует только нейро-режим
+        if search_mode != "neuro":
+            return
+
+        # 1) Берём отфильтрованные GOOD-объявления
+        filtered = self._neuro_filtered.get(idx, []) or []
+        logger.success(
+            f"Нейро-фильтр для очереди #{idx + 1}: прошло {len(filtered)} объявлений."
+        )
+
+        # Очищаем кэш, чтобы не мешался
+        self._neuro_filtered.pop(idx, None)
+
+        # 2) Сохраняем как обычные результаты для этой очереди
+        self._save_results_for_config(filtered, config, idx)
+
+        self.progress_panel.set_ai_finished()
+
+        # 3) (НЕОБЯЗАТЕЛЬНО) Запускаем пост-анализ по отфильтрованным,
+        # если включены флаги "Вкл. в анализ" или "RAG"
+        include_ai = config.get("include_ai", False)
+        store_in_memory = config.get("store_in_memory", False)
+
+        if filtered and (include_ai or store_in_memory):
+            user_criteria = config.get("ai_criteria", "") or ""
+            ai_debug = config.get("ai_debug_mode", False)
+
+            # Используем уже готовый метод "ручного" анализа,
+            # который сам соберет промпт из user_criteria
+            self.controller.start_manual_ai_analysis(
+                items=filtered,
+                prompt=user_criteria,
+                debug_mode=ai_debug,
+                store_in_memory=store_in_memory,
+            )
 
     def _refresh_merge_targets(self):
         if hasattr(self.results_area, "mini_browser"):
@@ -1111,12 +1476,14 @@ class MainWindow(QWidget):
     def _update_ai_stats(self):
         if self.controller.ai_manager:
             stats = self.controller.ai_manager.refresh_resource_usage()
-            self.ai_stats_panel.update_stats(stats)
+            # Check if panel is still there (it might be commented out)
+            if hasattr(self, 'ai_stats_panel') and self.ai_stats_panel.isVisible():
+                self.ai_stats_panel.update_stats(stats)
 
     def _update_rag_stats(self):
-        """Обновить RAG статистику в панели"""
         stats = self.memory_manager.get_rag_status()
-        self.rag_stats_panel.update_stats(stats)
+        if hasattr(self, 'rag_stats_panel') and self.rag_stats_panel.isVisible():
+            self.rag_stats_panel.update_stats(stats)
 
     def _apply_initial_size(self):
         self.resize(2200, 1320)
@@ -1132,8 +1499,12 @@ class MainWindow(QWidget):
     def closeEvent(self, event):
         self._save_current_queue_state()
         self._sync_queues_with_ui() 
+
         self.queue_manager.save_current_state()
         if hasattr(self, 'tracker'):
             self.tracker.stop()
-        self.controller.cleanup()
-        event.accept()
+        
+        try:
+            self.controller.cleanup()
+        finally:
+            event.accept()

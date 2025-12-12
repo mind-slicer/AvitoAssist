@@ -11,3 +11,4 @@ psutil
 urllib3>=2.5.0
 pytest
 scikit-learn
+openpyxl

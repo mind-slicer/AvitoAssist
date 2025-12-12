@@ -61,92 +61,84 @@ class MemoryManager:
 
     def _init_db(self):
         with self._lock:
-            cursor = self._conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS items (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    avito_id TEXT UNIQUE,
-                    title TEXT,
-                    price INTEGER,
-                    description TEXT,
-                    url TEXT,
-                    seller TEXT,
-                    address TEXT,
-                    published_date TEXT,
-                    added_at TEXT,
-                    verdict TEXT,
-                    reason TEXT,
-                    market_position TEXT,
-                    defects BOOLEAN,
-                    category TEXT,
-                    tags TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS statistics (
-                    product_key TEXT PRIMARY KEY,
-                    avg_price INTEGER,
-                    median_price INTEGER,
-                    min_price INTEGER,
-                    max_price INTEGER,
-                    sample_count INTEGER,
-                    trend TEXT,
-                    trend_percent REAL,
-                    last_updated TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS trend_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_key TEXT,
-                    date TEXT,
-                    avg_price INTEGER,
-                    sample_count INTEGER
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS chat_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    role TEXT,
-                    content TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            c = self._conn.cursor()
+            # Таблица сырых товаров (Операционная память)
+            c.execute("""CREATE TABLE IF NOT EXISTS items (
+                id INTEGER PRIMARY KEY, avito_id TEXT UNIQUE, title TEXT, price INTEGER, 
+                description TEXT, url TEXT, seller TEXT, address TEXT, published_date TEXT, 
+                added_at TEXT, verdict TEXT, reason TEXT, market_position TEXT, defects BOOLEAN
+            )""")
+            # Статистика (Кэш)
+            c.execute("""CREATE TABLE IF NOT EXISTS statistics (
+                product_key TEXT PRIMARY KEY, avg_price INTEGER, median_price INTEGER, 
+                min_price INTEGER, max_price INTEGER, sample_count INTEGER, 
+                trend TEXT, trend_percent REAL, last_updated TEXT
+            )""")
+            # История трендов
+            c.execute("""CREATE TABLE IF NOT EXISTS trend_history (
+                id INTEGER PRIMARY KEY, product_key TEXT, date TEXT, avg_price INTEGER, sample_count INTEGER
+            )""")
+            # Чат
+            c.execute("""CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY, role TEXT, content TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
+            # НОВОЕ: Концептуальная память (Выводы ИИ)
+            c.execute("""CREATE TABLE IF NOT EXISTS ai_knowledge (
+                product_key TEXT PRIMARY KEY,
+                summary TEXT,
+                risk_factors TEXT,
+                price_range_notes TEXT,
+                last_updated TEXT
+            )""")
             self._conn.commit()
+
+    # --- Knowledge Methods ---
+
+    def add_knowledge(self, product_key: str, summary: str, risks: str, prices: str):
+        now = datetime.now().isoformat()
+        self._execute("""
+            INSERT OR REPLACE INTO ai_knowledge (product_key, summary, risk_factors, price_range_notes, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        """, (product_key, summary, risks, prices, now), commit=True)
+
+    def get_knowledge(self, product_key: str) -> Optional[Dict]:
+        row = self._execute("SELECT * FROM ai_knowledge WHERE product_key = ?", (product_key,), fetch_one=True)
+        return dict(row) if row else None
+    
+    def get_all_knowledge_summaries(self) -> List[Dict]:
+        """Возвращает список всех записей из концептуальной памяти для UI"""
+        rows = self._execute("SELECT product_key, summary, last_updated FROM ai_knowledge ORDER BY last_updated DESC", fetch_all=True)
+        return [dict(r) for r in rows] if rows else []
+
+    def delete_knowledge(self, product_key: str):
+        """Удаляет запись знаний и связанный кэш статистики"""
+        self._execute("DELETE FROM ai_knowledge WHERE product_key = ?", (product_key,), commit=True)
+        self._execute("DELETE FROM statistics WHERE product_key = ?", (product_key,), commit=True)
 
     # ==================== Добавление товаров ====================
 
     def add_item(self, item: dict):
-        row = self._execute("SELECT id FROM items WHERE avito_id = ?", (str(item.get('id')),), fetch_one=True)
-        if row:
+        if self._execute("SELECT 1 FROM items WHERE avito_id = ?", (str(item.get('id')),), fetch_one=True):
             return False
-
         self._execute("""
-            INSERT INTO items (
-                avito_id, title, price, description, url, seller, address, 
-                published_date, added_at, verdict, reason, market_position, defects
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            str(item.get('id')),
-            item.get('title'),
-            item.get('price'),
-            item.get('description'),
-            item.get('link'),
-            item.get('seller'),
-            item.get('address'),
-            item.get('date'),
-            datetime.now().isoformat(),
-            item.get('verdict'),
-            item.get('reason'),
-            item.get('market_position'),
-            item.get('defects')
-        ), commit=True)
+            INSERT INTO items (avito_id, title, price, description, url, seller, address, published_date, added_at, verdict, reason, market_position, defects)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (str(item.get('id')), item.get('title'), item.get('price'), item.get('description'), item.get('link'), item.get('seller'), 
+              item.get('address'), item.get('date'), datetime.now().isoformat(), item.get('verdict'), item.get('reason'), 
+              item.get('market_position'), item.get('defects')), commit=True)
         return True
 
     # ==================== Поиск похожих товаров ====================
 
-    def find_similar_items(self, query_text: str, limit: int = 20) -> List[Dict]:
-        return self._find_similar_by_keywords(query_text, limit)
+    def find_similar_items(self, title: str, limit: int = 20) -> List[Dict]:
+        clean = re.sub(r'\b(продам|куплю|торг|новый|бу|цена)\b', '', title.lower(), flags=re.I)
+        kws = [w for w in clean.split() if len(w) > 2][:4]
+        if not kws: return []
+        q = " OR ".join(["title LIKE ?"] * len(kws))
+        p = [f"%{k}%" for k in kws]
+        p.append(limit)
+        rows = self._execute(f"SELECT * FROM items WHERE ({q}) ORDER BY added_at DESC LIMIT ?", tuple(p), fetch_all=True)
+        return [dict(r) for r in rows] if rows else []
 
     def _find_similar_by_keywords(self, title: str, limit: int = 20) -> List[Dict]:
         try:
@@ -181,79 +173,42 @@ class MemoryManager:
         keywords = [w for w in words if len(w) > 2][:5]
         return keywords
 
-    # ==================== RAG Контекст ====================
+    # ==================== RAG ====================
 
     def get_rag_context_for_item(self, title: str, days_back: int = 30) -> Optional[Dict]:
-        query_features = FeatureExtractor.extract_features(title)
+        key = self._generate_product_key(title)
         
-        # Кэш
-        product_key = self._generate_product_key(title) 
-        cached_stats = self._get_cached_stats(product_key)
-        if cached_stats:
-            logger.dev(f"Memory using cached stats for {title[:30]}", level="INFO")
-            return cached_stats
+        # 1. Берем числовую статистику (кэш или пересчет)
+        stats = self._get_cached_stats(key)
+        
+        # Fallback: если кэша нет, пробуем найти похожие "на лету" (упрощенно)
+        if not stats:
+            items = self.find_similar_items(title, 50)
+            if items:
+                prices = [i['price'] for i in items if i['price']]
+                if prices:
+                    stats = {
+                        'median_price': int(statistics.median(prices)),
+                        'avg_price': int(statistics.mean(prices)),
+                        'min_price': min(prices),
+                        'max_price': max(prices),
+                        'trend': 'stable', 
+                        'sample_count': len(prices)
+                    }
+        
+        if not stats: return None
 
-        # 1. Сначала грубая выборка по ключевым словам (SQL)
-        candidates = self.find_similar_items(title, limit=100) 
-        if not candidates:
-            return None
-
-        # 2. Подготовка к фильтрации
-        cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-        candidate_titles = []
-        candidate_objs = []
-
-        # Предварительная фильтрация (цена, дата, features)
-        for item in candidates:
-            if item.get('added_at', '') < cutoff_date: continue
-            if not item.get('price') or item['price'] < 100: continue
-
-            item_features = FeatureExtractor.extract_features(item.get('title', ''))
-            mismatch = False
-            critical_keys = ['storage', 'ram', 'model_suffix'] 
-            for key in critical_keys:
-                if key in query_features and key in item_features:
-                    if query_features[key] != item_features[key]:
-                        mismatch = True
-                        break
-            if mismatch: continue
+        # 2. Берем концептуальные знания
+        knowledge = self.get_knowledge(key)
+        
+        # Склеиваем
+        context = stats.copy()
+        if knowledge:
+            # Подмешиваем мысли ИИ в контекст
+            context['knowledge'] = f"{knowledge['summary']}. Риски: {knowledge['risk_factors']}."
+        else:
+            context['knowledge'] = ""
             
-            candidate_titles.append(item.get('title', ''))
-            candidate_objs.append(item)
-
-        if not candidate_titles:
-            return None
-
-        # 3. Применяем TF-IDF
-        scores = TextMatcher.calculate_similarity(title, candidate_titles)
-        
-        # Порог сходства (эмпирический)
-        THRESHOLD = 0.3 
-        
-        final_items = []
-        for idx, score in enumerate(scores):
-            if score >= THRESHOLD:
-                final_items.append(candidate_objs[idx])
-
-        if len(final_items) < 2:
-            return None
-
-        # 4. Расчет статистики
-        prices = [item['price'] for item in final_items]
-        trend, trend_percent = self._calculate_trend(final_items)
-
-        context = {
-            'avg_price': int(statistics.mean(prices)),
-            'median_price': int(statistics.median(prices)),
-            'min_price': int(min(prices)),
-            'max_price': int(max(prices)),
-            'sample_count': len(final_items),
-            'trend': trend,
-            'trend_percent': round(trend_percent, 1)
-        }
-
-        self._cache_stats(product_key, context)
-        logger.dev(f"RAG (TF-IDF): {len(final_items)} items matched query '{title[:20]}...'", level="INFO")
         return context
 
     def _calculate_trend(self, items: List[Dict]) -> tuple[str, float]:
@@ -279,15 +234,11 @@ class MemoryManager:
     # ==================== Кэширование статистики ====================
 
     def _generate_product_key(self, title: str) -> str:
-        keywords = self._extract_keywords(title)
-        return ' '.join(keywords[:3])
+        clean = re.sub(r'\b(продам|куплю|торг)\b', '', title.lower(), flags=re.I)
+        return " ".join(clean.split()[:3])
 
-    def _get_cached_stats(self, product_key: str) -> Optional[Dict]:
-        row = self._execute("""
-            SELECT * FROM statistics
-            WHERE product_key = ?
-            AND last_updated >= datetime('now', '-1 hour')
-        """, (product_key,), fetch_one=True)
+    def _get_cached_stats(self, key):
+        row = self._execute("SELECT * FROM statistics WHERE product_key=?", (key,), fetch_one=True)
         return dict(row) if row else None
 
     def _cache_stats(self, product_key: str, context: Dict):
@@ -494,33 +445,21 @@ class MemoryManager:
 
     # ==================== Утилиты ====================
 
-    def get_rag_status(self) -> Dict:
-        with self._lock:
-            try:
-                c = self._conn.cursor()
-                c.execute("SELECT COUNT(*) FROM items")
-                total_items = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM statistics")
-                total_categories = c.fetchone()[0]
-                c.execute("SELECT MAX(last_updated) FROM statistics")
-                last_updated = c.fetchone()[0]
-                
-                status = 'empty' if total_items == 0 else 'ok'
-                if last_updated:
-                    last_dt = datetime.strptime(last_updated, "%Y-%m-%d %H:%M:%S")
-                    if datetime.now() - last_dt > timedelta(hours=1):
-                        status = 'outdated'
-                elif total_items > 0:
-                    status = 'outdated'
-                    
-                return {
-                    'total_items': total_items,
-                    'total_categories': total_categories,
-                    'last_rebuild': last_updated or 'Never',
-                    'status': status
-                }
-            except Exception:
-                return {'total_items': 0, 'total_categories': 0, 'last_rebuild': 'Error', 'status': 'empty'}
+    def get_rag_status(self):
+        # Возвращаем статус для UI с добавленным полем last_rebuild
+        i = self._execute("SELECT COUNT(*) FROM items", fetch_one=True)[0]
+        k = self._execute("SELECT COUNT(*) FROM ai_knowledge", fetch_one=True)[0]
+        
+        # Пытаемся найти дату последнего обновления знаний
+        last = self._execute("SELECT last_updated FROM ai_knowledge ORDER BY last_updated DESC LIMIT 1", fetch_one=True)
+        last_date = last['last_updated'] if last else "Никогда"
+        
+        return {
+            'total_items': i, 
+            'total_categories': k, 
+            'status': 'ok' if i > 0 else 'empty',
+            'last_rebuild': last_date  # <--- Добавлено, чтобы не крашился UI
+        }
 
     # TODO Почему здесь лимит?
     def get_all_items(self, limit=100) -> List[Dict]:

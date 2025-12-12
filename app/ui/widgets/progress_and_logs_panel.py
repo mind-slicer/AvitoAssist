@@ -40,9 +40,11 @@ class ProgressAndLogsPanel(QWidget):
         
         self.ai_bar = QProgressBar()
         self.ai_bar.setRange(0, 100)
-        self.ai_bar.setStyleSheet(Components.progress_bar(Palette.SECONDARY))
+        self.ai_bar.setValue(0)
+        self.ai_bar.setStyleSheet(Components.progress_bar(Palette.TERTIARY))
         self.ai_bar.setFixedHeight(6)
         self.ai_bar.setTextVisible(False)
+        self.ai_bar.setEnabled(True)  # на всякий случай, чтобы Qt не серил его как disabled
 
         bars_layout.addWidget(self.parser_label)
         bars_layout.addWidget(self.parser_bar)
@@ -98,6 +100,16 @@ class ProgressAndLogsPanel(QWidget):
         self.parser_bar.setRange(0, 100)
         self.parser_bar.setValue(100)
     
+    def reset_ai_progress(self):
+        self.ai_bar.setRange(0, 100)
+        self.ai_bar.setValue(0)
+        self.ai_bar.setTextVisible(False)
+
+    def set_ai_finished(self):
+        self.ai_bar.setRange(0, 100)
+        self.ai_bar.setValue(100)
+        self.ai_bar.setTextVisible(False)
+
     @property
     def parser_log(self):
         return _LegacyLogAdapter("PARSER")

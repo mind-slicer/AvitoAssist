@@ -25,79 +25,122 @@ class BlacklistSetsPopup(QWidget):
 
         self.manager = get_blacklist_manager()
 
-        self._init_ui()
-        self._load_sets()
-
-        # Стили
+        # Обновленные стили (стиль CategorySelectionDialog)
         self.setStyleSheet(f"""
             BlacklistSetsPopup {{
-                background-color: {Palette.BG_DARK_2};
-                border: 2px solid {Palette.PRIMARY};
+                background-color: {Palette.BG_DARK};
+                border: 1px solid {Palette.BORDER_SOFT};
                 border-radius: {Spacing.RADIUS_NORMAL}px;
+            }}
+            QListWidget {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.BORDER_PRIMARY};
+                border-radius: {Spacing.RADIUS_NORMAL}px;
+                color: {Palette.TEXT};
+                font-family: {Typography.UI};
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: {Spacing.XS}px;
+                border-bottom: 1px solid {Palette.with_alpha(Palette.BORDER_SOFT, 0.5)};
+            }}
+            QListWidget::item:selected {{
+                background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)};
+                border-left: 2px solid {Palette.PRIMARY};
+                color: {Palette.TEXT};
             }}
         """)
 
-        self.setFixedSize(400, 450)
+        self.setFixedSize(350, 400) # Чуть компактнее
+        self._init_ui()
+        self._load_sets()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
         layout.setSpacing(Spacing.MD)
 
-        # Заголовок
-        title = QLabel("НАБОРЫ ЧС")
-        title.setStyleSheet(Typography.style(
-            family=Typography.UI,
-            size=Typography.SIZE_XL,
-            weight=Typography.WEIGHT_BOLD,
-            color=Palette.PRIMARY
-        ))
+        # Заголовок (Стиль как в виджетах)
+        title = QLabel("УПРАВЛЕНИЕ НАБОРАМИ")
+        title.setStyleSheet(Components.section_title()) 
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         # Список наборов
         self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet(Components.styled_list_widget() + f"""
-            QListWidget::item {{
-                height: 20px;
-                padding-left: 8px;
-                border-left: 4px solid transparent;
-            }}
-            QListWidget::item:selected {{
-                border-left-color: {Palette.PRIMARY};
-                background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)};
-            }}
-        """)
+        # Стили уже заданы глобально для виджета выше, но можно уточнить скроллбар
+        self.list_widget.verticalScrollBar().setStyleSheet(Components.global_scrollbar())
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         layout.addWidget(self.list_widget)
 
-        # Кнопки управления
-        btn_layout = QVBoxLayout()
-        btn_layout.setSpacing(Spacing.SM)
+        # Кнопки управления (Сделаем их более аккуратными, "плоскими")
+        btns_layout = QVBoxLayout()
+        btns_layout.setSpacing(Spacing.SM)
 
-        self.btn_activate = self._create_button("✓ Активировать", Palette.SUCCESS)
-        self.btn_create = self._create_button("+ Создать новый", Palette.PRIMARY)
-        self.btn_rename = self._create_button("✎ Переименовать", Palette.WARNING)
-        self.btn_delete = self._create_button("✖ Удалить", Palette.ERROR)
+        # Helper для создания кнопок в стиле "Tools"
+        def create_tool_btn(text, color_hover=Palette.PRIMARY):
+            btn = QPushButton(text)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Используем small_button как базу, но добавляем цвет при наведении
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {Palette.BG_DARK_3};
+                    border: 1px solid {Palette.BORDER_PRIMARY};
+                    border-radius: {Spacing.RADIUS_NORMAL}px;
+                    color: {Palette.TEXT};
+                    padding: 6px;
+                    text-align: left;
+                    padding-left: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {Palette.with_alpha(color_hover, 0.1)};
+                    border-color: {color_hover};
+                    color: {color_hover};
+                }}
+                QPushButton:disabled {{
+                    color: {Palette.TEXT_MUTED};
+                    background-color: {Palette.BG_DARK};
+                    border-color: {Palette.BORDER_SOFT};
+                }}
+            """)
+            return btn
+
+        self.btn_activate = create_tool_btn("✓  Активировать этот набор", Palette.SUCCESS)
+        self.btn_create = create_tool_btn("+  Создать новый", Palette.PRIMARY)
+        self.btn_rename = create_tool_btn("✎  Переименовать", Palette.WARNING)
+        self.btn_delete = create_tool_btn("✖  Удалить", Palette.ERROR)
 
         self.btn_activate.clicked.connect(self._on_activate)
         self.btn_create.clicked.connect(self._on_create)
         self.btn_rename.clicked.connect(self._on_rename)
         self.btn_delete.clicked.connect(self._on_delete)
 
-        btn_layout.addWidget(self.btn_activate)
-        btn_layout.addWidget(self.btn_create)
-        btn_layout.addWidget(self.btn_rename)
-        btn_layout.addWidget(self.btn_delete)
+        btns_layout.addWidget(self.btn_activate)
+        btns_layout.addWidget(self.btn_create)
+        btns_layout.addWidget(self.btn_rename)
+        btns_layout.addWidget(self.btn_delete)
 
-        layout.addLayout(btn_layout)
+        layout.addLayout(btns_layout)
 
-        # Кнопка закрытия
+        # Кнопка закрытия (внизу, отделена)
+        close_layout = QHBoxLayout()
+        close_layout.addStretch()
         btn_close = QPushButton("Закрыть")
-        btn_close.setStyleSheet(Components.stop_button())
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Стиль как кнопка "Очистить кэш" в диалоге категорий (серый/красный акцент при наведении) или просто Secondary
+        btn_close.setStyleSheet(f"""
+            QPushButton {{ 
+                background-color: transparent; 
+                border: 1px solid {Palette.BORDER_SOFT}; 
+                color: {Palette.TEXT_MUTED}; 
+                border-radius: 4px; padding: 4px 12px;
+            }}
+            QPushButton:hover {{ background-color: {Palette.BG_DARK_3}; color: {Palette.TEXT}; }}
+        """)
         btn_close.clicked.connect(self.close)
-        layout.addWidget(btn_close)
+        close_layout.addWidget(btn_close)
+        
+        layout.addLayout(close_layout)
 
         self._update_buttons()
 
@@ -244,12 +287,28 @@ class BlacklistSetsPopup(QWidget):
         btn_layout.addStretch()
 
         btn_cancel = QPushButton("Отмена")
-        btn_cancel.setStyleSheet(Components.secondary_button())
+        # Исправление: задаем стиль вручную, так как secondary_button нет в Components
+        btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: 1px solid {Palette.BORDER_SOFT};
+                border-radius: {Spacing.RADIUS_NORMAL}px;
+                color: {Palette.TEXT_MUTED};
+                padding: 6px 12px;
+                font-family: {Typography.UI};
+            }}
+            QPushButton:hover {{
+                background-color: {Palette.BG_DARK_3};
+                color: {Palette.TEXT};
+                border-color: {Palette.TEXT_MUTED};
+            }}
+        """)
         btn_cancel.clicked.connect(dialog.reject)
         btn_layout.addWidget(btn_cancel)
 
         btn_ok = QPushButton("OK")
-        btn_ok.setStyleSheet(Components.primary_button())
+        # Исправление: используем start_button (оранжевая) вместо primary_button
+        btn_ok.setStyleSheet(Components.start_button())
         btn_ok.clicked.connect(dialog.accept)
         btn_ok.setDefault(True)
         btn_layout.addWidget(btn_ok)

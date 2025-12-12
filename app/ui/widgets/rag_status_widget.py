@@ -6,8 +6,6 @@ from PyQt6.QtGui import QColor
 from app.ui.styles import Components, Palette, Typography, Spacing
 
 class RAGStatusWidget(QWidget):
-    """Вкладка RAG-статуса в Analytics - детальная статистика"""
-    
     rebuild_requested = pyqtSignal()
     
     def __init__(self, memory_manager, parent=None):
@@ -38,8 +36,7 @@ class RAGStatusWidget(QWidget):
         ))
         header_layout.addWidget(self.status_label)
         
-        # Кнопка пересчета
-        self.btn_rebuild = QPushButton("🔄 Пересчитать")
+        self.btn_rebuild = QPushButton("🔄 Пересчитать статистику")
         self.btn_rebuild.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_rebuild.setStyleSheet(Components.small_button())
         self.btn_rebuild.clicked.connect(self.on_rebuild_clicked)
@@ -96,7 +93,7 @@ class RAGStatusWidget(QWidget):
         layout.addWidget(self.detail_label)
 
         self.table.cellClicked.connect(self.on_row_clicked)
-    
+
     def on_row_clicked(self, row: int, col: int):
         """Показать сводку по выбранной категории"""
         item = self.table.item(row, 0)

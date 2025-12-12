@@ -36,7 +36,6 @@ def main():
     # 3. FIX: Проверка загрузки стилей (для дебага в консоли)
     try:
         from app.ui.styles import Components
-        app.setStyleSheet(app.ui.styles.components.Components.global_scrollbar())
         # Просто проверяем, что класс доступен, это заставит Python загрузить модуль
         print("Styles module loaded successfully.")
     except Exception as e:

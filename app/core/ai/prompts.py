@@ -1,5 +1,5 @@
 """
-Система промптов для AI анализа
+Система промптов для AI анализа (Специализация: Вторичный рынок ПК и комплектующих)
 """
 import statistics
 import re
@@ -7,233 +7,310 @@ from collections import defaultdict
 from typing import List, Dict, Optional
 from enum import IntEnum
 
-
 class AnalysisPriority(IntEnum):
-    """Приоритеты анализа"""
-    PRICE = 1      # Фокус на цене
-    DEFICIT = 2    # Фокус на дефиците и соотношении ЦКК
-    QUALITY = 3    # Фокус на состоянии товара
-
+    PRICE = 1
+    DEFICIT = 2
+    QUALITY = 3
 
 class PromptBuilder:
-    """Строитель промптов для AI"""
-    
+    # Список целевого железа для контекста
+    HARDWARE_INTERESTS = """
+=== СПИСОК ИНТЕРЕСУЮЩЕГО ЖЕЛЕЗА ===
+1. ВИДЕОКАРТЫ:
+   - Nvidia: RTX 50/40/30/20 series, GTX 16xx/10xx.
+   - AMD: RX 9000/7000/6000/5000/500/400 series.
+2. ПРОЦЕССОРЫ:
+   - Intel: LGA 1851/1700/1200/1151(v1/v2)/1150/1155. Поколения: с 2-го по 15-е.
+   - AMD: AM5, AM4. Ryzen 1000-9000 series.
+3. МАТЕРИНСКИЕ ПЛАТЫ: Z/B/H чипсеты под указанные выше сокеты.
+4. ОПЕРАТИВНАЯ ПАМЯТЬ:
+   - DDR5.
+   - DDR4 (частоты 2133-4000+).
+5. НАКОПИТЕЛИ: NVMe M.2, SATA SSD (от 60gb до 1tb+), HDD (от 1tb).
+6. БЛОКИ ПИТАНИЯ: От 500W до 1000W+.
+7. ОХЛАЖДЕНИЕ: Башенные кулеры, СВО (водянка).
+8. ГОТОВЫЕ СБОРКИ, НОУТБУКИ, МОНИТОРЫ, КОРПУСА.
+===================================
+"""
+
     # Базовый системный промпт
-    SYSTEM_BASE = """Ты - AI-аналитик для бизнеса скупки-перепродажи товаров с Avito.
+    SYSTEM_BASE = f"""Ты — циничный и профессиональный скупщик компьютерной техники на вторичном рынке (Avito). 
+Твоя цель — найти ликвидный товар для перепродажи с прибылью.
 
-ТВОЯ ЗАДАЧА:
-Оценивать каждое объявление с точки зрения выгоды для ПОКУПАТЕЛЯ (перекупщика).
+{HARDWARE_INTERESTS}
 
-Формат ответа:
-{
+ПРАВИЛА АНАЛИЗА:
+1. ИГНОРИРУЙ воду в описании ("тянет все игры", "летает"). Смотри только на сухие факты: модель, состояние, комплект, цена.
+2. ЦЕНА: Опирайся ТОЛЬКО на предоставленную статистику цен (текущую выдачу и RAG). Не выдумывай цены из головы.
+3. СКАМ-ТРИГГЕРЫ: 
+   - Цена в 2 раза ниже рынка без причины.
+   - "Только Авито доставка" на новый аккаунт.
+   - "Пишите в ватсап".
+   - Видеокарты после майнинга по цене новых.
+4. ВЕРДИКТЫ:
+   - GREAT_DEAL: Жирный вариант. Цена ниже рынка на 20%+, либо редкое железо по низу рынка. Продавец похож на частника.
+   - GOOD: Честная рыночная цена, можно брать для себя или быстрой перепродажи с небольшой маржой.
+   - BAD: Оверпрайс (дорого), хлам, древнее железо (775 сокет и т.д.), либо восстановленное после майнинга "как новое".
+   - SCAM: Явный развод, мутные схемы, отказ от проверок.
+
+Формат ответа (JSON):
+{{
   "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "SCAM",
-  "reason": "краткое объяснение (до 80 символов)",
+  "reason": "Жесткий и краткий комментарий скупщика (макс 10 слов).",
   "market_position": "below_market" | "fair" | "overpriced",
   "defects": true/false
-}
-
-КРИТЕРИИ:
-- GREAT_DEAL: Цена значительно ниже рынка (на 15-30%), продавец живой, описание адекватное.
-- GOOD: Честная цена, нормальный товар.
-- BAD: Оверпрайс, мутное описание, перекуп.
-- SCAM: Цена подозрительно низкая (в 2-3 раза), новый аккаунт, просьба писать в ватсап, доставка отключена.
+}}
 """
     
     # Промпт для нейро-фильтра
-    NEURO_FILTER_TEMPLATE = """Ты - СТРОГИЙ ФИЛЬТР для парсера Avito.
+    NEURO_FILTER_TEMPLATE = """
+Ты работаешь ЖЁСТКИМ фильтром объявлений Авито для скупщика компьютерной техники.
+Твоя задача — решить, стоит ли вообще рассматривать объявление.
 
-ЗАДАЧА: Пропускать ТОЛЬКО релевантные объявления.
+[ПОИСКОВЫЕ ТЕГИ]
+Основной запрос: {search_tags}
+Игнорируем (бан-слова): {ignore_tags}
 
-ИЩЕМ: {search_tags}
-ИСКЛЮЧАЕМ: {ignore_tags}
-ДОП. КРИТЕРИИ ПОЛЬЗОВАТЕЛЯ: {user_criteria}
+[ДОП. КРИТЕРИИ ОТ ПОЛЬЗОВАТЕЛЯ]
+{user_criteria}
 
-ПРОВЕРЬ:
-1. Соответствует ли товар тегам ИЩЕМ?
-2. НЕ содержит ли игнор-теги?
-3. Выполняются ли доп. критерии пользователя (КРИТИЧНО)?
-4. Нет ли признаков скама/развода?
+ПРАВИЛА ФИЛЬТРА:
 
-ОТВЕТ (JSON):
+1. Вердикт может быть ТОЛЬКО:
+   - GOOD  — объявление подходит под запрос и критерии.
+   - BAD   — объявление не подходит или есть сомнения.
+
+2. Всегда учитывай:
+   - Заголовок и описание объявления.
+   - Поисковые теги (search_tags) — товар должен им соответствовать.
+   - Бан-слова (ignore_tags) — если что-то из этого явно присутствует, вердикт ОБЯЗАТЕЛЬНО BAD.
+
+3. Доп. критерии (user_criteria) ВАЖНЕЕ нейросети:
+   - Если пользователь просит "только по гарантии" — объявление считается подходящим ТОЛЬКО если гарантия
+     явно указана в тексте (слова типа "гарантия", "чек", "оставшаяся гарантия" и т.п.).
+   - Если критерий не выполнен ЯВНО — ставь BAD, даже если остальное выглядит неплохо.
+   - Если критериев нет, используй пункты 1 и 2 фильтрации.
+
+4. Если информации недостаточно, чтобы уверенно сказать GOOD — ставь BAD.
+
+ФОРМАТ ОТВЕТА:
+Отвечай СТРОГО одним JSON-объектом без пояснений вокруг:
+
 {{
-  "verdict": "GOOD" | "BAD",
-  "reason": "почему пропустил или отклонил"
+  "verdict": "GOOD" или "BAD",
+  "reason": "Краткое объяснение на русском, 1–2 предложения"
 }}
 
-ПРАВИЛО: При МАЛЕЙШЕМ сомнении ставь BAD."""
+НЕ добавляй никакой другой текст.
+"""
     
     @staticmethod
-    def select_priority(
-        table_size: int,
-        user_instructions: str,
-        has_rag: bool,
-        search_tags: List[str]
-    ) -> AnalysisPriority:
-        """
-        Эвристика выбора приоритета анализа
-        
-        Args:
-            table_size: Размер таблицы результатов
-            user_instructions: Инструкции пользователя
-            has_rag: Есть ли накопленные данные в RAG
-            search_tags: Теги поиска
-            
-        Returns:
-            Выбранный приоритет (1, 2 или 3)
-        """
-        instructions_lower = user_instructions.lower()
-        
-        # 1. Явное указание в инструкциях
-        if any(word in instructions_lower for word in ["состояние", "новый", "качество", "отличный"]):
-            return AnalysisPriority.QUALITY
-        
-        if any(word in instructions_lower for word in ["дефицит", "редкий", "уникальный"]):
-            return AnalysisPriority.DEFICIT
-        
-        if any(word in instructions_lower for word in ["цена", "дешев", "выгод"]):
-            return AnalysisPriority.PRICE
-        
-        # 2. Большая таблица + RAG = анализ дефицита
-        if table_size > 50 and has_rag:
-            return AnalysisPriority.DEFICIT
-        
-        # 3. Поиск дорогих товаров (электроника, техника) = фокус на качестве
-        expensive_keywords = ["rtx", "gpu", "видеокарта", "процессор", "iphone", "macbook", "ноутбук"]
-        if any(kw in " ".join(search_tags).lower() for kw in expensive_keywords):
-            return AnalysisPriority.QUALITY
-        
-        # 4. Дефолт: цена (самый универсальный)
+    def select_priority(table_size: int, user_instructions: str, has_rag: bool, search_tags: List[str]) -> AnalysisPriority:
+        txt = user_instructions.lower()
+        if any(x in txt for x in ["состояние", "гарант", "чек", "комплект"]): return AnalysisPriority.QUALITY
+        if any(x in txt for x in ["редк", "дефиц"]): return AnalysisPriority.DEFICIT
         return AnalysisPriority.PRICE
     
     @staticmethod
-    def group_similar_items(items: List[Dict]) -> Dict[str, List[Dict]]:
-        groups = defaultdict(list)
-
-        for item in items:
-            title = str(item.get('title', '')).lower()
-
-            # Извлекаем ключевые слова (модель товара)
-            # Убираем шум: "новый", "б/у", "срочно", "обмен" и т.д.
-            noise_words = r'\b(новый|б/у|срочно|обмен|торг|продам|куплю|цена|руб|рублей)\b'
-            clean_title = re.sub(noise_words, '', title)
-
-            # Извлекаем модель/ключевые слова (первые 3-5 значимых слов)
-            words = clean_title.split()
-            significant_words = [w for w in words if len(w) > 2][:5]
-
-            if significant_words:
-                # Ключ группы = первые 3 значимых слова
-                group_key = ' '.join(significant_words[:3])
-                groups[group_key].append(item)
-            else:
-                # Если не смогли извлечь - отдельная группа
-                groups[title[:30]].append(item)
-
-        return dict(groups)
-
-    @staticmethod
     def _build_market_stats(items: List[Dict], current_title: str) -> Dict:
-        """Вспомогательный метод для статистики текущего батча"""
+        default_stats = {
+            "sample_size": 0,
+            "avg": 0,
+            "med": 0,
+            "min": 0,
+            "max": 0,
+            "cnt": 0,
+        }
+
         if not items or not current_title:
-            return {'sample_size': 0}
-            
-        # Упрощенная логика группировки
-        prices = []
-        current_words = set(current_title.lower().split())
-        
-        for item in items:
-            item_price = item.get('price', 0)
-            if not isinstance(item_price, (int, float)) or item_price < 100: continue
-            
-            # Грубая проверка похожести: пересечение слов > 30%
-            item_words = set(str(item.get('title', '')).lower().split())
-            intersection = current_words.intersection(item_words)
-            if len(intersection) >= 2: # Хотя бы 2 общих слова
-                 prices.append(item_price)
+            return default_stats
+
+        prices = [
+            i.get("price", 0)
+            for i in items
+            if isinstance(i.get("price"), int) and i.get("price") > 500
+        ]
 
         if not prices:
-            return {'sample_size': 0}
-            
+            return default_stats
+
         return {
-            "avg_price": int(statistics.mean(prices)),
-            "median_price": int(statistics.median(prices)),
-            "min_price": min(prices),
-            "max_price": max(prices),
-            "sample_size": len(prices)
+            "sample_size": len(prices),
+            "avg": int(statistics.mean(prices)),
+            "med": int(statistics.median(prices)),
+            "min": min(prices),
+            "max": max(prices),
+            "cnt": len(prices),
         }
     
     @classmethod
-    def build_analysis_prompt(cls, 
-                            items: List[Dict], 
-                            priority: AnalysisPriority, 
-                            current_item: Dict, 
-                            user_instructions: str = "",
-                            rag_context: Optional[Dict] = None) -> str:
-        
-        # 1. Анализ текущего батча (Batch Context) - оставляем как было, это полезно
+    def build_analysis_prompt(cls, items: List[Dict], priority: AnalysisPriority, current_item: Dict, user_instructions: str = "", rag_context: Optional[Dict] = None) -> str:
+        # 1. Сбор данных статистики
         stats = cls._build_market_stats(items, current_item.get('title'))
         
-        batch_stats_block = ""
-        if stats['sample_size'] > 2:
-            batch_stats_block = (
-                f"\n[СТАТИСТИКА ТЕКУЩЕЙ ВЫДАЧИ]\n"
-                f"Мы спарсили {stats['sample_size']} похожих объявлений прямо сейчас.\n"
-                f"Средняя цена: {stats['avg_price']}. Медиана: {stats['median_price']}.\n"
-                f"Разброс цен: {stats['min_price']} - {stats['max_price']}.\n"
-                f"Сравнивай товар с ЭТИМИ данными в первую очередь."
-            )
+        # 2. Формирование блока RAG [ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ]
+        aux_data = []
+        if stats['sample_size'] > 0:
+            aux_data.append(f"- Текущая выдача ({stats['cnt']} шт): Медиана {stats['med']}₽, Мин {stats['min']}₽")
         
-        # 2. RAG Context (Историческая память) - НОВОЕ!
-        rag_block = ""
         if rag_context:
-            rag_block = (
-                f"\n[ИСТОРИЧЕСКАЯ БАЗА (RAG)]\n"
-                f"В нашей базе знаний найдено {rag_context['sample_count']} записей по запросу '{rag_context['keyword']}'.\n"
-                f"Историческая средняя цена: {rag_context['avg_price']}.\n"
-                f"Историческая медиана: {rag_context['median_price']}.\n"
-                f"Нормальный диапазон цен: {rag_context['min_price']} - {rag_context['max_price']}.\n"
-                f"ВАЖНО: Если цена текущего товара ({current_item.get('price')}) сильно отличается от исторической медианы ({rag_context['median_price']}), это повод для тревоги (SCAM) или радости (GREAT_DEAL)."
-            )
-
-        # 3. Инструкции пользователя
-        instructions_block = ""
-        if user_instructions.strip():
-            instructions_block = f"\n[ОСОБЫЕ ИНСТРУКЦИИ]\n{user_instructions}"
-
-        # 4. Фокус внимания (на основе приоритета)
-        focus = ""
-        if priority == AnalysisPriority.PRICE:
-            focus = "ФОКУС: Ищем максимальную выгоду. Любое отклонение цены вниз проверяй на СКАМ. Если чисто - GREAT_DEAL."
-        elif priority == AnalysisPriority.DEFICIT:
-            focus = "ФОКУС: Редкость. Цена не важна. Главное - наличие товара."
-        else:
-            focus = "ФОКУС: Качество. Ищем идеальное состояние. Игнорируй слишком дешевые убитые варианты."
-
-        # Сборка промпта
-        full_prompt = (
-            f"{cls.SYSTEM_BASE}\n"
-            f"ТОВАР: {current_item.get('title')}\n"
-            f"ЦЕНА: {current_item.get('price')}\n"
-            f"ОПИСАНИЕ: {current_item.get('description')}\n"
-            f"{batch_stats_block}\n"
-            f"{rag_block}\n"
-            f"{instructions_block}\n"
-            f"{focus}\n"
-            f"JSON:"
-        )
+            # Данные из "Концептуальной памяти" и кэша
+            hist_med = rag_context.get('median_price', 'Нет данных')
+            hist_trend = rag_context.get('trend', 'N/A')
+            aux_data.append(f"- Историческая база (RAG): Медиана {hist_med}₽, Тренд: {hist_trend}")
+            
+            # Если есть "мысли" ИИ (summary/risks)
+            if rag_context.get('knowledge'):
+                aux_data.append(f"- ЗАМЕТКИ ИЗ ПАМЯТИ: {rag_context['knowledge']}")
         
-        return full_prompt
+        aux_block = "\n".join(aux_data) if aux_data else "Нет статистических данных."
+
+        # 3. Формирование блока [ЖЁСТКИЕ ПРАВИЛА]
+        strat = "Максимальная маржа. Ищи ошибки в цене."
+        if priority == AnalysisPriority.QUALITY: strat = "Идеальное состояние, гарантия, комплект."
+        elif priority == AnalysisPriority.DEFICIT: strat = "Редкое/Топовое железо."
+        
+        user_rules = f"{strat}\n{user_instructions}" if user_instructions else strat
+
+        # 4. Расширенные поля товара
+        item_details = (
+            f"Товар: {current_item.get('title')}\n"
+            f"Цена: {current_item.get('price')} ₽\n"
+            f"Город: {current_item.get('city', 'N/A')}\n"
+            f"Дата: {current_item.get('date_text', 'N/A')} | Просмотры: {current_item.get('views', 0)}\n"
+            f"Продавец ID: {current_item.get('seller_id', 'N/A')}\n"
+            f"Описание:\n{current_item.get('description', '')[:800]}" 
+        )
+
+        # Итоговая сборка
+        return f"""
+{cls.SYSTEM_BASE}
+
+=============================================================
+РАЗДЕЛ 1: ЖЁСТКИЕ ПРАВИЛА (ПРИОРИТЕТ 100%)
+=============================================================
+Следуй этим инструкциям неукоснительно. Они важнее любой статистики.
+1. Твоя стратегия: {user_rules}
+2. Не выдумывай цены. Если их нет в статистике — пиши "нет данных".
+3. Игнорируй маркетинговый шум в описании.
+
+=============================================================
+РАЗДЕЛ 2: ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ (ПРИОРИТЕТ 30%)
+=============================================================
+Используй это для контекста, но если цена товара противоречит им — верь факту цены товара.
+{aux_block}
+
+=============================================================
+ОБЪЕКТ АНАЛИЗА
+=============================================================
+{item_details}
+
+=============================================================
+ЗАДАЧА
+=============================================================
+Дай вердикт в JSON:
+{{
+  "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "SCAM",
+  "reason": "Жесткий комментарий (макс 10 слов)",
+  "market_position": "below_market" | "fair" | "overpriced",
+  "defects": true/false
+}}
+"""
     
     @classmethod
+    def build_knowledge_prompt(cls, product_key: str, items: List[Dict]) -> str:
+        """
+        Промпт для генерации знаний (сводки) по категории (Этап Культивации).
+        """
+        sample_items = items[:40] # Берем сэмпл для анализа
+        
+        items_text = ""
+        prices = []
+        for i in sample_items:
+            p = i.get('price', 0)
+            if isinstance(p, int) and p > 0: prices.append(p)
+            desc = i.get('description', '')[:100].replace('\n', ' ')
+            items_text += f"- {i.get('title')} | {p} руб | {desc}\n"
+
+        if not prices: return ""
+
+        avg = int(sum(prices) / len(prices))
+        med = int(statistics.median(prices))
+
+        return f"""
+{cls.SYSTEM_BASE}
+
+Твоя задача — проанализировать выборку товаров из категории: "{product_key}".
+Создай "Заметку для базы знаний", которая поможет оценивать такие товары в будущем.
+
+СТАТИСТИКА:
+- Лотов: {len(sample_items)}
+- Средняя: {avg} | Медиана: {med}
+- Мин: {min(prices)} | Макс: {max(prices)}
+
+СПИСОК (Сэмпл):
+{items_text}
+
+ЗАДАНИЕ:
+Напиши JSON-отчет с анализом рынка.
+1. summary: Краткая выжимка (1-2 предл). Что это, норма цены?
+2. risk_factors: На что смотреть? (майнинг, подделки, дефекты).
+3. price_range_notes: Текстовое описание диапазонов цен.
+
+JSON ФОРМАТ:
+{{
+  "summary": "...",
+  "risk_factors": "...",
+  "price_range_notes": "..."
+}}
+"""
+
+    @classmethod
     def build_neuro_filter_prompt(
-        cls,
-        search_tags: List[str],
-        ignore_tags: List[str],
-        user_criteria: str = ""
+    cls,
+    search_tags: List[str],
+    ignore_tags: List[str],
+    user_criteria: str = ""
     ) -> str:
-        """Строит промпт для нейро-фильтрации"""
+        """
+        Строит промпт для нейро-фильтра:
+        - при пустых user_criteria работает как "чистый" фильтр по search_tags/ignore_tags;
+        - при непустых user_criteria явно делает их жёсткими правилами.
+        """
+    
+        # 1. Форматируем теги для чтения моделью
+        if isinstance(search_tags, str):
+            # на случай, если где-то передали строку
+            search_list = [t.strip() for t in search_tags.split(",") if t.strip()]
+        else:
+            search_list = [t.strip() for t in search_tags or [] if t.strip()]
+    
+        if isinstance(ignore_tags, str):
+            ignore_list = [t.strip() for t in ignore_tags.split(",") if t.strip()]
+        else:
+            ignore_list = [t.strip() for t in ignore_tags or [] if t.strip()]
+    
+        search_str = ", ".join(search_list) if search_list else "Любые комплектующие из списка интересов"
+        ignore_str = ", ".join(ignore_list) if ignore_list else "Нет (бан-слов нет)"
+    
+        # 2. Блок доп. критериев
+        user_criteria = (user_criteria or "").strip()
+        if not user_criteria:
+            # Чистый нейро-поиск: явно говорим, что доп. критериев нет
+            criteria_block = (
+                "НЕТ дополнительных критериев. Оцени объявление ТОЛЬКО по поисковым тегам "
+                "и бан-словам, строго следуя правилам фильтра выше."
+            )
+        else:
+            # Явно подчёркиваем, что это жёсткие правила от пользователя
+            criteria_block = (
+                "Пользователь задал СЛЕДУЮЩИЕ ЖЁСТКИЕ критерии отбора "
+                "(они важнее любых эвристик нейросети):\n"
+                f"{user_criteria}"
+            )
+    
         return cls.NEURO_FILTER_TEMPLATE.format(
-            search_tags=", ".join(search_tags) if search_tags else "Нет",
-            ignore_tags=", ".join(ignore_tags) if ignore_tags else "Нет",
-            user_criteria=user_criteria if user_criteria.strip() else "Нет"
+            search_tags=search_str,
+            ignore_tags=ignore_str,
+            user_criteria=criteria_block,
         )
