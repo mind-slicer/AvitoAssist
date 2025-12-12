@@ -1,13 +1,17 @@
+# app/core/memory.py
 import sqlite3
 import os
 import threading
 import re
 import statistics
+import json
+import hashlib
 from datetime import datetime
 from typing import List, Dict, Optional
 from datetime import timedelta
 
 from app.config import BASE_APP_DIR
+from app.core.ai.chunk_compression import ChunkCompressor
 from app.core.text_utils import FeatureExtractor, TextMatcher
 from app.core.log_manager import logger
 
@@ -37,24 +41,34 @@ class MemoryManager:
         except:
             pass
     
-    def _execute(self, query, params=(), fetch_one=False, fetch_all=False, commit=False):
+    def _execute(
+        self,
+        query,
+        params=(),
+        fetch_one: bool = False,
+        fetch_all: bool = False,
+        commit: bool = False,
+        return_lastrowid: bool = False,
+    ):
         with self._lock:
             try:
                 cursor = self._conn.cursor()
                 cursor.execute(query, params)
-                
+
                 result = None
                 if fetch_one:
                     result = cursor.fetchone()
                 elif fetch_all:
                     result = cursor.fetchall()
-                
+
                 if commit:
                     self._conn.commit()
-                
+                    if return_lastrowid:
+                        return cursor.lastrowid
+
                 return result
             except Exception as e:
-                logger.dev(f"DB Error: {e} | Query: {query}", level="ERROR")
+                logger.error(f"DB Error: {e} | Query: {query}")
                 return None
 
     # ==================== SQLite ====================
@@ -62,27 +76,32 @@ class MemoryManager:
     def _init_db(self):
         with self._lock:
             c = self._conn.cursor()
-            # Таблица сырых товаров (Операционная память)
+            
+            # --- Таблица сырых товаров (Операционная память) ---
             c.execute("""CREATE TABLE IF NOT EXISTS items (
                 id INTEGER PRIMARY KEY, avito_id TEXT UNIQUE, title TEXT, price INTEGER, 
                 description TEXT, url TEXT, seller TEXT, address TEXT, published_date TEXT, 
                 added_at TEXT, verdict TEXT, reason TEXT, market_position TEXT, defects BOOLEAN
             )""")
-            # Статистика (Кэш)
+            
+            # --- Статистика (Кэш) ---
             c.execute("""CREATE TABLE IF NOT EXISTS statistics (
                 product_key TEXT PRIMARY KEY, avg_price INTEGER, median_price INTEGER, 
                 min_price INTEGER, max_price INTEGER, sample_count INTEGER, 
                 trend TEXT, trend_percent REAL, last_updated TEXT
             )""")
-            # История трендов
+            
+            # --- История трендов ---
             c.execute("""CREATE TABLE IF NOT EXISTS trend_history (
                 id INTEGER PRIMARY KEY, product_key TEXT, date TEXT, avg_price INTEGER, sample_count INTEGER
             )""")
-            # Чат
+            
+            # --- Чат ---
             c.execute("""CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY, role TEXT, content TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )""")
-            # НОВОЕ: Концептуальная память (Выводы ИИ)
+            
+            # --- Концептуальная память (Legacy) ---
             c.execute("""CREATE TABLE IF NOT EXISTS ai_knowledge (
                 product_key TEXT PRIMARY KEY,
                 summary TEXT,
@@ -90,9 +109,89 @@ class MemoryManager:
                 price_range_notes TEXT,
                 last_updated TEXT
             )""")
+
+            # --- ТИПИЗИРОВАННЫЕ ЧАНКИ ПАМЯТИ v2 ---
+            # Исправлено: UNIQUE constraint перенесен в конец
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS aiknowledge_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    chunk_type TEXT NOT NULL,
+                    chunk_key TEXT NOT NULL,
+                    
+                    status TEXT DEFAULT 'PENDING',
+                    progress_percent INTEGER DEFAULT 0,
+                    title TEXT,
+
+                    content TEXT,
+                    summary TEXT,
+                    compressed_content TEXT,
+
+                    content_hash TEXT,
+                    original_size INTEGER,
+                    compressed_size INTEGER,
+
+                    created_at TEXT NOT NULL,
+                    last_updated TEXT NOT NULL,
+                    last_cultivation_attempt TEXT,
+
+                    data_added_since_attempt TEXT,
+                    new_data_items_count INTEGER DEFAULT 0,
+                    llm_confidence REAL,
+
+                    user_locked BOOLEAN DEFAULT 0,
+                    system_critical BOOLEAN DEFAULT 0,
+
+                    depends_on_chunks TEXT,
+                    version INTEGER DEFAULT 1,
+                    
+                    UNIQUE(chunk_type, chunk_key)
+                )
+            """)
+
+            # --- История версий чанков ---
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS aiknowledge_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chunk_id INTEGER NOT NULL,
+                    version INTEGER,
+                    content TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(chunk_id) REFERENCES aiknowledge_v2(id)
+                )
+            """)
+
+            # --- Лог попыток культивации ---
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS cultivation_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chunk_id INTEGER NOT NULL,
+                    attempt_time TEXT NOT NULL,
+                    status TEXT,
+                    items_processed INTEGER,
+                    data_points_analyzed INTEGER,
+                    llm_time_ms INTEGER,
+                    error_msg TEXT,
+                    FOREIGN KEY(chunk_id) REFERENCES aiknowledge_v2(id)
+                )
+            """)
+
+            # --- Отслеживание изменений исходных данных ---
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS data_change_tracker (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_key TEXT,
+                    category_key TEXT,
+                    change_type TEXT,
+                    changed_at TEXT NOT NULL,
+                    processed_in_chunk_id INTEGER,
+                    FOREIGN KEY(processed_in_chunk_id) REFERENCES aiknowledge_v2(id)
+                )
+            """)
+
             self._conn.commit()
 
-    # --- Knowledge Methods ---
+    # --- Knowledge Methods (Legacy + v2) ---
 
     def add_knowledge(self, product_key: str, summary: str, risks: str, prices: str):
         now = datetime.now().isoformat()
@@ -106,16 +205,133 @@ class MemoryManager:
         return dict(row) if row else None
     
     def get_all_knowledge_summaries(self) -> List[Dict]:
-        """Возвращает список всех записей из концептуальной памяти для UI"""
         rows = self._execute("SELECT product_key, summary, last_updated FROM ai_knowledge ORDER BY last_updated DESC", fetch_all=True)
         return [dict(r) for r in rows] if rows else []
 
     def delete_knowledge(self, product_key: str):
-        """Удаляет запись знаний и связанный кэш статистики"""
         self._execute("DELETE FROM ai_knowledge WHERE product_key = ?", (product_key,), commit=True)
         self._execute("DELETE FROM statistics WHERE product_key = ?", (product_key,), commit=True)
 
-    # ==================== Добавление товаров ====================
+    # --- v2 Methods ---
+
+    def add_knowledge_v2(
+        self,
+        chunk_type: str,
+        chunk_key: str,
+        title: str,
+        status: str = "PENDING",
+        content: Optional[dict] = None,
+    ) -> int:
+        now = datetime.now().isoformat()
+        content_str = None
+        content_hash = None
+        original_size = None
+
+        if content is not None:
+            content_str = json.dumps(content, ensure_ascii=False)
+            content_hash = hashlib.md5(content_str.encode()).hexdigest()
+            original_size = len(content_str.encode())
+
+        chunk_id = self._execute(
+            """
+            INSERT INTO aiknowledge_v2
+                (chunk_type, chunk_key, title, status,
+                 content, content_hash, original_size,
+                 created_at, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (chunk_type, chunk_key, title, status,
+             content_str, content_hash, original_size,
+             now, now),
+            commit=True,
+            return_lastrowid=True,
+        )
+        return int(chunk_id) if chunk_id is not None else -1
+
+    def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict]:
+        row = self._execute(
+            "SELECT * FROM aiknowledge_v2 WHERE id = ?",
+            (chunk_id,),
+            fetch_one=True,
+        )
+        return dict(row) if row else None
+
+    def get_chunk_by_key(self, chunk_type: str, chunk_key: str) -> Optional[Dict]:
+        row = self._execute(
+            "SELECT * FROM aiknowledge_v2 WHERE chunk_type = ? AND chunk_key = ?",
+            (chunk_type, chunk_key),
+            fetch_one=True,
+        )
+        return dict(row) if row else None
+
+    def get_all_chunks(self) -> List[Dict]:
+        rows = self._execute(
+            "SELECT * FROM aiknowledge_v2 ORDER BY created_at DESC",
+            fetch_all=True,
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    def get_pending_chunks(self) -> List[Dict]:
+        rows = self._execute(
+            """
+            SELECT * FROM aiknowledge_v2
+            WHERE status IN ('PENDING', 'INITIALIZING')
+            ORDER BY created_at ASC
+            """,
+            fetch_all=True,
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    def update_chunk_status(self, chunk_id: int, new_status: str, progress: Optional[int] = None):
+        now = datetime.now().isoformat()
+        if progress is not None:
+            self._execute(
+                """
+                UPDATE aiknowledge_v2
+                SET status = ?, progress_percent = ?, last_updated = ?
+                WHERE id = ?
+                """,
+                (new_status, int(progress), now, chunk_id),
+                commit=True,
+            )
+        else:
+            self._execute(
+                """
+                UPDATE aiknowledge_v2
+                SET status = ?, last_updated = ?
+                WHERE id = ?
+                """,
+                (new_status, now, chunk_id),
+                commit=True,
+            )
+
+    def update_chunk_content(self, chunk_id: int, content: dict, summary: Optional[str] = None):
+        content_str = json.dumps(content, ensure_ascii=False)
+        content_hash = hashlib.md5(content_str.encode()).hexdigest()
+        original_size = len(content_str.encode())
+        now = datetime.now().isoformat()
+
+        self._execute(
+            """
+            UPDATE aiknowledge_v2
+            SET content = ?, content_hash = ?, original_size = ?,
+                summary = COALESCE(?, summary),
+                last_updated = ?, status = 'READY', progress_percent = 100
+            WHERE id = ?
+            """,
+            (content_str, content_hash, original_size,
+             summary, now, chunk_id),
+            commit=True,
+        )
+
+    def delete_chunk(self, chunk_id: int):
+        self._execute(
+            "DELETE FROM aiknowledge_v2 WHERE id = ?",
+            (chunk_id,),
+            commit=True,
+        )
+
+    # ==================== Items & Stats ====================
 
     def add_item(self, item: dict):
         if self._execute("SELECT 1 FROM items WHERE avito_id = ?", (str(item.get('id')),), fetch_one=True):
@@ -128,8 +344,6 @@ class MemoryManager:
               item.get('market_position'), item.get('defects')), commit=True)
         return True
 
-    # ==================== Поиск похожих товаров ====================
-
     def find_similar_items(self, title: str, limit: int = 20) -> List[Dict]:
         clean = re.sub(r'\b(продам|куплю|торг|новый|бу|цена)\b', '', title.lower(), flags=re.I)
         kws = [w for w in clean.split() if len(w) > 2][:4]
@@ -140,74 +354,47 @@ class MemoryManager:
         rows = self._execute(f"SELECT * FROM items WHERE ({q}) ORDER BY added_at DESC LIMIT ?", tuple(p), fetch_all=True)
         return [dict(r) for r in rows] if rows else []
 
-    def _find_similar_by_keywords(self, title: str, limit: int = 20) -> List[Dict]:
-        try:
-            keywords = self._extract_keywords(title)
-            if not keywords:
-                return []
-
-            query_parts = []
-            params = []
-            for kw in keywords:
-                query_parts.append("title LIKE ?")
-                params.append(f"%{kw}%")
-
-            query = " OR ".join(query_parts)
-            sql = f"SELECT * FROM items WHERE ({query}) ORDER BY added_at DESC LIMIT ?"
-            params.append(limit)
-
-            rows = self._execute(sql, tuple(params), fetch_all=True)
-            if not rows:
-                return []
-                
-            return [dict(row) for row in rows]
-
-        except Exception as e:
-            logger.dev(f"Memory keyword search error: {e}", level="ERROR")
-            return []
-
-    def _extract_keywords(self, title: str) -> List[str]:
-        noise_pattern = r'\b(новый|б/у|срочно|обмен|торг|продам|куплю|цена|руб|рублей)\b'
-        clean_title = re.sub(noise_pattern, '', title.lower(), flags=re.IGNORECASE)
-        words = clean_title.split()
-        keywords = [w for w in words if len(w) > 2][:5]
-        return keywords
-
-    # ==================== RAG ====================
-
     def get_rag_context_for_item(self, title: str, days_back: int = 30) -> Optional[Dict]:
-        key = self._generate_product_key(title)
-        
-        # 1. Берем числовую статистику (кэш или пересчет)
-        stats = self._get_cached_stats(key)
-        
-        # Fallback: если кэша нет, пробуем найти похожие "на лету" (упрощенно)
-        if not stats:
-            items = self.find_similar_items(title, 50)
-            if items:
-                prices = [i['price'] for i in items if i['price']]
-                if prices:
-                    stats = {
-                        'median_price': int(statistics.median(prices)),
-                        'avg_price': int(statistics.mean(prices)),
-                        'min_price': min(prices),
-                        'max_price': max(prices),
-                        'trend': 'stable', 
-                        'sample_count': len(prices)
-                    }
+        # 1. Сначала ищем сырую статистику
+        stats = None
+        items = self.find_similar_items(title, 30)
+        if items:
+            prices = [i['price'] for i in items if i['price']]
+            if prices:
+                stats = {
+                    'median_price': int(statistics.median(prices)),
+                    'avg_price': int(statistics.mean(prices)),
+                    'min_price': min(prices),
+                    'max_price': max(prices),
+                    'trend': 'stable', 
+                    'sample_count': len(prices)
+                }
         
         if not stats: return None
-
-        # 2. Берем концептуальные знания
-        knowledge = self.get_knowledge(key)
         
-        # Склеиваем
+        # 2. Теперь ищем УМНЫЙ чанк в новой таблице aiknowledge_v2
+        # Генерируем ключ так же, как SmartChunkDetector
+        key = self._generate_product_key(title) 
+        
+        # Ищем готовый PRODUCT чанк
+        chunk = self.get_chunk_by_key('PRODUCT', key)
+        knowledge_text = ""
+        
+        if chunk and chunk.get('status') == 'READY':
+            # Чанк найден! Извлекаем summary
+            if chunk.get('summary'):
+                knowledge_text = chunk['summary']
+            elif chunk.get('content'):
+                try:
+                    data = json.loads(chunk['content'])
+                    knowledge_text = data.get('summary') or data.get('analysis', {}).get('summary', '')
+                except: pass
+        
         context = stats.copy()
-        if knowledge:
-            # Подмешиваем мысли ИИ в контекст
-            context['knowledge'] = f"{knowledge['summary']}. Риски: {knowledge['risk_factors']}."
+        if knowledge_text:
+            context['knowledge'] = knowledge_text
         else:
-            context['knowledge'] = ""
+            context['knowledge'] = "Нет детального AI-анализа в памяти."
             
         return context
 
@@ -230,8 +417,6 @@ class MemoryManager:
             else: return ("stable", percent_change)
         except:
             return ("stable", 0.0)
-
-    # ==================== Кэширование статистики ====================
 
     def _generate_product_key(self, title: str) -> str:
         clean = re.sub(r'\b(продам|куплю|торг)\b', '', title.lower(), flags=re.I)
@@ -271,19 +456,8 @@ class MemoryManager:
                 """, (product_key, date_str, context['avg_price'], context['sample_count']))
                 self._conn.commit()
             except Exception as e:
-                logger.dev(f"Cache write error: {e}", level="ERROR")
+                logger.error(f"Cache write error: {e}")
 
-    def _invalidate_stats_cache(self, title: str):
-        try:
-            product_key = self._generate_product_key(title)
-            conn = sqlite3.connect(self.db_path)
-            c = conn.cursor()
-            c.execute("DELETE FROM statistics WHERE product_key = ?", (product_key,))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
-    
     def rebuild_statistics_cache(self) -> int:
         try:
             conn = sqlite3.connect(self.db_path)
@@ -295,7 +469,6 @@ class MemoryManager:
             conn.close()
             
             if not titles:
-                logger.dev(f"No titles found, database might be empty", level="DEBUG")
                 return 0
             
             product_keys = set()
@@ -304,92 +477,46 @@ class MemoryManager:
                 if pk:
                     product_keys.add(pk)
             
-            logger.dev(f"Rebuilding stats for {len(product_keys)} categories", level="INFO")
-            
             rebuilt = 0
             for pk in product_keys:
                 keywords = pk.split()
-                if not keywords:
-                    continue
+                if not keywords: continue
                 
                 temp_title = " ".join(keywords)
                 similar = self.find_similar_items(temp_title, limit=100)
                 
-                if len(similar) < 2:
-                    logger.dev(f"Category '{pk}': too few items ({len(similar)})", level="DEBUG")
-                    continue
+                if len(similar) < 2: continue
                 
-                cutoff_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-                filtered = [item for item in similar if item.get('added_at', '') >= cutoff_date]
+                prices = [item['price'] for item in similar if item.get('price')]
+                if not prices: continue
                 
-                if len(filtered) < 2:
-                    logger.dev(f"Category '{pk}': too few recent items ({len(filtered)})", level="DEBUG")
-                    continue
-                
-                prices = [item['price'] for item in filtered if item.get('price')]
-                if not prices:
-                    continue
-                
-                trend, trend_percent = self._calculate_trend(filtered)
+                trend, trend_percent = self._calculate_trend(similar)
                 
                 context = {
                     'avg_price': int(statistics.mean(prices)),
                     'median_price': int(statistics.median(prices)),
                     'min_price': int(min(prices)),
                     'max_price': int(max(prices)),
-                    'sample_count': len(filtered),
+                    'sample_count': len(similar),
                     'trend': trend,
                     'trend_percent': round(trend_percent, 1)
                 }
                 
                 self._cache_stats(pk, context)
                 rebuilt += 1
-                logger.dev(f"Category '{pk}': avg={context['avg_price']}, trend={trend}", level="INFO")
             
-            logger.dev(f"Rebuild complete: {rebuilt}/{len(product_keys)} categories", level="INFO")
             return rebuilt
-            
         except Exception as e:
-            logger.dev(f"Rebuild error: {e}", level="ERROR")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Rebuild error: {e}")
             return 0
 
     def get_all_statistics(self, limit: int = 100) -> List[Dict]:
-        try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-
-            c.execute("""
-                SELECT * FROM statistics
-                ORDER BY last_updated DESC
-                LIMIT ?
-            """, (limit,))
-
-            rows = [dict(row) for row in c.fetchall()]
-            conn.close()
-            return rows
-
-        except Exception as e:
-            logger.dev(f"Get statistics error: {e}", level="ERROR")
-            return []
+        rows = self._execute("SELECT * FROM statistics ORDER BY last_updated DESC LIMIT ?", (limit,), fetch_all=True)
+        return [dict(r) for r in rows] if rows else []
 
     def get_stats_for_product_key(self, product_key: str) -> Optional[Dict]:
-        try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("""
-                SELECT * FROM statistics
-                WHERE product_key = ?
-            """, (product_key,))
-            row = c.fetchone()
-            conn.close()
-            return dict(row) if row else None
-        except Exception as e:
-            logger.dev(f"Get stats by key error: {e}", level="ERROR")
-            return None
+        row = self._execute("SELECT * FROM statistics WHERE product_key = ?", (product_key,), fetch_one=True)
+        return dict(row) if row else None
 
     def get_stats_for_title(self, title: str) -> Optional[Dict]:
         if not title: return None
@@ -398,7 +525,6 @@ class MemoryManager:
         if not clean_words: return None
         keyword = max(clean_words, key=len)
 
-        # Безопасный запрос
         rows = self._execute("SELECT price FROM items WHERE title LIKE ? AND price > 100", (f"%{keyword}%",), fetch_all=True)
         if not rows: return None
         
@@ -406,141 +532,118 @@ class MemoryManager:
         if len(raw_prices) < 3: return None
 
         sorted_prices = sorted(raw_prices)
-        q1 = sorted_prices[len(sorted_prices)//4]
-        q3 = sorted_prices[3*len(sorted_prices)//4]
-        iqr = q3 - q1
-        lower_bound = q1 - 1.5 * iqr
-        upper_bound = q3 + 1.5 * iqr
-        
-        filtered_prices = [p for p in sorted_prices if lower_bound <= p <= upper_bound]
-        if not filtered_prices: filtered_prices = sorted_prices
-
-        try:
-            return {
-                "keyword": keyword,
-                "sample_count": len(raw_prices),
-                "clean_count": len(filtered_prices),
-                "avg_price": int(statistics.mean(filtered_prices)),
-                "median_price": int(statistics.median(filtered_prices)),
-                "min_price": filtered_prices[0],
-                "max_price": filtered_prices[-1],
-                "trend": "stable"
-            }
-        except: return None
-
-    def get_rag_context_for_product_key(self, product_key: str) -> Optional[Dict]:
-        stats = self.get_stats_for_product_key(product_key)
-        if not stats:
-            return None
         return {
-            "product_key": product_key,
-            "avg_price": stats.get("avg_price"),
-            "median_price": stats.get("median_price"),
-            "min_price": stats.get("min_price"),
-            "max_price": stats.get("max_price"),
-            "sample_count": stats.get("sample_count"),
-            "trend": stats.get("trend"),
-            "trend_percent": stats.get("trend_percent", 0.0),
+            "keyword": keyword,
+            "sample_count": len(raw_prices),
+            "avg_price": int(statistics.mean(sorted_prices)),
+            "median_price": int(statistics.median(sorted_prices)),
+            "min_price": sorted_prices[0],
+            "max_price": sorted_prices[-1],
+            "trend": "stable"
         }
-
-    # ==================== Утилиты ====================
 
     def get_rag_status(self):
-        # Возвращаем статус для UI с добавленным полем last_rebuild
-        i = self._execute("SELECT COUNT(*) FROM items", fetch_one=True)[0]
-        k = self._execute("SELECT COUNT(*) FROM ai_knowledge", fetch_one=True)[0]
-        
-        # Пытаемся найти дату последнего обновления знаний
+        i = self._execute("SELECT COUNT(*) FROM items", fetch_one=True)
+        k = self._execute("SELECT COUNT(*) FROM ai_knowledge", fetch_one=True)
         last = self._execute("SELECT last_updated FROM ai_knowledge ORDER BY last_updated DESC LIMIT 1", fetch_one=True)
-        last_date = last['last_updated'] if last else "Никогда"
         
         return {
-            'total_items': i, 
-            'total_categories': k, 
-            'status': 'ok' if i > 0 else 'empty',
-            'last_rebuild': last_date  # <--- Добавлено, чтобы не крашился UI
+            'total_items': i[0] if i else 0, 
+            'total_categories': k[0] if k else 0, 
+            'status': 'ok' if i and i[0] > 0 else 'empty',
+            'last_rebuild': last['last_updated'] if last else "Никогда"
         }
 
-    # TODO Почему здесь лимит?
     def get_all_items(self, limit=100) -> List[Dict]:
         rows = self._execute("SELECT * FROM items ORDER BY id DESC LIMIT ?", (limit,), fetch_all=True)
         return [dict(row) for row in rows] if rows else []
 
     def delete_item(self, avito_id: str):
-        with self._lock:
-            cursor = self._conn.cursor()
-            cursor.execute("DELETE FROM items WHERE avito_id = ?", (str(avito_id),))
-            self._conn.commit()
-            return cursor.rowcount > 0
+        self._execute("DELETE FROM items WHERE avito_id = ?", (str(avito_id),), commit=True)
+        return True
 
     def clear_all(self):
         self._execute("DELETE FROM items", commit=True)
 
     def get_stats(self) -> Dict:
-        with self._lock:
-            try:
-                c = self._conn.cursor()
-                c.execute("SELECT COUNT(*) FROM items")
-                total = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM items WHERE verdict='GREAT_DEAL'")
-                great = c.fetchone()[0]
-                return {"total": total, "great": great}
-            except:
-                return {"total": 0, "great": 0}
-
-    def get_context_as_text(self, limit=50) -> str:
-        items = self.get_all_items(limit)
-        if not items:
-            return "База знаний пуста."
-
-        items.sort(key=lambda x: x['price'] if x['price'] is not None else float('inf'))
-
-        text_parts = [f"В базе данных всего {len(items)} товаров. Список (отсортирован по цене):"]
-        for idx, i in enumerate(items, 1):
-            verdict = i['verdict'] or "N/A"
-            price = i['price'] or 0
-            title = i['title'] or "No Title"
-            title = " ".join(title.split())
-            city = i['city'] or "Unknown"
-            line = f"{idx}. [{verdict}] {price} руб. | {title} | {city}"
-            text_parts.append(line)
-
-        return "\n".join(text_parts)
-    
-    def get_category_summary_text(self, top_n: int = 10) -> str:
         try:
-            stats = self.get_all_statistics(limit=top_n)
-        except Exception:
-            return "Нет данных статистики."
+            total = self._execute("SELECT COUNT(*) FROM items", fetch_one=True)[0]
+            great = self._execute("SELECT COUNT(*) FROM items WHERE verdict='GREAT_DEAL'", fetch_one=True)[0]
+            return {"total": total, "great": great}
+        except:
+            return {"total": 0, "great": 0}
 
-        if not stats:
-            return "База знаний пуста."
+    # ==================== Compression (v2) ====================
 
-        lines = ["Краткая сводка по рынку (товар: средняя цена (медиана, кол-во) тренд):"]
-        for st in stats:
-            name = st.get('product_key') or "N/A"
-            avg = st.get('avg_price') or 0
-            med = st.get('median_price') or 0
-            count = st.get('sample_count') or 0
-            trend = st.get('trend') or 'stable'
-            tp = st.get('trend_percent') or 0.0
-
-            avg_fmt = f"{avg//1000}к" if avg > 1000 else str(avg)
-            med_fmt = f"{med//1000}к" if med > 1000 else str(med)
-            trend_icon = "↗️" if trend == 'up' else "↘️" if trend == 'down' else "➡️"
-            
-            line = f"- {name}: {avg_fmt} (med:{med_fmt}, n={count}) {trend_icon}{tp:+.0f}%"
-            lines.append(line)
+    def compress_chunk(self, chunk_id: int) -> bool:
+        chunk = self._execute(
+            "SELECT id, chunk_type, content, status, original_size FROM aiknowledge_v2 WHERE id = ?",
+            (chunk_id,),
+            fetch_one=True
+        )
         
-        return "\n".join(lines)
+        if not chunk or chunk['status'] != 'READY':
+            return False
+        
+        try:
+            content_str = chunk['content']
+            if not content_str:
+                return False
+                
+            content = json.loads(content_str)
+            chunk_type = chunk['chunk_type']
+            
+            if chunk_type == 'PRODUCT':
+                compressed_str, size = ChunkCompressor.compress_product_chunk(content)
+            elif chunk_type == 'CATEGORY':
+                compressed_str, size = ChunkCompressor.compress_category_chunk(content)
+            elif chunk_type == 'DATABASE':
+                compressed_str, size = ChunkCompressor.compress_database_chunk(content)
+            else:
+                compressed_str, size = ChunkCompressor.compress_generic(content)
+            
+            if not compressed_str or size == 0:
+                return False
+
+            self._execute(
+                """
+                UPDATE aiknowledge_v2 
+                SET compressed_content = ?, compressed_size = ?, status = 'COMPRESSED'
+                WHERE id = ?
+                """,
+                (compressed_str, size, chunk_id),
+                commit=True
+            )
+            
+            ratio = round((size / chunk['original_size']) * 100, 1) if chunk['original_size'] else 0
+            logger.info(f"Compressed chunk {chunk_id}: {chunk['original_size']} -> {size} bytes ({ratio}%)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Compression failed for chunk {chunk_id}: {e}")
+            return False
+    
+    def auto_compress_old_chunks(self, days_old: int = 7):
+        cutoff_date = (datetime.now() - timedelta(days=days_old)).isoformat()
+        old_chunks = self._execute(
+            """
+            SELECT id FROM aiknowledge_v2 
+            WHERE status = 'READY' AND last_updated < ?
+            """,
+            (cutoff_date,),
+            fetch_all=True
+        )
+        
+        if not old_chunks: return
+
+        count = 0
+        for chunk in old_chunks:
+            if self.compress_chunk(chunk['id']):
+                count += 1
+        
+        if count > 0:
+            logger.info(f"Auto-compressed {count} old chunks")
 
     def cleanup_old_data(self, days_to_keep=90):
-        try:
-            cutoff = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
-            with self._lock:
-                c = self._conn.cursor()
-                c.execute("DELETE FROM items WHERE added_at < ?", (cutoff,))
-                self._conn.commit()
-                logger.dev(f"Memory cleanup: {c.rowcount} items deleted", level="INFO")
-        except Exception as e:
-            logger.dev(f"Memory cleanup error: {e}", level="ERROR")
+        cutoff = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
+        self._execute("DELETE FROM items WHERE added_at < ?", (cutoff,), commit=True)

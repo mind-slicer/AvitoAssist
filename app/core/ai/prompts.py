@@ -145,63 +145,89 @@ class PromptBuilder:
     
     @classmethod
     def build_analysis_prompt(cls, items: List[Dict], priority: AnalysisPriority, current_item: Dict, user_instructions: str = "", rag_context: Optional[Dict] = None) -> str:
-        # 1. Сбор данных статистики
+        # 1. Сбор данных статистики (ТЕКУЩАЯ СИТУАЦИЯ)
         stats = cls._build_market_stats(items, current_item.get('title'))
         
-        # 2. Формирование блока RAG [ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ]
-        aux_data = []
+        # Формируем строку текущей статистики
+        current_market_str = "Нет данных."
         if stats['sample_size'] > 0:
-            aux_data.append(f"- Текущая выдача ({stats['cnt']} шт): Медиана {stats['med']}₽, Мин {stats['min']}₽")
-        
-        if rag_context:
-            # Данные из "Концептуальной памяти" и кэша
-            hist_med = rag_context.get('median_price', 'Нет данных')
-            hist_trend = rag_context.get('trend', 'N/A')
-            aux_data.append(f"- Историческая база (RAG): Медиана {hist_med}₽, Тренд: {hist_trend}")
-            
-            # Если есть "мысли" ИИ (summary/risks)
-            if rag_context.get('knowledge'):
-                aux_data.append(f"- ЗАМЕТКИ ИЗ ПАМЯТИ: {rag_context['knowledge']}")
-        
-        aux_block = "\n".join(aux_data) if aux_data else "Нет статистических данных."
+            current_market_str = (
+                f"Найдено {stats['cnt']} похожих лотов прямо сейчас.\n"
+                f"- Диапазон цен: от {stats['min']} до {stats['max']} руб.\n"
+                f"- Медиана текущей выдачи: {stats['med']} руб.\n"
+                f"- Средняя цена: {stats['avg']} руб."
+            )
 
-        # 3. Формирование блока [ЖЁСТКИЕ ПРАВИЛА]
+        # 2. Формирование блока RAG (ИСТОРИЧЕСКАЯ ПАМЯТЬ)
+        rag_block = ""
+        if rag_context:
+            med = rag_context.get('median_price', 0)
+            avg = rag_context.get('avg_price', 0)
+            cnt = rag_context.get('sample_count', 0)
+            knowledge = rag_context.get('knowledge', '')
+            
+            # Если это "заглушка" или чанка нет -> включаем режим Live-статистики
+            if not knowledge or "Нет детального" in knowledge:
+                rag_block = (
+                    f"СТАТУС ПАМЯТИ: Чанк не сформирован (Live-режим).\n"
+                    f"Историческая статистика (база {cnt} товаров):\n"
+                    f"- Историческая Медиана: {med} руб.\n"
+                    f"- Историческая Средняя: {avg} руб.\n"
+                    f"ИНСТРУКЦИЯ: Сравнивай цену товара ({current_item.get('price')} руб) с исторической медианой ({med}). "
+                    f"Если цена сильно ниже — ищи подвох."
+                )
+            else:
+                # Если есть полноценный чанк
+                rag_block = (
+                    f"СТАТУС ПАМЯТИ: Активен чанк знаний.\n"
+                    f"{knowledge}\n"
+                    f"Базовые метрики категории: Медиана {med} руб, Средняя {avg} руб.\n"
+                    f"ИНСТРУКЦИЯ: Используй этот контекст для глубокой оценки ликвидности."
+                )
+        else:
+            rag_block = "Данных в памяти нет. Опирайся только на текущую выдачу."
+
+        # 3. Блок правил
         strat = "Максимальная маржа. Ищи ошибки в цене."
         if priority == AnalysisPriority.QUALITY: strat = "Идеальное состояние, гарантия, комплект."
         elif priority == AnalysisPriority.DEFICIT: strat = "Редкое/Топовое железо."
-        
         user_rules = f"{strat}\n{user_instructions}" if user_instructions else strat
 
-        # 4. Расширенные поля товара
+        # 4. Детали товара
         item_details = (
             f"Товар: {current_item.get('title')}\n"
             f"Цена: {current_item.get('price')} ₽\n"
             f"Город: {current_item.get('city', 'N/A')}\n"
             f"Дата: {current_item.get('date_text', 'N/A')} | Просмотры: {current_item.get('views', 0)}\n"
             f"Продавец ID: {current_item.get('seller_id', 'N/A')}\n"
-            f"Описание:\n{current_item.get('description', '')[:800]}" 
+            f"Описание:\n{current_item.get('description', '')[:1200]}" # Чуть увеличили лимит
         )
 
-        # Итоговая сборка
         return f"""
 {cls.SYSTEM_BASE}
 
 =============================================================
 РАЗДЕЛ 1: ЖЁСТКИЕ ПРАВИЛА (ПРИОРИТЕТ 100%)
 =============================================================
-Следуй этим инструкциям неукоснительно. Они важнее любой статистики.
-1. Твоя стратегия: {user_rules}
-2. Не выдумывай цены. Если их нет в статистике — пиши "нет данных".
-3. Игнорируй маркетинговый шум в описании.
+1. Стратегия: {user_rules}
+2. Не выдумывай цены.
+3. Игнорируй маркетинговый шум.
 
 =============================================================
-РАЗДЕЛ 2: ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ (ПРИОРИТЕТ 30%)
+РАЗДЕЛ 2: КОНТЕКСТ АНАЛИЗА (ПРИОРИТЕТ 40%)
 =============================================================
-Используй это для контекста, но если цена товара противоречит им — верь факту цены товара.
-{aux_block}
+[А] ТЕКУЩАЯ СИТУАЦИЯ (Прямо сейчас в поиске):
+{current_market_str}
+
+[Б] ПАМЯТЬ ИИ (Исторический опыт):
+{rag_block}
+
+ИНСТРУКЦИЯ ПО КОНТЕКСТУ:
+Если "Текущая медиана" и "Историческая медиана" сильно отличаются, 
+значит рынок изменился (тренд). Учитывай это.
 
 =============================================================
-ОБЪЕКТ АНАЛИЗА
+РАЗДЕЛ 3: ОБЪЕКТ АНАЛИЗА
 =============================================================
 {item_details}
 
@@ -314,3 +340,98 @@ JSON ФОРМАТ:
             ignore_tags=ignore_str,
             user_criteria=criteria_block,
         )
+
+class ChunkCultivationPrompts:
+    """Специализированные промпты для создания структур знаний (чанков)"""
+    
+    @staticmethod
+    def build_product_cultivation_prompt(product_key: str, items: list) -> str:
+        """Промпт для анализа конкретного товара/серии"""
+        
+        # Формируем компактный список примеров
+        items_text = ""
+        for item in items[:40]: # Лимит 40, чтобы не забить контекст
+            p = item.get('price', 0)
+            t = item.get('title', 'N/A')
+            v = item.get('verdict', 'N/A')
+            items_text += f"- {t} | {p} руб. | {v}\n"
+        
+        return f"""
+        ТЫ — ПРОФЕССИОНАЛЬНЫЙ РЫНОЧНЫЙ АНАЛИТИК. ТВОЯ ЗАДАЧА — СОЗДАТЬ СТРУКТУРИРОВАННОЕ ЗНАНИЕ О ТОВАРЕ.
+        
+        ТОВАР: "{product_key}"
+        ИСХОДНЫЕ ДАННЫЕ (список объявлений):
+        {items_text}
+        
+        ТРЕБОВАНИЕ:
+        Проанализируй эти данные и верни JSON (без markdown, только JSON) следующей структуры:
+        {{
+            "summary": "Краткий аналитический обзор рынка этого товара (2-3 предложения). Цены, спрос, доступность.",
+            "price_analysis": {{
+                "avg": (число, средняя цена),
+                "median": (число, медиана),
+                "trend": "up" или "down" или "stable",
+                "trend_percent": (число, примерный процент изменения, если есть данные, иначе 0)
+            }},
+            "risk_factors": ["список", "конкретных", "рисков", "покупки"],
+            "market_position": "fair" (справедливая) или "overpriced" (перегрет) или "undervalued" (недооценен),
+            "seller_quality": "mixed" или "high" или "low"
+        }}
+        
+        ВАЖНО: Опирайся ТОЛЬКО на предоставленные данные. Если данных мало, пиши честно.
+        """
+    
+    @staticmethod
+    def build_category_cultivation_prompt(category_key: str, stats: dict) -> str:
+        """Промпт для анализа целой категории"""
+        
+        return f"""
+        АНАЛИЗ КАТЕГОРИИ ТОВАРОВ: "{category_key}"
+        
+        СТАТИСТИКА:
+        - Средняя цена: {stats.get('avg_price')}
+        - Медианная цена: {stats.get('median_price')}
+        - Минимум: {stats.get('min_price')}
+        - Максимум: {stats.get('max_price')}
+        - Количество лотов: {stats.get('sample_count')}
+        - Тренд: {stats.get('trend')} ({stats.get('trend_percent')}%)
+        
+        ЗАДАЧА: Вернуть JSON-структуру знаний о категории.
+        
+        FORMAT JSON:
+        {{
+            "summary": "Общее описание состояния рынка в этой категории.",
+            "subcategories": {{
+                "main": {{ "trend": "{stats.get('trend')}", "avg_price": {stats.get('avg_price')} }}
+            }},
+            "market_insights": "Ключевые инсайты (например: много перекупов, или цены падают).",
+            "seasonal_patterns": "Есть ли сезонность (предположение на основе типа товара)."
+        }}
+        """
+    
+    @staticmethod
+    def build_database_cultivation_prompt(db_stats: dict) -> str:
+        """Промпт для анализа всей базы"""
+        
+        return f"""
+        ГЛОБАЛЬНЫЙ АНАЛИЗ БАЗЫ ДАННЫХ.
+        
+        ВСЕГО ТОВАРОВ: {db_stats.get('total_items')}
+        ВСЕГО КАТЕГОРИЙ: {db_stats.get('total_categories')}
+        
+        ЗАДАЧА: Сформировать отчет о составе базы.
+        
+        FORMAT JSON:
+        {{
+            "summary": "Обзор того, какие данные преобладают в базе.",
+            "top_categories": ["название_категории_1", "название_категории_2"],
+            "key_trends": ["общий тренд 1", "общий тренд 2"],
+            "insights": "Выводы о том, что ищет пользователь."
+        }}
+        """
+        
+    @staticmethod
+    def build_ai_behavior_cultivation_prompt(actions_log: list) -> str:
+        return """
+        { "summary": "Log analysis not implemented yet." }
+        """

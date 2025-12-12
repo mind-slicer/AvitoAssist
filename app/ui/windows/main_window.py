@@ -4,9 +4,9 @@ import time
 from typing import List, Dict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget,
-    QSplitter, QScrollArea, QFrame, QApplication, QMessageBox, QLabel
+    QSplitter, QScrollArea, QFrame, QApplication, QMessageBox, QLabel, QDialog, QTextBrowser
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QCursor
 
 from app.core.controller import ParserController
@@ -14,6 +14,8 @@ from app.core.memory import MemoryManager
 from app.core.telegram_notifier import TelegramNotifier
 from app.core.tracker import AdTracker
 from app.config import BASE_APP_DIR, RESULTS_DIR
+from app.ui.widgets.ai_memory_panel import AIMemoryPanel
+from app.core.ai.chunk_cultivation import ChunkCultivationManager
 from app.ui.pages.analytics import AnalyticsWidget
 from app.ui.windows.search_widget import SearchWidget
 from app.ui.windows.controls_widget import ControlsWidget
@@ -60,9 +62,24 @@ class MainWindow(QWidget):
         self.rag_rebuild_timer.timeout.connect(self.rebuild_rag_cache)
         self.rag_rebuild_timer.start(600000)  # 10 минут = 600000 мс
         QTimer.singleShot(100, self._check_ai_availability)
-        QTimer.singleShot(0, self._apply_initial_size)
-        QTimer.singleShot(0, self.center_on_current_screen)
+        QTimer.singleShot(0, self.apply_initial_geometry)
         self._load_queue_to_ui(0)
+
+        self.controller.ensure_ai_manager()
+    
+        self.controller.chunk_manager = ChunkCultivationManager(
+            memory_manager=self.memory_manager,
+            ai_manager=self.controller.ai_manager
+        )
+
+        # Если панель уже создана в init_ui, обновляем ей менеджеры
+        if hasattr(self, 'memory_panel'):
+            self.memory_panel.set_managers(
+                self.memory_manager,
+                self.controller.chunk_manager
+            )
+
+        QTimer.singleShot(1000, self._check_first_run)
 
     def init_ui(self):
         self.setWindowTitle("Avito Assist")
@@ -79,6 +96,26 @@ class MainWindow(QWidget):
         self.stack.addWidget(self.parser_page)
         self.analytics_page = self.create_analytics_page()
         self.stack.addWidget(self.analytics_page)
+        self.memory_panel = AIMemoryPanel()
+        self.stack.addWidget(self.memory_panel)
+
+        if not self.controller.chunk_manager:
+            self.controller.chunk_manager = ChunkCultivationManager(
+                memory_manager=self.memory_manager,
+                ai_manager=self.controller.ai_manager
+            )
+            
+        # Связываем панель с менеджерами
+        self.memory_panel.set_managers(
+            self.memory_manager,
+            self.controller.chunk_manager
+        )
+        
+        # Подключаем кнопку "Актуализировать" из панели к контроллеру
+        self.memory_panel.update_memory_requested.connect(
+            self.controller.start_cultivation
+        )
+
         self.btn_parser.setChecked(True)
         self.stack.setCurrentIndex(0)
 
@@ -119,18 +156,30 @@ class MainWindow(QWidget):
         nav_layout = QHBoxLayout(nav_container)
         nav_layout.setContentsMargins(Spacing.LG, Spacing.SM, Spacing.LG, Spacing.SM)
         nav_layout.setSpacing(Spacing.MD)
+        
+        # 1. Создаем кнопки (Порядок: Парсер -> Память -> Аналитика)
         self.btn_parser = QPushButton("ПАРСЕР")
+        self.btn_memory = QPushButton("НЕЙРОСЕТЬ")
         self.btn_analytics = QPushButton("АНАЛИТИКА")
-        for btn in (self.btn_parser, self.btn_analytics):
+        
+        # 2. Применяем единый стиль ко всем
+        for btn in (self.btn_parser, self.btn_memory, self.btn_analytics):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(36)
-            btn.setStyleSheet(Components.nav_button())
+            btn.setStyleSheet(Components.nav_button()) # Используем тот же стиль, что и у Парсера
+            
+        # 3. Добавляем в лайаут в нужном порядке
         nav_layout.addWidget(self.btn_parser)
+        nav_layout.addWidget(self.btn_memory)
         nav_layout.addWidget(self.btn_analytics)
         nav_layout.addStretch()
+        
         parent_layout.addWidget(nav_container)
+        
+        # 4. Настраиваем переключение (индексы поменялись)
         self.btn_parser.clicked.connect(lambda: self._switch_page(0))
+        self.btn_memory.clicked.connect(lambda: self._switch_page(2))    # Память теперь 2-й визуально, но индекс стека зависит от init_ui
         self.btn_analytics.clicked.connect(lambda: self._switch_page(1))
 
     def _create_parser_page(self) -> QWidget:
@@ -266,6 +315,18 @@ class MainWindow(QWidget):
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
         self.controller.ai_result_ready.connect(self.handle_ai_result)
+
+    def _check_first_run(self):
+        """Проверяет версию и показывает патч-нот"""
+        CURRENT_VERSION = "1.0.5" # Менять это число при новых обновлениях!
+        
+        settings = QSettings("", "AvitoAssist") # Можно заменить на свои названия
+        last_version = settings.value("patch_note_version", "1.0.0")
+        
+        if last_version != CURRENT_VERSION:
+            dlg = PatchNoteDialog(self)
+            dlg.exec()
+            settings.setValue("patch_note_version", CURRENT_VERSION)
 
     def _on_sequence_finished_ui(self):
         logger.info("Последовательность полностью завершена.")
@@ -623,7 +684,7 @@ class MainWindow(QWidget):
         msg_box.exec()
 
     def _enable_ai_features(self):
-        self.btn_analytics.setEnabled(True)
+        self.btn_analytics.setEnabled(False)
         self.btn_analytics.setToolTip("")
         self.btn_analytics.setStyleSheet(Components.nav_button())
         
@@ -1397,9 +1458,16 @@ class MainWindow(QWidget):
         except: return []
 
     def _switch_page(self, index):
+        # index 0 = Parser
+        # index 1 = Analytics
+        # index 2 = Memory (мы добавляли её третьей в init_ui)
+        
         self.stack.setCurrentIndex(index)
+        
+        # Управляем состоянием кнопок (чтобы "горела" активная)
         self.btn_parser.setChecked(index == 0)
         self.btn_analytics.setChecked(index == 1)
+        self.btn_memory.setChecked(index == 2)
         
         if index == 1:
             self.analytics_widget.refresh_data()
@@ -1485,15 +1553,28 @@ class MainWindow(QWidget):
         if hasattr(self, 'rag_stats_panel') and self.rag_stats_panel.isVisible():
             self.rag_stats_panel.update_stats(stats)
 
-    def _apply_initial_size(self):
-        self.resize(2200, 1320)
-
-    def center_on_current_screen(self):
+    def apply_initial_geometry(self):
         app = QApplication.instance()
         screen = app.screenAt(QCursor.pos()) or app.primaryScreen()
-        geo = screen.availableGeometry()
+        avail = screen.availableGeometry()  # доступная область текущего экрана [web:21][web:27]
+
+        preferred_w, preferred_h = 2200, 1320
+        margin = 40
+
+        # Если окно не помещается — разворачиваем на весь экран этого монитора
+        if preferred_w > avail.width() or preferred_h > avail.height():
+            # Важно: maximize, а не setGeometry на "весь desktop"
+            self.move(avail.topLeft())
+            self.showMaximized()
+            return
+
+        # Иначе — подгоняем размер под экран и центрируем
+        w = min(preferred_w, avail.width() - margin)
+        h = min(preferred_h, avail.height() - margin)
+        self.resize(w, h)
+
         rect = self.frameGeometry()
-        rect.moveCenter(geo.center())
+        rect.moveCenter(avail.center())
         self.move(rect.topLeft())
 
     def closeEvent(self, event):
@@ -1508,3 +1589,129 @@ class MainWindow(QWidget):
             self.controller.cleanup()
         finally:
             event.accept()
+
+class PatchNoteDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Что нового?")
+        self.setFixedSize(650, 750) # Чуть увеличили размер
+        
+        # --- МАГИЯ СТИЛЕЙ: Фон + Скроллбар ---
+        # Мы явно прописываем стили для QScrollBar внутри этого окна
+        self.setStyleSheet(f"""
+            QDialog {{ 
+                background-color: {Palette.BG_DARK}; 
+            }}
+            
+            QLabel {{ 
+                color: {Palette.TEXT}; 
+            }}
+            
+            QTextBrowser {{ 
+                background-color: {Palette.BG_LIGHT}; 
+                border: 1px solid {Palette.BORDER_PRIMARY};
+                border-radius: 8px;
+                padding: 20px;
+                font-size: 14px;
+                line-height: 1.5;
+                color: {Palette.TEXT};
+            }}
+            
+            /* --- СТИЛИЗАЦИЯ СКРОЛЛА --- */
+            QScrollBar:vertical {{
+                border: none;
+                background-color: {Palette.BG_LIGHT};
+                width: 10px;
+                margin: 0px;
+                border-radius: 0px;
+            }}
+            
+            QScrollBar::handle:vertical {{
+                background-color: {Palette.BORDER_PRIMARY}; 
+                min-height: 20px;
+                border-radius: 5px;
+            }}
+            
+            QScrollBar::handle:vertical:hover {{
+                background-color: {Palette.PRIMARY};
+            }}
+            
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+                subcontrol-position: bottom;
+                subcontrol-origin: margin;
+            }}
+            
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+                subcontrol-position: top;
+                subcontrol-origin: margin;
+            }}
+            
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+            /* --------------------------- */
+
+            QPushButton {{
+                background-color: {Palette.PRIMARY};
+                color: white;
+                border: none;
+                padding: 12px 25px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{ 
+                background-color: {Palette.PRIMARY_DARK}; 
+            }}
+            QPushButton:pressed {{
+                background-color: {Palette.BG_DARK};
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(20)
+        
+        # Заголовок
+        title = QLabel("🚀 Версия 1.0.6")
+        title.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {Palette.PRIMARY};")
+        layout.addWidget(title)
+        
+        # Контент (HTML)
+        content = QTextBrowser()
+        content.setOpenExternalLinks(True)
+        # Убираем рамку самого виджета, так как она задана в CSS
+        content.setFrameShape(QFrame.Shape.NoFrame)
+    
+        content.setHtml("""
+        <style>
+            h3 { color: #81A1C1; margin-top: 20px; font-weight: bold; }
+            li { margin-bottom: 6px; }
+            strong { color: #ECEFF4; }
+            .highlight { color: #A3BE8C; font-weight: bold; }
+            .warning { color: #BF616A; }
+        </style>
+        
+        <h3>🕷 Парсер</h3>
+        <ul>
+            <li>Исправлен баг с невозможностью продолжить корректное логирование парсера/нейросети, что в том числе прерывало процесс поиска.</li>
+        </ul>
+
+        <h3>🎨 Интерфейс</h3>
+        <ul>
+            <li>Теперь главное окно приложения адаптируется под экраны любого размера, открываясь в центре и адаптируя свой размер автоматически.</li>
+        </ul>
+        """)
+        layout.addWidget(content)
+        
+        # Кнопка ОК
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_ok = QPushButton("Отлично, к работе!")
+        btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_ok.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_ok)
+        
+        layout.addLayout(btn_layout)
