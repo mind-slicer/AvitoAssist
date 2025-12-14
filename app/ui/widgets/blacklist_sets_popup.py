@@ -1,23 +1,14 @@
-"""
-Popup окно для управления наборами черного списка.
-Можно создавать, активировать, переименовывать и удалять наборы.
-"""
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QListWidget, QPushButton, QLineEdit, QDialog,
-                               QListWidgetItem, QMessageBox)
+                               QListWidgetItem, QMessageBox, QApplication)
 from PyQt6.QtCore import Qt, pyqtSignal
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.core.blacklist_manager import get_blacklist_manager
 
 
 class BlacklistSetsPopup(QWidget):
-    """
-    Popup окно для управления наборами ЧС.
-    Закрывается кликом вне окна, ESC или кнопкой "Закрыть".
-    """
-
     closed = pyqtSignal()
-    set_changed = pyqtSignal(int)  # Индекс активного набора изменился
+    set_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -25,7 +16,6 @@ class BlacklistSetsPopup(QWidget):
 
         self.manager = get_blacklist_manager()
 
-        # Обновленные стили (стиль CategorySelectionDialog)
         self.setStyleSheet(f"""
             BlacklistSetsPopup {{
                 background-color: {Palette.BG_DARK};
@@ -51,7 +41,7 @@ class BlacklistSetsPopup(QWidget):
             }}
         """)
 
-        self.setFixedSize(350, 400) # Чуть компактнее
+        self.setFixedSize(350, 400)
         self._init_ui()
         self._load_sets()
 
@@ -60,28 +50,22 @@ class BlacklistSetsPopup(QWidget):
         layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
         layout.setSpacing(Spacing.MD)
 
-        # Заголовок (Стиль как в виджетах)
         title = QLabel("УПРАВЛЕНИЕ НАБОРАМИ")
         title.setStyleSheet(Components.section_title()) 
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        # Список наборов
         self.list_widget = QListWidget()
-        # Стили уже заданы глобально для виджета выше, но можно уточнить скроллбар
         self.list_widget.verticalScrollBar().setStyleSheet(Components.global_scrollbar())
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         layout.addWidget(self.list_widget)
 
-        # Кнопки управления (Сделаем их более аккуратными, "плоскими")
         btns_layout = QVBoxLayout()
         btns_layout.setSpacing(Spacing.SM)
 
-        # Helper для создания кнопок в стиле "Tools"
         def create_tool_btn(text, color_hover=Palette.PRIMARY):
             btn = QPushButton(text)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            # Используем small_button как базу, но добавляем цвет при наведении
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {Palette.BG_DARK_3};
@@ -122,12 +106,10 @@ class BlacklistSetsPopup(QWidget):
 
         layout.addLayout(btns_layout)
 
-        # Кнопка закрытия (внизу, отделена)
         close_layout = QHBoxLayout()
         close_layout.addStretch()
         btn_close = QPushButton("Закрыть")
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        # Стиль как кнопка "Очистить кэш" в диалоге категорий (серый/красный акцент при наведении) или просто Secondary
         btn_close.setStyleSheet(f"""
             QPushButton {{ 
                 background-color: transparent; 
@@ -144,8 +126,39 @@ class BlacklistSetsPopup(QWidget):
 
         self._update_buttons()
 
+    def showEvent(self, event):
+        self._ensure_visible_position()
+        super().showEvent(event)
+
+    def _ensure_visible_position(self):
+        current_geo = self.geometry()
+        
+        screen = QApplication.screenAt(current_geo.center())
+        if not screen:
+            screen = QApplication.primaryScreen()
+        
+        avail_geo = screen.availableGeometry()
+
+        x = current_geo.x()
+        y = current_geo.y()
+        w = current_geo.width()
+        h = current_geo.height()
+        padding = 5
+
+        if x < avail_geo.left() + padding:
+            x = avail_geo.left() + padding
+        elif x + w > avail_geo.right() - padding:
+            x = avail_geo.right() - w - padding
+        
+        if y < avail_geo.top() + padding:
+            y = avail_geo.top() + padding
+        elif y + h > avail_geo.bottom() - padding:
+            y = avail_geo.bottom() - h - padding
+
+        if x != current_geo.x() or y != current_geo.y():
+            self.move(x, y)
+
     def _create_button(self, text: str, color: str) -> QPushButton:
-        """Создать кнопку с заданным цветом"""
         btn = QPushButton(text)
         btn.setMinimumHeight(36)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -175,7 +188,6 @@ class BlacklistSetsPopup(QWidget):
         return btn
 
     def _load_sets(self):
-        """Загрузить наборы в список"""
         self.list_widget.clear()
 
         for i, bl_set in enumerate(self.manager.sets):
@@ -191,11 +203,9 @@ class BlacklistSetsPopup(QWidget):
                 self.list_widget.setCurrentRow(i)
 
     def _on_selection_changed(self):
-        """Обновить состояние кнопок при смене выбора"""
         self._update_buttons()
 
     def _update_buttons(self):
-        """Обновить доступность кнопок"""
         has_selection = self.list_widget.currentRow() >= 0
         current_row = self.list_widget.currentRow()
         is_active = (current_row >= 0 and 
@@ -208,7 +218,6 @@ class BlacklistSetsPopup(QWidget):
         self.btn_delete.setEnabled(has_selection and can_delete)
 
     def _on_activate(self):
-        """Активировать выбранный набор"""
         row = self.list_widget.currentRow()
         if row >= 0:
             self.manager.activate_set(row)
@@ -217,7 +226,6 @@ class BlacklistSetsPopup(QWidget):
             self.set_changed.emit(row)
 
     def _on_create(self):
-        """Создать новый набор"""
         name, ok = self._input_dialog("Создать набор", "Название набора:", f"Набор {len(self.manager.sets) + 1}")
 
         if ok and name:
@@ -226,7 +234,6 @@ class BlacklistSetsPopup(QWidget):
             self._load_sets()
 
     def _on_rename(self):
-        """Переименовать набор"""
         row = self.list_widget.currentRow()
         if row < 0:
             return
@@ -240,7 +247,6 @@ class BlacklistSetsPopup(QWidget):
             self._load_sets()
 
     def _on_delete(self):
-        """Удалить набор"""
         row = self.list_widget.currentRow()
         if row < 0 or len(self.manager.sets) <= 1:
             return
@@ -260,7 +266,6 @@ class BlacklistSetsPopup(QWidget):
             self.set_changed.emit(self.manager.active_set_index or 0)
 
     def _input_dialog(self, title: str, label: str, default: str = "") -> tuple:
-        """Простой диалог ввода текста"""
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setModal(True)
@@ -287,7 +292,6 @@ class BlacklistSetsPopup(QWidget):
         btn_layout.addStretch()
 
         btn_cancel = QPushButton("Отмена")
-        # Исправление: задаем стиль вручную, так как secondary_button нет в Components
         btn_cancel.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
@@ -307,7 +311,6 @@ class BlacklistSetsPopup(QWidget):
         btn_layout.addWidget(btn_cancel)
 
         btn_ok = QPushButton("OK")
-        # Исправление: используем start_button (оранжевая) вместо primary_button
         btn_ok.setStyleSheet(Components.start_button())
         btn_ok.clicked.connect(dialog.accept)
         btn_ok.setDefault(True)
@@ -319,13 +322,11 @@ class BlacklistSetsPopup(QWidget):
         return line_edit.text().strip(), result == QDialog.DialogCode.Accepted
 
     def keyPressEvent(self, event):
-        """ESC закрывает окно"""
         if event.key() == Qt.Key.Key_Escape:
             self.close()
         else:
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        """Испустить сигнал при закрытии"""
         self.closed.emit()
         super().closeEvent(event)

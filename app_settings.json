@@ -1,0 +1,13 @@
+{
+  "ai_ctx_size": 8192,
+  "ai_gpu_layers": 10,
+  "ai_gpu_device": 0,
+  "ai_backend": "auto",
+  "ai_model": "google_gemma-3-4b-it-Q8_0.gguf",
+  "debug_mode": false,
+  "ai_debug": false,
+  "parser_debug": false,
+  "telegram_token": "",
+  "telegram_chat_id": "",
+  "telegram_check_interval": 60
+}

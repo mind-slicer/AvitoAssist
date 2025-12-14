@@ -1,5 +1,5 @@
 import json
-from PyQt6.QtWidgets import QTableView, QHeaderView, QTableWidgetItem, QToolTip, QApplication, QStyledItemDelegate
+from PyQt6.QtWidgets import QTableView, QHeaderView, QTableWidgetItem, QToolTip, QApplication, QStyledItemDelegate, QMessageBox
 from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QRect
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QPainter, QCursor
 from datetime import datetime, timedelta
@@ -85,29 +85,6 @@ class TitleDelegate(QStyledItemDelegate):
                     
         return super().editorEvent(event, model, option, index)
 
-class PriceItem(QTableWidgetItem):
-    def __init__(self, value: int):
-        self.value = int(value or 0)
-        formatted = f"{self.value:,}".replace(',', ' ')
-        super().__init__(formatted)
-    
-    def __lt__(self, other):
-        if isinstance(other, PriceItem):
-            return self.value < other.value
-        return super().__lt__(other)
-
-class TitleItem(QTableWidgetItem):
-    def __init__(self, title: str, link: str):
-        super().__init__(title)
-        self.title_text = title.lower()
-        self.link = link
-        self.setData(Qt.ItemDataRole.UserRole, link)
-
-    def __lt__(self, other):
-        if isinstance(other, TitleItem):
-            return self.title_text < other.title_text
-        return super().__lt__(other)
-
 class ConditionItem(QTableWidgetItem):
     def __init__(self, text: str):
         super().__init__(text)
@@ -121,38 +98,6 @@ class ConditionItem(QTableWidgetItem):
     def __lt__(self, other):
         if isinstance(other, ConditionItem):
             return self._sort_key < other._sort_key
-        return super().__lt__(other)
-
-class DateItem(QTableWidgetItem):
-    def __init__(self, text: str):
-        super().__init__(text)
-        self._sort_ts = self._parse_to_ts(text)
-
-    @staticmethod
-    def _parse_to_ts(text: str) -> datetime:
-        s = (text or "").strip().lower()
-        now = datetime.now()
-        if not s: return datetime.min
-        
-        if "сегодня" in s:
-            try:
-                time_part = s.split(" в ")[-1].strip()
-                h, m = map(int, time_part.split(":"))
-                return now.replace(hour=h, minute=m, second=0, microsecond=0)
-            except: return now
-        if "вчера" in s:
-            try:
-                time_part = s.split(" в ")[-1].strip()
-                h, m = map(int, time_part.split(":"))
-                d = now - timedelta(days=1)
-                return d.replace(hour=h, minute=m, second=0, microsecond=0)
-            except: return now - timedelta(days=1)
-        
-        return datetime.min
-
-    def __lt__(self, other):
-        if isinstance(other, DateItem):
-            return self._sort_ts < other._sort_ts
         return super().__lt__(other)
 
 class VerdictItem(QTableWidgetItem):
@@ -314,8 +259,7 @@ class ResultsTable(QTableView):
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
 
         self.proxy_model.setSortRole(Qt.ItemDataRole.EditRole)
-        self.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.proxy_model.setFilterKeyColumn(-1) 
+        self.proxy_model.setFilterKeyColumn(-1)
 
         self.setModel(self.proxy_model)
         self.model = self.source_model 
@@ -328,11 +272,8 @@ class ResultsTable(QTableView):
         self.actions_delegate = ActionsDelegate(self)
         self.title_delegate = TitleDelegate(self)
         
-        # Col 0: Actions
         self.setItemDelegateForColumn(0, self.actions_delegate)
-        # Col 3: Title (New Delegate)
         self.setItemDelegateForColumn(3, self.title_delegate)
-        # Col 8: AI (Was 7, now 8)
         self.setItemDelegateForColumn(8, self.ai_delegate)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -349,20 +290,20 @@ class ResultsTable(QTableView):
         # Настройка ширины
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(0, 70)
-        self.setColumnWidth(1, 100) # ID
-        self.setColumnWidth(2, 90)  # Price
+        self.setColumnWidth(1, 100)
+        self.setColumnWidth(2, 90)
         
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        self.setColumnWidth(3, 400) # Title
+        self.setColumnWidth(3, 400)
         
-        self.setColumnWidth(4, 70)  # Views
-        self.setColumnWidth(5, 100) # Date
-        self.setColumnWidth(6, 120) # City
+        self.setColumnWidth(4, 70)
+        self.setColumnWidth(5, 100)
+        self.setColumnWidth(6, 120)
         
-        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch) # Desc
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         
         header.setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(8, 140) # AI
+        self.setColumnWidth(8, 140)
 
         self.doubleClicked.connect(self.on_double_click)
 
@@ -411,25 +352,40 @@ class ResultsTable(QTableView):
 
     def on_double_click(self, index):
         col = index.column()
-
         source_index = self.proxy_model.mapToSource(index)
         source_row = source_index.row()
-
         item = self.source_model.get_item(source_row)
-        if not item:
-            return
+        if not item: return
 
-        # Col 3 is Title
         if col == 3:
             link = item.get('link')
-            if link:
-                QDesktopServices.openUrl(QUrl(link))
+            if link: QDesktopServices.openUrl(QUrl(link))
 
-        # Col 7 is Desc (Was 6)
         elif col == 7:
-            from PyQt6.QtWidgets import QMessageBox
             desc = item.get('description', 'Нет описания')
             QMessageBox.information(self, "Описание", desc)
+        
+        elif col == 8:
+            verdict = item.get("verdict", "UNKNOWN")
+            ai_json_str = item.get("ai_analysis", "{}")
+            
+            text_to_show = f"Вердикт: {verdict}\n\n"
+            try:
+                data = json.loads(ai_json_str)
+                pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
+                text_to_show += pretty_json
+            except:
+                text_to_show += ai_json_str
+            
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(f"Анализ AI: {verdict}")
+            msg_box.setText(f"Детальный отчет для товара {item.get('id')}")
+            msg_box.setDetailedText(text_to_show)
+            
+            msg_box.setText(text_to_show) 
+            
+            msg_box.setIcon(QMessageBox.Icon.Information)
+            msg_box.exec()
 
     def mouseMoveEvent(self, event):
         index = self.indexAt(event.pos())

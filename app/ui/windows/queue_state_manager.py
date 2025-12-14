@@ -185,6 +185,7 @@ class QueueStateManager(QObject):
                             # Merge with default state to ensure all fields exist
                             state = self._create_default_state()
                             state.update(value)
+                            state["forced_categories"] = []
                             loaded[index] = state
                     except (ValueError, TypeError):
                         continue
