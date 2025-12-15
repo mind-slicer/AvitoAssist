@@ -5,11 +5,80 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QSpinBox, QCheckBox, QComboBox,
     QGroupBox, QLineEdit, QProgressBar, QMessageBox, 
-    QWidget, QScrollArea, QFrame
+    QWidget, QScrollArea, QFrame, QToolButton, QSizePolicy, QTextBrowser
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QParallelAnimationGroup, QTimer
+from PyQt6.QtGui import QAbstractTextDocumentLayout
 from app.ui.styles import Components, Palette, Typography, Spacing
 from app.config import AI_CTX_SIZE, MODELS_DIR, DEFAULT_MODEL_NAME, BASE_APP_DIR
+
+class CollapsibleBox(QWidget):
+    """Виджет-аккордеон: Заголовок (кнопка) + Контент"""
+    toggled = pyqtSignal(bool)  # Сигнал для внешнего управления (например, скроллом)
+
+    def __init__(self, title="", parent=None, is_sub_level=False):
+        super().__init__(parent)
+        self.toggle_button = QToolButton(text=title, checkable=True, checked=False)
+        self.toggle_button.setStyleSheet(f"""
+            QToolButton {{
+                border: none;
+                background-color: transparent;
+                color: {Palette.TEXT};
+                font-weight: {'normal' if is_sub_level else 'bold'};
+                font-size: {'13px' if is_sub_level else '14px'};
+                text-align: left;
+                padding: 5px;
+            }}
+            QToolButton:hover {{ color: {Palette.PRIMARY}; }}
+            QToolButton:checked {{ color: {Palette.PRIMARY}; }}
+        """)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setArrowType(Qt.ArrowType.RightArrow)
+        self.toggle_button.clicked.connect(self.on_pressed)
+
+        self.content_area = QWidget()
+        self.content_area.setMaximumHeight(0)
+        self.content_area.setMinimumHeight(0)
+        self.content_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.animation = QPropertyAnimation(self.content_area, b"maximumHeight")
+        self.animation.setDuration(300)
+        # Важно: подключаем слот завершения анимации
+        self.animation.finished.connect(self.on_animation_finished)
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(0)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.toggle_button)
+        lay.addWidget(self.content_area)
+
+    def on_pressed(self):
+        checked = self.toggle_button.isChecked()
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        
+        if checked:
+            # ПЕРЕД открытием пересчитываем геометрию, чтобы узнать требуемый размер
+            self.content_area.updateGeometry()
+            content_height = self.content_area.layout().sizeHint().height()
+            
+            self.animation.setStartValue(0)
+            self.animation.setEndValue(content_height)
+        else:
+            # ПЕРЕД закрытием фиксируем текущую высоту (так как она может быть бесконечной)
+            self.animation.setStartValue(self.content_area.height())
+            self.animation.setEndValue(0)
+            
+        self.animation.start()
+        self.toggled.emit(checked)
+
+    def on_animation_finished(self):
+        # Если коробка открыта, снимаем ограничение по высоте.
+        # Это позволяет вложенным элементам растягивать родителя.
+        if self.toggle_button.isChecked():
+            self.content_area.setMaximumHeight(16777215) # MAX_INT (практически бесконечность)
+
+    def set_content_layout(self, layout):
+        self.content_area.setLayout(layout)
 
 class InfoBadge(QLabel):
     """Маленький значок (i) с подсказкой"""
@@ -35,6 +104,24 @@ class InfoBadge(QLabel):
                 border-color: {Palette.PRIMARY};
             }}
         """)
+
+PATCH_HISTORY = {
+    "1.0.7": """
+        <h3>🕷 Парсер</h3>
+        <ul>
+            <li>Теперь поиск корректно учитывает все выбранные категории обхода вместе с регионами.</li>
+            <li>Исправлена проблема загрузки устаревших категорий при запуске.</li>
+        </ul>
+        <h3>🎨 Интерфейс</h3>
+        <ul>
+            <li>Окно "Наборов черного списка" теперь не обрезается.</li>
+            <li>Возвращена сортировка и подсказки столбца "Вердикт ИИ".</li>
+        </ul>
+    """,
+    "1.0.6": "<ul><li>Описание изменений для версии 1.0.6 (заполнить позже)...</li></ul>",
+    "1.0.5": "<ul><li>Описание изменений для версии 1.0.5 (заполнить позже)...</li></ul>",
+    "1.0.0": "<ul><li>Релиз приложения.</li></ul>"
+}
 
 class SettingsDialog(QDialog):
     settings_changed = pyqtSignal(dict)
@@ -69,10 +156,10 @@ class SettingsDialog(QDialog):
         root_layout.addWidget(header)
 
         # 2. Область прокрутки
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(Components.scroll_area())
-        scroll.verticalScrollBar().setStyleSheet(Components.global_scrollbar())
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet(Components.scroll_area())
+        self.scroll_area.verticalScrollBar().setStyleSheet(Components.global_scrollbar())
         
         content_widget = QWidget()
         self.content_layout = QVBoxLayout(content_widget)
@@ -99,10 +186,16 @@ class SettingsDialog(QDialog):
         # Блок Система
         self.content_layout.addWidget(self._create_system_settings())
 
+        # Разделитель
+        self.content_layout.addWidget(self._create_divider())
+
+        # --- НОВАЯ СЕКЦИЯ: ИСТОРИЯ ОБНОВЛЕНИЙ ---
+        self.content_layout.addWidget(self._create_patch_notes_section())
+
         self.content_layout.addStretch()
         
-        scroll.setWidget(content_widget)
-        root_layout.addWidget(scroll)
+        self.scroll_area.setWidget(content_widget)
+        root_layout.addWidget(self.scroll_area)
 
         # 3. Нижняя панель с кнопками
         footer = QWidget()
@@ -384,6 +477,70 @@ class SettingsDialog(QDialog):
         
         layout.addWidget(danger_frame)
         
+        return container
+
+    # --- PATCH NOTES SECTION ---
+    def _create_patch_notes_section(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.SM)
+
+        # Главный "кат"
+        main_box = CollapsibleBox("📜 ИСТОРИЯ ОБНОВЛЕНИЙ", is_sub_level=False)
+        
+        # Скролл к секции при открытии
+        main_box.toggled.connect(lambda checked: 
+            QTimer.singleShot(320, lambda: self.scroll_area.ensureWidgetVisible(main_box)) 
+            if checked else None
+        )
+
+        versions_widget = QWidget()
+        versions_layout = QVBoxLayout(versions_widget)
+        versions_layout.setContentsMargins(Spacing.LG, 0, 0, 0)
+        versions_layout.setSpacing(Spacing.XS)
+
+        # --- ИЗМЕНЕНИЕ: Добавили enumerate для отслеживания индекса ---
+        for i, (version, html_content) in enumerate(PATCH_HISTORY.items()):
+            ver_box = CollapsibleBox(f"Версия {version}", is_sub_level=True)
+            
+            content_widget = QWidget()
+            content_layout = QVBoxLayout(content_widget)
+            content_layout.setContentsMargins(0, 5, 0, 15)
+            
+            browser = QTextBrowser()
+            browser.setOpenExternalLinks(True)
+            browser.setFrameShape(QFrame.Shape.NoFrame)
+            browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            browser.setStyleSheet(f"""
+                QTextBrowser {{
+                    background-color: transparent;
+                    color: {Palette.TEXT_SECONDARY};
+                    font-size: 13px;
+                    border: none;
+                }}
+            """)
+            browser.setHtml(html_content)
+            
+            # Расчет высоты
+            doc = browser.document()
+            doc.setTextWidth(500)
+            h = doc.documentLayout().documentSize().height() + 10 
+            browser.setFixedHeight(int(h))
+            
+            content_layout.addWidget(browser)
+            ver_box.set_content_layout(content_layout)
+            
+            # --- НОВАЯ ЛОГИКА: Если это первый элемент (i==0), открываем его ---
+            if i == 0:
+                ver_box.toggle_button.setChecked(True)
+                ver_box.on_pressed() # Программно вызываем открытие
+
+            versions_layout.addWidget(ver_box)
+
+        main_box.set_content_layout(versions_layout)
+        layout.addWidget(main_box)
+
         return container
 
     # --- LOGIC ---

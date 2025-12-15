@@ -1,7 +1,7 @@
 {
   "0": {
     "search_tags": [
-      "материнская плата"
+      "процессор"
     ],
     "ignore_tags": [],
     "min_price": 0,
@@ -29,7 +29,7 @@
     "original_index": 0,
     "debug_mode": false,
     "ai_debug_mode": false,
-    "context_table": "E:\\wip2\\results\\avito_search_20251215_144706.json",
+    "context_table": "E:\\wip2\\results\\avito_search_20251215_171130.json",
     "ai_offset": 0
   },
   "1": {
@@ -53,7 +53,7 @@
     "use_queue_manager": false,
     "use_blacklist": false,
     "sort_type": "date",
-    "queue_enabled": true,
+    "queue_enabled": false,
     "rewrite_duplicates": false,
     "skip_duplicates": false,
     "allow_rewrite_duplicates": false,
@@ -67,14 +67,14 @@
   },
   "2": {
     "search_tags": [
-      "монитор aorus"
+      "видеокарта"
     ],
     "ignore_tags": [],
     "min_price": 0,
     "max_price": 0,
     "search_mode": "full",
     "ai_criteria": "",
-    "include_ai": false,
+    "include_ai": true,
     "store_in_memory": false,
     "max_pages": 0,
     "max_items": 30,
@@ -95,7 +95,7 @@
     "original_index": 2,
     "debug_mode": false,
     "ai_debug_mode": false,
-    "context_table": "E:\\wip2\\results\\avito_search_20251215_144706.json",
+    "context_table": "E:\\wip2\\results\\avito_search_20251215_171130.json",
     "ai_offset": 0
   }
 }

@@ -546,13 +546,21 @@ class ItemParser:
                     parts = [p for p in href.split('/') if p and p not in ['profile', 'user', 'brands', 'companies']]
                     if parts:
                         seller_id = parts[-1].split('?')[0]
-             
+            
+            condition = "Б/У"
+            t_lower = title.lower() if title else ""
+            if any(x in t_lower for x in ["новый", "новая", "новое", "new", "запечатан", "не вскрывал"]):
+                condition = "Новое"
+            elif any(x in t_lower for x in ["запчаст", "разбор", "дефект", "сломан", "не рабоч", "под восстановление"]):
+                condition = "На запчасти"
+
             views = 0
         
             result = {
                 'id': ad_id, 'link': link, 'price': price,
                 'title': title, 'date_text': date_text,
                 'description': description, 'city': city, 'condition': 'неизвестно',
+                'condition': condition,
                 'seller_id': seller_id,
                 'views': views,
                 'parsed_at': datetime.now().isoformat()
@@ -1018,7 +1026,11 @@ class AvitoParser(QObject):
                 params_el = driver.find_element(By.CSS_SELECTOR, "[data-marker='item-view/item-params']")
                 for line in params_el.text.split('\n'):
                     if "Состояние" in line:
-                        details['condition'] = line.replace("Состояние", "").replace(":", "").strip()
+                        raw_cond = line.replace("Состояние", "").replace(":", "").strip()
+                        if raw_cond.lower() in ["б/у", "б/y", "старое"]:
+                            details['condition'] = "Б/У"
+                        else:
+                            details['condition'] = raw_cond.capitalize()
                         break
             except: pass
         

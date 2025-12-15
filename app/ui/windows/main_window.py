@@ -140,8 +140,6 @@ class MainWindow(QWidget):
                 self.controller.chunk_manager
             )
 
-        QTimer.singleShot(1000, self._check_first_run)
-
     def init_ui(self):
         self.setWindowTitle("Avito Assist")
         self.setStyleSheet(Components.main_window())
@@ -377,18 +375,6 @@ class MainWindow(QWidget):
         self.analytics_widget.send_message_signal.connect(self.on_chat_message_sent)
         self.controller.ai_chat_reply.connect(self.analytics_widget.on_ai_reply)
         self.controller.ai_result_ready.connect(self.handle_ai_result)
-
-    def _check_first_run(self):
-        """Проверяет версию и показывает патч-нот"""
-        CURRENT_VERSION = "1.0.7" # Менять это число при новых обновлениях!
-        
-        settings = QSettings("", "AvitoAssist") # Можно заменить на свои названия
-        last_version = settings.value("patch_note_version", "1.0.6")
-        
-        if last_version != CURRENT_VERSION:
-            dlg = PatchNoteDialog(self)
-            dlg.exec()
-            settings.setValue("patch_note_version", CURRENT_VERSION)
 
     def _on_sequence_finished_ui(self):
         logger.info("Последовательность полностью завершена...")
@@ -1774,133 +1760,3 @@ class MainWindow(QWidget):
             self.controller.cleanup()
         finally:
             event.accept()
-
-class PatchNoteDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Что нового?")
-        self.setFixedSize(650, 750) # Чуть увеличили размер
-        
-        self.setStyleSheet(f"""
-            QDialog {{ 
-                background-color: {Palette.BG_DARK}; 
-            }}
-            
-            QLabel {{ 
-                color: {Palette.TEXT}; 
-            }}
-            
-            QTextBrowser {{ 
-                background-color: {Palette.BG_LIGHT}; 
-                border: 1px solid {Palette.BORDER_PRIMARY};
-                border-radius: 8px;
-                padding: 20px;
-                font-size: 14px;
-                line-height: 1.5;
-                color: {Palette.TEXT};
-            }}
-            
-            /* --- СТИЛИЗАЦИЯ СКРОЛЛА --- */
-            QScrollBar:vertical {{
-                border: none;
-                background-color: {Palette.BG_LIGHT};
-                width: 10px;
-                margin: 0px;
-                border-radius: 0px;
-            }}
-            
-            QScrollBar::handle:vertical {{
-                background-color: {Palette.BORDER_PRIMARY}; 
-                min-height: 20px;
-                border-radius: 5px;
-            }}
-            
-            QScrollBar::handle:vertical:hover {{
-                background-color: {Palette.PRIMARY};
-            }}
-            
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-                subcontrol-position: bottom;
-                subcontrol-origin: margin;
-            }}
-            
-            QScrollBar::sub-line:vertical {{
-                height: 0px;
-                subcontrol-position: top;
-                subcontrol-origin: margin;
-            }}
-            
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: none;
-            }}
-            /* --------------------------- */
-
-            QPushButton {{
-                background-color: {Palette.PRIMARY};
-                color: white;
-                border: none;
-                padding: 12px 25px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }}
-            QPushButton:hover {{ 
-                background-color: {Palette.PRIMARY_DARK}; 
-            }}
-            QPushButton:pressed {{
-                background-color: {Palette.BG_DARK};
-            }}
-        """)
-        
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(25, 25, 25, 25)
-        layout.setSpacing(20)
-        
-        # Заголовок
-        title = QLabel("🚀 Версия 1.0.7")
-        title.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {Palette.PRIMARY};")
-        layout.addWidget(title)
-        
-        # Контент (HTML)
-        content = QTextBrowser()
-        content.setOpenExternalLinks(True)
-        # Убираем рамку самого виджета, так как она задана в CSS
-        content.setFrameShape(QFrame.Shape.NoFrame)
-    
-        content.setHtml("""
-        <style>
-            h3 { color: #81A1C1; margin-top: 20px; font-weight: bold; }
-            li { margin-bottom: 6px; }
-            strong { color: #ECEFF4; }
-            .highlight { color: #A3BE8C; font-weight: bold; }
-            .warning { color: #BF616A; }
-        </style>
-        
-        <h3>🕷 Парсер</h3>
-        <ul>
-            <li>Теперь поиск корректно учитывает все выбранные категории обхода вместе с указанными регионами (Москва или все регионы), что дает
-                требуемое количество объявлений, за вычетом отфильтрованных и дубликатов.</li>
-            <li>Исправлена неочевидная проблема, когда приложение пыталось загрузить устаревшие категории поиска при своем запуске.</li>
-        </ul>
-
-        <h3>🎨 Интерфейс</h3>
-        <ul>
-            <li>Окно <strong>Наборов черного списка</strong> теперь открывается и правильно позиционируется независимо от главного окна, поэтому более
-                        не будет обрезаться.</li>
-            <li>Возвращена сортировка столбца <strong>Вердикт ИИ</strong>: вы можете сортировать от лучшего предложения - к худшему и наоборот.
-                Также возвратилась подсказка к элементу этого столбца, чтобы вы могли прочитать краткий вердикт нейросети и оценить его важность
-                (помимо наведения курсора с подскаской, поддерживается ЛКМ-двойной клик для полного описания элемента).</li>
-        </ul>
-        """)
-        layout.addWidget(content)
-        
-        # Кнопка ОК
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn_ok = QPushButton("Отлично, к работе!")
-        btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_ok.clicked.connect(self.accept)
-        btn_layout.addWidget(btn_ok)
-        
-        layout.addLayout(btn_layout)

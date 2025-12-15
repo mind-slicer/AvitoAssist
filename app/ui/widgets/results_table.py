@@ -274,7 +274,7 @@ class ResultsTable(QTableView):
         
         self.setItemDelegateForColumn(0, self.actions_delegate)
         self.setItemDelegateForColumn(3, self.title_delegate)
-        self.setItemDelegateForColumn(8, self.ai_delegate)
+        self.setItemDelegateForColumn(9, self.ai_delegate)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.on_row_context_menu)
@@ -287,7 +287,6 @@ class ResultsTable(QTableView):
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         
-        # Настройка ширины
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(0, 70)
         self.setColumnWidth(1, 100)
@@ -298,12 +297,13 @@ class ResultsTable(QTableView):
         
         self.setColumnWidth(4, 70)
         self.setColumnWidth(5, 100)
-        self.setColumnWidth(6, 120)
+        self.setColumnWidth(6, 100)
+        self.setColumnWidth(7, 120)
         
-        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         
-        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(8, 140)
+        header.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(9, 140)
 
         self.doubleClicked.connect(self.on_double_click)
 
@@ -361,11 +361,11 @@ class ResultsTable(QTableView):
             link = item.get('link')
             if link: QDesktopServices.openUrl(QUrl(link))
 
-        elif col == 7:
+        elif col == 8:
             desc = item.get('description', 'Нет описания')
             QMessageBox.information(self, "Описание", desc)
         
-        elif col == 8:
+        elif col == 9:
             verdict = item.get("verdict", "UNKNOWN")
             ai_json_str = item.get("ai_analysis", "{}")
             
@@ -381,9 +381,7 @@ class ResultsTable(QTableView):
             msg_box.setWindowTitle(f"Анализ AI: {verdict}")
             msg_box.setText(f"Детальный отчет для товара {item.get('id')}")
             msg_box.setDetailedText(text_to_show)
-            
             msg_box.setText(text_to_show) 
-            
             msg_box.setIcon(QMessageBox.Icon.Information)
             msg_box.exec()
 
