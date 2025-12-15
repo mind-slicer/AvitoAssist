@@ -4,7 +4,8 @@ import time
 from typing import List, Dict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget,
-    QSplitter, QScrollArea, QFrame, QApplication, QMessageBox, QLabel, QDialog, QTextBrowser
+    QSplitter, QScrollArea, QFrame, QApplication, QMessageBox,
+    QLabel, QDialog, QTextBrowser, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QCursor
@@ -26,7 +27,64 @@ from app.ui.widgets.ai_stats_panel import AIStatsPanel
 from app.ui.widgets.progress_and_logs_panel import ProgressAndLogsPanel
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.ui.widgets.rag_stats_panel import RAGStatsPanel
+from app.ui.widgets.category_selection_dialog import CategorySelectionDialog
 from app.core.log_manager import logger
+
+class ScanPromptDialog(QDialog):
+    def __init__(self, queue_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Проверка категорий")
+        self.setFixedWidth(500)
+        self.setStyleSheet(Components.dialog())
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(Spacing.MD)
+        layout.setContentsMargins(Spacing.LG, Spacing.LG, Spacing.LG, Spacing.LG)
+        
+        # Иконка или заголовок
+        title = QLabel(f"Очередь: {queue_name}")
+        title.setStyleSheet(Components.section_title())
+        layout.addWidget(title)
+        
+        # Сообщение
+        msg = QLabel(
+            f"Обнаружено отсутствие отсканированных категорий поиска для очереди <b>{queue_name}</b>.<br><br>"
+            "Это можно сделать сейчас, чтобы улучшить результаты поиска нужных объявлений, "
+            "после чего парсер сразу начнет работу.<br><br>"
+            "Либо процесс поиска будет запущен по одной «авто-категории», который выберет "
+            "главную найденную категорию для поискового запроса."
+        )
+        msg.setWordWrap(True)
+        msg.setStyleSheet(f"color: {Palette.TEXT}; font-size: 14px; line-height: 1.4;")
+        layout.addWidget(msg)
+        
+        # Кнопки
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(Spacing.SM)
+        
+        self.btn_scan = QPushButton("Отсканировать и выбрать категории")
+        self.btn_scan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_scan.setStyleSheet(Components.start_button()) # Зеленая/Яркая кнопка
+        self.btn_scan.setFixedHeight(45)
+        
+        self.btn_auto = QPushButton("Продолжить с авто-категорией")
+        self.btn_auto.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_auto.setStyleSheet(Components.nav_button()) # Нейтральная кнопка
+        self.btn_auto.setFixedHeight(40)
+        
+        self.btn_cancel = QPushButton("Отмена")
+        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cancel.setStyleSheet(Components.stop_button()) # Красная/Серая кнопка
+        
+        btn_layout.addWidget(self.btn_scan)
+        btn_layout.addWidget(self.btn_auto)
+        btn_layout.addWidget(self.btn_cancel)
+        
+        layout.addLayout(btn_layout)
+        
+        self.btn_scan.clicked.connect(lambda: self.done(10))
+        self.btn_auto.clicked.connect(lambda: self.done(20))
+        self.btn_cancel.clicked.connect(self.reject)
 
 class MainWindow(QWidget):
     def __init__(self):
@@ -43,6 +101,7 @@ class MainWindow(QWidget):
         self.current_results = []
         self.current_json_file = None
         self.is_sequence_running = False
+        self._is_programmatic_update = False
         self.cnt_parser = 0
         self.cnt_neuro = 0
         self.parser_progress_timer = None
@@ -60,7 +119,9 @@ class MainWindow(QWidget):
         self._start_timers()
         self.rag_rebuild_timer = QTimer(self)
         self.rag_rebuild_timer.timeout.connect(self.rebuild_rag_cache)
-        self.rag_rebuild_timer.start(600000)  # 10 минут = 600000 мс
+        self.rag_rebuild_timer.start(600000)
+        self._validation_queue = []
+        self._validating_index = None
         QTimer.singleShot(100, self._check_ai_availability)
         QTimer.singleShot(0, self.apply_initial_geometry)
         self._load_queue_to_ui(0)
@@ -331,7 +392,12 @@ class MainWindow(QWidget):
 
     def _on_sequence_finished_ui(self):
         logger.info("Последовательность полностью завершена...")
-        # Принудительно останавливаем любой бар (и primary, и обычный)
+        self.queue_manager.clear_scanned_categories_bulk()
+
+        if hasattr(self, 'search_widget'):
+            self.search_widget.set_scanned_categories([])
+            self.search_widget.set_forced_categories([])
+
         self.progress_panel.set_finished_state()
         self.controls_widget.set_ui_locked(False)
 
@@ -342,37 +408,36 @@ class MainWindow(QWidget):
 
     def _on_table_closed(self):
         logger.info("Таблица закрыта пользователем...")
-        # Никакой логики контекста - просто UI действие
 
     def _save_current_queue_state(self):
+        if getattr(self, '_is_programmatic_update', False):
+            return
+        
         idx = self.queue_manager.get_current_index()
         state = self.controls_widget.get_parameters()
         state.update({
             "search_tags": self.search_widget.get_search_tags(),
             "ignore_tags": self.search_widget.get_ignore_tags(),
-            "forced_categories": self.search_widget.get_forced_categories()
+            "forced_categories": self.search_widget.get_forced_categories(),
+            "scanned_categories": self.search_widget.get_scanned_categories()
         })
         self.queue_manager.set_state(state, idx)
     
     def _sync_queues_with_ui(self):
-        """Оставляет в менеджере только те очереди, что реально есть в списке UI."""
         if not hasattr(self.controls_widget, "queue_manager_widget"):
             return
 
         ui_mgr = self.controls_widget.queue_manager_widget
-        ui_count = ui_mgr.get_all_queues_count()  # количество строк в QListWidget
+        ui_count = ui_mgr.get_all_queues_count()
 
-        # 1) Гарантируем, что для каждого индекса в UI есть состояние
         for idx in range(ui_count):
-            self.queue_manager.get_state(idx)  # _ensure_queue_exists внутри
+            self.queue_manager.get_state(idx)
 
-        # 2) Удаляем все очереди с индексами >= ui_count (их уже нет в UI)
         for idx in list(self.queue_manager.get_all_queue_indices()):
             if idx >= ui_count:
                 self.queue_manager.delete_queue(idx)
 
     def _restore_queues_from_state(self):
-        """Досоздаёт строки очередей в UI под все сохранённые индексы."""
         if not hasattr(self.controls_widget, "queue_manager_widget"):
             return
 
@@ -393,24 +458,46 @@ class MainWindow(QWidget):
             ui_mgr.set_queue_checked(idx, is_enabled)
 
     def _load_queue_to_ui(self, index: int):
-        self.queue_manager.set_current_index(index)
-        state = self.queue_manager.get_state(index)
+        self._is_programmatic_update = True
+        try:
+            self.queue_manager.set_current_index(index)
+            state = self.queue_manager.get_state(index)
 
-        self.search_widget.set_search_tags(state.get("search_tags", []))
-        self.search_widget.set_ignore_tags(state.get("ignore_tags", []))
+            self.search_widget.set_search_tags(state.get("search_tags", []))
+            self.search_widget.set_ignore_tags(state.get("ignore_tags", []))
 
-        forced_cats = state.get("forced_categories", [])
+            scanned_cats = state.get("scanned_categories", [])
+            if scanned_cats:
+                self.search_widget.set_scanned_categories(scanned_cats)
 
-        self.search_widget.set_forced_categories(forced_cats)
+            forced_cats = state.get("forced_categories", [])
+            self.search_widget.set_forced_categories(forced_cats)
 
-        self.controls_widget.set_parameters(state)
-        self._update_cost_calculation()
+            self.controls_widget.set_parameters(state)
+            self._update_cost_calculation()
 
-        is_enabled = state.get("queue_enabled", True)
+            is_enabled = state.get("queue_enabled", True)
+            if hasattr(self.controls_widget, 'queue_manager_widget'):
+                self.controls_widget.queue_manager_widget.set_queue_checked(index, is_enabled)
+
+            logger.info(f"Загружена очередь #{index + 1}...")
+            
+        finally:
+            self._is_programmatic_update = False
+
+    def _safe_switch_queue_ui(self, target_index: int):
+        self.queue_manager.set_current_index(target_index)
+
         if hasattr(self.controls_widget, 'queue_manager_widget'):
-            self.controls_widget.queue_manager_widget.set_queue_checked(index, is_enabled)
+            ui_mgr = self.controls_widget.queue_manager_widget
+            was_blocked = ui_mgr.list_widget.signalsBlocked()
+            ui_mgr.list_widget.blockSignals(True)
+            try:
+                ui_mgr.set_current_queue(target_index)
+            finally:
+                ui_mgr.list_widget.blockSignals(was_blocked)
 
-        logger.info(f"Загружена очередь #{index + 1}...")
+        self._load_queue_to_ui(target_index)
 
     def _on_queue_changed(self, new_index: int):
         self._save_current_queue_state()
@@ -419,7 +506,6 @@ class MainWindow(QWidget):
     def _on_queue_toggled(self, index: int, is_checked: bool):
         self.queue_manager.update_state({"queue_enabled": is_checked}, index)
         
-        # Логируем действие
         status = "включена ✓" if is_checked else "отключена ✗"
         logger.info(f"Очередь #{index + 1} {status}...")
 
@@ -429,35 +515,85 @@ class MainWindow(QWidget):
     def _on_start_search(self):
         self._save_current_queue_state()
         
-        # Собираем только ВКЛЮЧЕННЫЕ очереди
+        all_indices = self.queue_manager.get_all_queue_indices()
+        self._validation_queue = []
+        
+        for idx in all_indices:
+            state = self.queue_manager.get_state(idx)
+            if state.get("queue_enabled", True):
+                tags = state.get("search_tags", [])
+                forced = state.get("forced_categories", [])
+                
+                if tags and not forced:
+                    self._validation_queue.append(idx)
+
+        if self._validation_queue:
+            self.controls_widget.set_ui_locked(True)
+            self._process_next_validation_step()
+        else:
+            self._finalize_and_start_search()
+
+    def _process_next_validation_step(self):
+        if not self._validation_queue:
+            self._validating_index = None
+            self._finalize_and_start_search()
+            return
+
+        idx = self._validation_queue.pop(0)
+        self._validating_index = idx
+        
+        queue_name = f"#{idx + 1}"
+        state = self.queue_manager.get_state(idx)
+        tags = state.get("search_tags", [])
+        if tags:
+            tags_str = ", ".join(tags[:2])
+            if len(tags) > 2: tags_str += "..."
+            queue_name += f" ({tags_str})"
+
+        dlg = ScanPromptDialog(queue_name, self)
+        res = dlg.exec()
+        
+        if res == 10:
+            logger.info(f"Запуск сканирования категорий для очереди {queue_name}...")
+            self.controller.scan_categories(tags)
+            
+        elif res == 20:
+            logger.info(f"Очередь {queue_name}: выбран авто-режим категорий.")
+            self._validating_index = None
+            self._process_next_validation_step()
+            
+        else:
+            logger.info("Запуск отменен пользователем.")
+            self._validation_queue.clear()
+            self._validating_index = None
+            self.controls_widget.set_ui_locked(False)
+
+    def _finalize_and_start_search(self):
         all_indices = self.queue_manager.get_all_queue_indices()
         active_configs = []
         
         for idx in all_indices:
             state = self.queue_manager.get_state(idx)
             if state.get("queue_enabled", True):
-                # Валидация тегов
                 if not state.get("search_tags"):
                     logger.warning(f"Очередь #{idx+1} пропущена: нет тегов...")
                     continue
-                # Добавляем оригинальный индекс очереди для корректного переключения UI
                 state['original_index'] = idx
                 active_configs.append(state)
         
         if not active_configs:
+            self.controls_widget.set_ui_locked(False)
             QMessageBox.warning(self, "Ошибка", "Нет активных очередей с тегами для поиска!")
             return
 
         self.is_sequence_running = True
         self.controls_widget.set_ui_locked(True)
         
-        # Берем режим поиска из первой активной очереди (или текущей, для UI)
         self.current_search_mode = active_configs[0].get("search_mode", "full")
         self.progress_panel.set_parser_mode(self.current_search_mode)
         self.cnt_parser = 0
         self.cnt_neuro = 0
         
-        # Подготовка глобального файла, если разделение выключено
         first_config = active_configs[0]
         split_results = first_config.get("split_results", False)
         
@@ -474,7 +610,6 @@ class MainWindow(QWidget):
         
         base_count = len(self.current_results or [])
 
-        # Конфигурируем очереди
         for cfg in active_configs:
             cfg['debug_mode'] = self.app_settings.get('debug_mode', False)
             cfg['ai_debug_mode'] = self.app_settings.get('ai_debug', False)
@@ -486,36 +621,26 @@ class MainWindow(QWidget):
 
             cfg['ai_offset'] = base_count
         
-        # Переключаем UI на первую активную очередь
         if active_configs:
             first_idx = active_configs[0]['original_index']
-            self.queue_manager.set_current_index(first_idx)
-            if hasattr(self.controls_widget, 'queue_manager_widget'):
-                self.controls_widget.queue_manager_widget.set_current_queue(first_idx)
-            self._load_queue_to_ui(first_idx)
+            self._safe_switch_queue_ui(first_idx)
 
         self.progress_panel.set_parser_mode(self.current_search_mode)
-
         self.controller.start_sequence(active_configs)
         logger.info(f"Запуск {len(active_configs)} очередей...")
 
     def _on_stop_search(self):
-        # 1. Сообщаем контроллеру об остановке
         self.controller.request_soft_stop()
         logger.info(f"Остановка по запросу пользователя...")
         
-        # 2. Визуально блокируем кнопку стоп, чтобы не тыкали много раз
         if hasattr(self.controls_widget, 'btn_stop'):
             self.controls_widget.stop_button.setEnabled(False)
             self.controls_widget.stop_button.setText("Останавливаемся...")
 
-        # 3. Принудительно сбрасываем флаг последовательности
         self.is_sequence_running = False
         if self.controller.queue_state:
             self.controller.queue_state.is_sequence_running = False
 
-        # 4. Создаем "страховочный" таймер. 
-        # Если через 2 секунды штатный сигнал finished не придет, мы сбросим UI вручную.
         QTimer.singleShot(2000, self._force_ui_reset)
 
     def _force_ui_reset(self):
@@ -633,9 +758,7 @@ class MainWindow(QWidget):
             original_next_idx = next_config.get('original_index', next_idx)
             
             # Переключаем UI
-            self.queue_manager.set_current_index(original_next_idx)
-            if hasattr(self.controls_widget, 'queue_manager_widget'):
-                self.controls_widget.queue_manager_widget.set_current_queue(original_next_idx)
+            self._safe_switch_queue_ui(original_next_idx)
             
             # Загружаем настройки, чтобы пользователь видел, что выполняется
             self._load_queue_to_ui(original_next_idx)
@@ -1042,6 +1165,37 @@ class MainWindow(QWidget):
             self.analytics_widget.tabs.setCurrentIndex(0)
 
     def _on_scan_finished(self, categories):
+        if self._validating_index is not None:
+            logger.info(f"Категории получены. Открываем выбор для очереди #{self._validating_index + 1}")
+            
+            state = self.queue_manager.get_state(self._validating_index)
+            current_forced = state.get("forced_categories", [])
+            
+            def on_clear():
+                 self.queue_manager.update_state({"forced_categories": []}, self._validating_index)
+
+            dlg = CategorySelectionDialog(categories, self, current_forced, on_clear)
+            if dlg.exec():
+                selected = dlg.get_selected()
+                self.queue_manager.update_state({
+                    "forced_categories": selected,
+                    "scanned_categories": categories
+                }, self._validating_index)
+                logger.info(f"Для очереди #{self._validating_index + 1} сохранено {len(selected)} категорий.")
+                
+                if self.queue_manager.get_current_index() == self._validating_index:
+                     self.search_widget.set_forced_categories(selected)
+                     self._update_cost_calculation()
+
+                self._validating_index = None
+                self._process_next_validation_step()
+            else:
+                logger.info("Выбор категорий отменен. Запуск остановлен.")
+                self._validation_queue.clear()
+                self._validating_index = None
+                self.controls_widget.set_ui_locked(False)
+            return
+
         self.search_widget.set_scanned_categories(categories)
         logger.info(f"Найдено {len(categories)} категорий...")
 

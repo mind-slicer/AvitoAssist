@@ -319,16 +319,17 @@ class ParserController(QObject):
 
     def cleanup_worker(self):
         if self.worker:
-            self.worker.request_stop()
+            if self.worker_thread and self.worker_thread.isRunning():
+                self.worker.request_stop()
+            
             self.worker.deleteLater()
             self.worker = None
         
         if self.worker_thread:
             if self.worker_thread.isRunning():
                 self.worker_thread.quit()
-                self.worker_thread.wait(500) # Ждем полсекунды
+                self.worker_thread.wait(500)
             
-            # Если все еще жив - в зомби его
             if self.worker_thread.isRunning():
                 old_thread = self.worker_thread
                 self.zombie_threads.append(old_thread)

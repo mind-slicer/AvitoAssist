@@ -113,6 +113,7 @@ class QueueStateManager(QObject):
             "all_regions": False,
             "filter_defects": False,
             "forced_categories": [],
+            "scanned_categories": [],
             "split_ads_count": 0,
             "use_queue_manager": False,
             "use_blacklist": False,
@@ -135,7 +136,6 @@ class QueueStateManager(QObject):
         if queue_index in self.queues_data:
             del self.queues_data[queue_index]
     
-        # Переиндексация: всё, что было после удалённого индекса, сдвигаем на -1
         new_data: Dict[int, Dict[str, Any]] = {}
         for old_idx in sorted(self.queues_data.keys()):
             new_idx = old_idx if old_idx < queue_index else old_idx - 1
@@ -156,6 +156,18 @@ class QueueStateManager(QObject):
             self.queues_data[to_index] = self.queues_data[from_index].copy()
             self.state_saved.emit(to_index)
     
+    def clear_scanned_categories_bulk(self):
+        changed = False
+        for idx, state in self.queues_data.items():
+            if state.get("scanned_categories"):
+                state["scanned_categories"] = []
+                changed = True
+        
+        if changed:
+            self._save_all_queues()
+            if self.current_queue_index in self.queues_data:
+                pass
+
     # ============ Persistence ============
     
     def _queues_file_path(self) -> str:

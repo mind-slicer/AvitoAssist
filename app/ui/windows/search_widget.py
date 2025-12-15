@@ -183,6 +183,9 @@ class SearchWidget(QWidget):
         self.cached_forced_categories = []
         self._emit_categories_changed()
 
+    def get_scanned_categories(self) -> List[dict]:
+        return self.cached_scanned_categories
+
     def set_scanned_categories(self, categories: List[dict]):
         """
         Принимает список словарей категорий и автоматически выбирает одну 'ГЛАВНУЮ' (или первую).
