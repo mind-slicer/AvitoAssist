@@ -1,0 +1,24 @@
+{
+  "ТЕСТ": {
+    "type": "folder",
+    "name": "КОРЕНЬ НАБОРА",
+    "children": [
+      {
+        "type": "folder",
+        "name": "GPU",
+        "children": [
+          {
+            "type": "folder",
+            "name": "RTX 3XXX",
+            "children": [
+              {
+                "type": "tag",
+                "value": "ращ"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

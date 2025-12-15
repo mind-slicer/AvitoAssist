@@ -1,16 +1,16 @@
 import os
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
-    QPushButton, QMessageBox, QSizePolicy, QFrame, QLabel, QMenu
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QMessageBox,
+    QSizePolicy, QFrame, QLabel, QMenu, QWidgetAction
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from app.ui.widgets.tags import TagsInput
 from app.ui.widgets.category_selection_dialog import CategorySelectionDialog
 from app.ui.widgets.tag_presets_dialog import TagPresetsDialog
-from app.ui.styles import Components, Palette, Spacing, Typography
+from app.ui.styles import Components, Palette, Spacing
 from app.config import BASE_APP_DIR
 
 class SearchWidget(QWidget):
@@ -19,6 +19,7 @@ class SearchWidget(QWidget):
     scan_categories_requested = pyqtSignal(list)
     categories_selected = pyqtSignal(list)
     categories_changed = pyqtSignal()
+    apply_tags_to_new_queue_requested = pyqtSignal(list, bool)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -26,17 +27,14 @@ class SearchWidget(QWidget):
         self.search_mode_widget = SearchModeWidget()
         self.cached_scanned_categories: List[dict] = [] # Теперь точно List[dict]
         self.cached_forced_categories: List[str] = []
-        self.tag_presets: Dict[str, List[str]] = {}
-        self.ignore_tag_presets: Dict[str, List[str]] = {}
+        self.tag_presets: Dict[str, dict] = {}
+        self.ignore_tag_presets: Dict[str, dict] = {}
         self._current_category_count = 1
         self._load_tag_presets()
         self._load_ignore_tag_presets()
         self._init_ui()
         self._connect_signals()
         self._emit_categories_changed()
-    
-    # ... (Методы _init_ui, attach_ai_stats, _create_search_group, _create_ignore_group, _create_tool_btn, _show_tooltip, _connect_signals
-    #      остаются БЕЗ ИЗМЕНЕНИЙ. Копируй их из предыдущего файла)
     
     def _init_ui(self):
         root_layout = QHBoxLayout(self)
@@ -224,35 +222,180 @@ class SearchWidget(QWidget):
 
     def get_category_count(self) -> int:
         return self._current_category_count
-
-    # ... (Остальные методы: _on_tag_presets_clicked, _on_ignore_tag_presets_clicked, 
-    #      _show_presets_menu, _open_tag_presets_editor, _load/save json...)
-    # Копируй их без изменений
     
     def _on_tag_presets_clicked(self):
-        self._show_presets_menu(self.btn_presets, self.tag_presets, self.search_tags_input, is_ignore=False)
+        self._show_cross_presets_menu(self.btn_presets, primary_is_ignore=False)
 
     def _on_ignore_tag_presets_clicked(self):
-        self._show_presets_menu(self.btn_presets_ignore, self.ignore_tag_presets, self.ignore_tags_input, is_ignore=True)
+        self._show_cross_presets_menu(self.btn_presets_ignore, primary_is_ignore=True)
 
-    def _show_presets_menu(self, btn, presets_dict, input_widget, is_ignore):
+    def _show_cross_presets_menu(self, btn, primary_is_ignore: bool):
         menu = QMenu(self)
-        menu.setStyleSheet(f"QMenu {{ background-color: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border: 1px solid {Palette.BORDER_SOFT}; }}")
-        for name in sorted(presets_dict.keys()):
-            action = menu.addAction(f"📂 {name}")
-            action.setData(name)
-        if presets_dict: menu.addSeparator()
-        act_manage = menu.addAction("⚙ Управление пресетами...")
-        selected_action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        
-        if not selected_action: return
-        if selected_action == act_manage:
-            if is_ignore: self._open_ignore_tag_presets_editor()
-            else: self._open_tag_presets_editor()
+        menu.setStyleSheet(
+            f"QMenu {{ background-color: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border: 1px solid {Palette.BORDER_SOFT}; }}"
+        )
+
+        action_payload = {}
+
+        def _safe_add_single_tag(tag: str, target_input, target_is_ignore: bool):
+            tag = str(tag or "").strip()
+            if not tag:
+                return
+
+            # конфликт между полями (как в твоих validator’ах, но для клика из меню)
+            other_input = self.search_tags_input if target_is_ignore else self.ignore_tags_input
+            if tag in (other_input.get_tags() or []):
+                self._show_tooltip(target_input, f"'{tag}' уже в соседнем поле!")
+                return
+
+            cur = target_input.get_tags() or []
+            if tag in cur:
+                return
+
+            target_input.set_tags(cur + [tag])
+
+        def _add_disabled_line(m: QMenu, text: str):
+            a = m.addAction(text)
+            a.setEnabled(False)
+            return a
+
+        def _add_folder_preview(m: QMenu, folder_node: dict, target_input, target_is_ignore: bool):
+            folder_tags = self._collect_folder_only_tags(folder_node)  # только текущая папка
+            m.addSeparator()
+
+            if not folder_tags:
+                _add_disabled_line(m, " (нет тегов в папке)")
+                m.addSeparator()
+                return
+
+            max_show = 10
+            for t in folder_tags[:max_show]:
+                wa = QWidgetAction(m)
+                btn = QPushButton(f"🏷 {t}")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setFlat(True)
+                btn.setStyleSheet(
+                    f"QPushButton {{ color: {Palette.TEXT}; background: transparent; padding: 4px 8px; text-align: left; }}"
+                    f"QPushButton:hover {{ background-color: {Palette.BG_DARK_3}; }}"
+                )
+                btn.clicked.connect(lambda _, tag=t: _safe_add_single_tag(tag, target_input, target_is_ignore))
+                wa.setDefaultWidget(btn)
+                m.addAction(wa)
+
+            if len(folder_tags) > max_show:
+                _add_disabled_line(m, f"… ещё {len(folder_tags) - max_show}")
+
+            m.addSeparator()
+
+        def _add_section(
+            *,
+            title: str,
+            presets_dict: dict,
+            target_input,
+            target_is_ignore: bool,
+        ):
+            _add_disabled_line(menu, f"── {title} ──")
+
+            def add_folder_submenu(parent_menu: QMenu, preset_name: str, folder_node: dict):
+                for ch in (folder_node.get("children") or []):
+                    if self._is_folder_node(ch):
+                        sub = parent_menu.addMenu(f"📁 {ch.get('name', '')}")
+
+                        act_apply_folder = sub.addAction("✅ Применить папку")
+                        act_apply_folder_newq = sub.addAction("➕ Применить папку к новой очереди")
+
+                        action_payload[act_apply_folder] = ("folder", preset_name, ch, target_input, target_is_ignore)
+                        action_payload[act_apply_folder_newq] = ("folder_new_queue", preset_name, ch, target_input, target_is_ignore)
+
+                        _add_folder_preview(sub, ch, target_input, target_is_ignore)
+                        add_folder_submenu(sub, preset_name, ch)
+
+            # Корни наборов
+            for preset_name in sorted((presets_dict or {}).keys()):
+                root = self._normalize_preset_value_to_root_folder(presets_dict.get(preset_name))
+
+                act_root = menu.addAction(f"📂 {preset_name}")
+                action_payload[act_root] = ("root", preset_name, None, target_input, target_is_ignore)
+
+                if not self._has_root_tags(root):
+                    _add_disabled_line(menu, " (нет тегов в корне)")
+
+                # Папки 1-го уровня (как у тебя было)
+                for ch in (root.get("children") or []):
+                    if self._is_folder_node(ch):
+                        sub = menu.addMenu(f" 📁 {preset_name} / {ch.get('name', '')}")
+
+                        act_apply_folder = sub.addAction("✅ Применить папку")
+                        act_apply_folder_newq = sub.addAction("➕ Применить папку к новой очереди")
+
+                        action_payload[act_apply_folder] = ("folder", preset_name, ch, target_input, target_is_ignore)
+                        action_payload[act_apply_folder_newq] = ("folder_new_queue", preset_name, ch, target_input, target_is_ignore)
+
+                        _add_folder_preview(sub, ch, target_input, target_is_ignore)
+                        add_folder_submenu(sub, preset_name, ch)
+
+            # Управление пресетами именно этой секции
+            if not (presets_dict or {}):
+                _add_disabled_line(menu, " (нет наборов)")
+            
+            menu.addSeparator()
+            manage_text = "⚙ Управление пресетами фильтра..." if target_is_ignore else "⚙ Управление пресетами поиска..."
+            act_manage = menu.addAction(manage_text)
+            action_payload[act_manage] = ("manage", None, None, None, target_is_ignore)
+            menu.addSeparator()
+
+        own_suffix = " → применить к этому полю"
+        other_suffix = " → применить к соседнему полю"
+
+        # Порядок секций: сначала та, по которой кликнули, потом соседняя
+        if not primary_is_ignore:
+            _add_section(title="ИЩЕМ" + own_suffix, presets_dict=self.tag_presets,
+                         target_input=self.search_tags_input, target_is_ignore=False)
+            _add_section(title="ИСКЛЮЧАЕМ" + other_suffix, presets_dict=self.ignore_tag_presets,
+                         target_input=self.ignore_tags_input, target_is_ignore=True)
         else:
-            name = selected_action.data()
-            tags = presets_dict.get(name, [])
-            input_widget.set_tags(tags)
+            _add_section(title="ИСКЛЮЧАЕМ" + own_suffix, presets_dict=self.ignore_tag_presets,
+                         target_input=self.ignore_tags_input, target_is_ignore=True)
+            _add_section(title="ИЩЕМ" + other_suffix, presets_dict=self.tag_presets,
+                         target_input=self.search_tags_input, target_is_ignore=False)
+
+        selected_action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if not selected_action:
+            return
+
+        payload = action_payload.get(selected_action)
+        if not payload:
+            return
+
+        kind, preset_name, folder_node, target_input, target_is_ignore = payload
+
+        if kind == "manage":
+            if target_is_ignore:
+                self._open_ignore_tag_presets_editor()
+            else:
+                self._open_tag_presets_editor()
+            return
+
+        if kind == "root":
+            root = self._normalize_preset_value_to_root_folder(
+                (self.ignore_tag_presets if target_is_ignore else self.tag_presets).get(preset_name)
+            )
+            tags = self._collect_root_only_tags(root)
+            if tags:
+                target_input.set_tags(tags)
+            return
+
+        if kind == "folder":
+            tags = self._collect_tags_recursive(folder_node)
+            if tags:
+                target_input.set_tags(tags)
+            return
+
+        if kind == "folder_new_queue":
+            tags = self._collect_tags_recursive(folder_node)
+            if tags:
+                self.apply_tags_to_new_queue_requested.emit(tags, target_is_ignore)
+            return
 
     def _open_tag_presets_editor(self):
         dlg = TagPresetsDialog(self.tag_presets, self, window_title="Пресеты поиска", tag_color=Palette.TERTIARY)
@@ -269,10 +412,99 @@ class SearchWidget(QWidget):
     def _presets_file_path(self): return os.path.join(BASE_APP_DIR, "tag_presets.json")
     def _ignore_presets_file_path(self): return os.path.join(BASE_APP_DIR, "tag_presets_ignore.json")
     def _categories_cache_path(self): return os.path.join(BASE_APP_DIR, "categories_cache.json")
-    def _load_tag_presets(self): self.tag_presets = self._load_json(self._presets_file_path())
-    def _load_ignore_tag_presets(self): self.ignore_tag_presets = self._load_json(self._ignore_presets_file_path())
+    def _load_tag_presets(self):
+        raw = self._load_json(self._presets_file_path())
+        self.tag_presets = self._normalize_presets_dict(raw)
+
+    def _load_ignore_tag_presets(self):
+        raw = self._load_json(self._ignore_presets_file_path())
+        self.ignore_tag_presets = self._normalize_presets_dict(raw)
     def _save_tag_presets(self): self._save_json(self._presets_file_path(), self.tag_presets)
     def _save_ignore_tag_presets(self): self._save_json(self._ignore_presets_file_path(), self.ignore_tag_presets)
+    def get_search_tags(self) -> List[str]: return self.search_tags_input.get_tags()
+    def set_search_tags(self, tags: List[str]): self.search_tags_input.set_tags(tags); self._emit_categories_changed()
+    def get_ignore_tags(self) -> List[str]: return self.ignore_tags_input.get_tags()
+    def set_ignore_tags(self, tags: List[str]): self.ignore_tags_input.set_tags(tags)
+    
+    def _is_tag_node(self, n) -> bool:
+        return isinstance(n, dict) and n.get("type") == "tag"
+
+    def _is_folder_node(self, n) -> bool:
+        return isinstance(n, dict) and n.get("type") == "folder"
+
+    def _make_folder(self, name: str, children=None) -> dict:
+        return {"type": "folder", "name": name, "children": list(children or [])}
+
+    def _make_tag(self, value: str) -> dict:
+        return {"type": "tag", "value": value}
+
+    def _normalize_preset_value_to_root_folder(self, v) -> dict:
+        if isinstance(v, list):
+            children = []
+            for t in v:
+                t = str(t).strip()
+                if t:
+                    children.append(self._make_tag(t))
+            return self._make_folder("ROOT", children)
+
+        if self._is_folder_node(v):
+            name = str(v.get("name") or "ROOT")
+            children = v.get("children") if isinstance(v.get("children"), list) else []
+            norm_children = []
+            for c in children:
+                if self._is_tag_node(c):
+                    val = str(c.get("value") or "").strip()
+                    if val:
+                        norm_children.append(self._make_tag(val))
+                elif self._is_folder_node(c):
+                    norm_children.append(self._normalize_preset_value_to_root_folder(c))
+            return self._make_folder(name if name else "ROOT", norm_children)
+
+        return self._make_folder("ROOT", [])
+
+    def _normalize_presets_dict(self, d: dict) -> dict:
+        out = {}
+        if not isinstance(d, dict):
+            return out
+        for k, v in d.items():
+            name = str(k).strip()
+            if not name:
+                continue
+            out[name] = self._normalize_preset_value_to_root_folder(v)
+        return out
+
+    def _collect_tags_recursive(self, folder_node: dict) -> List[str]:
+        out: List[str] = []
+        for ch in (folder_node.get("children") or []):
+            if self._is_tag_node(ch):
+                val = str(ch.get("value") or "").strip()
+                if val:
+                    out.append(val)
+            elif self._is_folder_node(ch):
+                out.extend(self._collect_tags_recursive(ch))
+        return out
+
+    def _collect_root_only_tags(self, root_folder: dict) -> List[str]:
+        out: List[str] = []
+        for ch in (root_folder.get("children") or []):
+            if self._is_tag_node(ch):
+                val = str(ch.get("value") or "").strip()
+                if val:
+                    out.append(val)
+        return out
+
+    def _collect_folder_only_tags(self, folder_node: dict) -> List[str]:
+        out: List[str] = []
+        for ch in (folder_node.get("children") or []):
+            if self._is_tag_node(ch):
+                val = str(ch.get("value") or "").strip()
+                if val:
+                    out.append(val)
+        return out
+
+    def _has_root_tags(self, root_folder: dict) -> bool:
+        return len(self._collect_root_only_tags(root_folder)) > 0
+    
     def _load_json(self, path) -> dict:
         if not os.path.exists(path): return {}
         try:
@@ -282,8 +514,3 @@ class SearchWidget(QWidget):
         try:
             with open(path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
         except: pass
-
-    def get_search_tags(self) -> List[str]: return self.search_tags_input.get_tags()
-    def set_search_tags(self, tags: List[str]): self.search_tags_input.set_tags(tags); self._emit_categories_changed()
-    def get_ignore_tags(self) -> List[str]: return self.ignore_tags_input.get_tags()
-    def set_ignore_tags(self, tags: List[str]): self.ignore_tags_input.set_tags(tags)

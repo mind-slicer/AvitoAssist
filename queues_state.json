@@ -1,17 +1,17 @@
 {
   "0": {
     "search_tags": [
-      "материнская плата"
+      "ращ"
     ],
     "ignore_tags": [],
     "min_price": 0,
     "max_price": 0,
-    "search_mode": "full",
+    "search_mode": "primary",
     "ai_criteria": "",
     "include_ai": false,
     "store_in_memory": false,
     "max_pages": 0,
-    "max_items": 20,
+    "max_items": 0,
     "all_regions": false,
     "filter_defects": false,
     "forced_categories": [],

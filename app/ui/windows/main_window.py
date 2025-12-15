@@ -290,6 +290,7 @@ class MainWindow(QWidget):
         self.search_widget.scan_categories_requested.connect(lambda tags: self.controller.scan_categories(tags))
         self.search_widget.categories_selected.connect(self._on_categories_selected)
         self.search_widget.categories_changed.connect(self._update_cost_calculation)
+        self.search_widget.apply_tags_to_new_queue_requested.connect(self.on_apply_tags_to_new_queue_requested)
         self.controls_widget.start_requested.connect(self._on_start_search)
         self.controls_widget.stop_requested.connect(self._on_stop_search)
         self.controls_widget.parameters_changed.connect(self._on_parameters_changed)
@@ -1046,6 +1047,36 @@ class MainWindow(QWidget):
 
     def _on_categories_selected(self, cats):
         logger.info(f"Выбрано {len(cats)} категорий...")
+
+    def on_apply_tags_to_new_queue_requested(self, tags: list, is_ignore: bool):
+        self._save_current_queue_state()
+    
+        if not hasattr(self.controls_widget, "queue_manager_widget"):
+            return
+    
+        ui_mgr = self.controls_widget.queue_manager_widget
+    
+        new_index = ui_mgr.get_all_queues_count()
+        ui_mgr.add_queue()
+    
+        base_idx = self.queue_manager.get_current_index()
+        base_state = self.queue_manager.get_state(base_idx).copy()
+    
+        if is_ignore:
+            base_state["ignore_tags"] = list(tags)
+        else:
+            base_state["search_tags"] = list(tags)
+            base_state["forced_categories"] = []  # чтобы не тянуло старые категории
+    
+        self.queue_manager.set_state(base_state, new_index)
+        self.queue_manager.set_current_index(new_index)
+    
+        ui_mgr.list_widget.blockSignals(True)
+        ui_mgr.set_current_queue(new_index)
+        ui_mgr.list_widget.blockSignals(False)
+    
+        self._load_queue_to_ui(new_index)
+        self.queue_manager.save_current_state()
 
     def _on_file_loaded(self, path, data):
         self.current_json_file = path 
