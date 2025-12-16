@@ -210,4 +210,6 @@
 ├── main.py
 ├── queues_state.json
 ├── requirements.txt
+├── tag_presets.json
+├── tag_presets_ignore.json
 └── tree.txt

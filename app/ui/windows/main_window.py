@@ -1251,22 +1251,19 @@ class MainWindow(QWidget):
         self._refresh_merge_targets()
 
     def on_analyze_table_requested(self, items: List[Dict]):
-        """Запустить AI-анализ для всех элементов таблицы"""
         if not items:
             QMessageBox.warning(self, "Ошибка", "Таблица пуста!")
             return
 
-        # 1. Получаем текущие критерии из интерфейса
-        params = self.controls_widget.get_parameters()
-        user_criteria = params.get("ai_criteria", "")
+        user_criteria = ""
 
-        logger.info(f"Запуск анализа для {len(items)} элементов (Критерии: {user_criteria[:30]}...)...")
+        logger.info(f"Запуск анализа для {len(items)} элементов...")
         
         self.controller.start_manual_ai_analysis(
             items=items,
-            prompt=user_criteria,  # <--- ФИКС: Передаем критерии
+            prompt=user_criteria, 
             debug_mode=self.app_settings.get("ai_debug", False),
-            store_in_memory=params.get("store_in_memory", False) # Опционально: учитываем и галку памяти
+            store_in_memory=self.controls_widget.get_parameters().get("store_in_memory", False)
         )
 
     def on_add_to_memory_requested(self, items: List[Dict]):
@@ -1437,18 +1434,15 @@ class MainWindow(QWidget):
             self.on_export_table_requested(items)
 
     def on_analyze_item_requested(self, item: Dict):
-        """Запустить AI-анализ для одного элемента"""
-        # 1. Получаем текущие критерии из интерфейса
-        params = self.controls_widget.get_parameters()
-        user_criteria = params.get("ai_criteria", "")
+        user_criteria = ""
         
         logger.info(f"Запуск анализа для элемента {item.get('id', 'N/A')}...")
         
         self.controller.start_manual_ai_analysis(
             items=[item],
-            prompt=user_criteria,  # <--- ФИКС: Передаем критерии
+            prompt=user_criteria,
             debug_mode=self.app_settings.get("ai_debug", False),
-            store_in_memory=params.get("store_in_memory", False)
+            store_in_memory=self.controls_widget.get_parameters().get("store_in_memory", False)
         )
 
     def on_addmemory_item_requested(self, item: Dict):
@@ -1556,12 +1550,10 @@ class MainWindow(QWidget):
                 logger.error(f"Ошибка фонового обновления файла {source_file}: {e}")
 
     def _on_ai_batch_finished(self):
-        # Базовый лог (можно оставить как было)
         self.progress_panel.ai_log.success("AI пакет обработан")
 
         qs = self.controller.queue_state
         if not qs.waiting_for_ai_sequence:
-            # Это мог быть ручной анализ/чат — игнорируем
             return
 
         idx = qs.current_queue_index
@@ -1571,38 +1563,30 @@ class MainWindow(QWidget):
         config = qs.queues_config[idx]
         search_mode = config.get("search_mode", "full")
 
-        # Интересует только нейро-режим
         if search_mode != "neuro":
             return
 
-        # 1) Берём отфильтрованные GOOD-объявления
         filtered = self._neuro_filtered.get(idx, []) or []
         logger.success(
             f"Нейро-фильтр для очереди #{idx + 1}: прошло {len(filtered)} объявлений."
         )
 
-        # Очищаем кэш, чтобы не мешался
         self._neuro_filtered.pop(idx, None)
 
-        # 2) Сохраняем как обычные результаты для этой очереди
         self._save_results_for_config(filtered, config, idx)
 
         self.progress_panel.set_ai_finished()
 
-        # 3) (НЕОБЯЗАТЕЛЬНО) Запускаем пост-анализ по отфильтрованным,
-        # если включены флаги "Вкл. в анализ" или "RAG"
         include_ai = config.get("include_ai", False)
         store_in_memory = config.get("store_in_memory", False)
 
         if filtered and (include_ai or store_in_memory):
-            user_criteria = config.get("ai_criteria", "") or ""
+            user_instructions = "" 
             ai_debug = config.get("ai_debug_mode", False)
 
-            # Используем уже готовый метод "ручного" анализа,
-            # который сам соберет промпт из user_criteria
             self.controller.start_manual_ai_analysis(
                 items=filtered,
-                prompt=user_criteria,
+                prompt=user_instructions,
                 debug_mode=ai_debug,
                 store_in_memory=store_in_memory,
             )

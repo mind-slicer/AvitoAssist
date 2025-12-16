@@ -145,99 +145,123 @@ class PromptBuilder:
     
     @classmethod
     def build_analysis_prompt(cls, items: List[Dict], priority: AnalysisPriority, current_item: Dict, user_instructions: str = "", rag_context: Optional[Dict] = None) -> str:
-        # 1. Сбор данных статистики (ТЕКУЩАЯ СИТУАЦИЯ)
+        # 1. СТАТИСТИКА ПО ТАБЛИЦЕ (ТЕКУЩАЯ)
         stats = cls._build_market_stats(items, current_item.get('title'))
         
-        # Формируем строку текущей статистики
-        current_market_str = "Нет данных."
+        current_market_str = "Нет данных в текущей таблице."
         if stats['sample_size'] > 0:
             current_market_str = (
-                f"Найдено {stats['cnt']} похожих лотов прямо сейчас.\n"
-                f"- Диапазон цен: от {stats['min']} до {stats['max']} руб.\n"
-                f"- Медиана текущей выдачи: {stats['med']} руб.\n"
-                f"- Средняя цена: {stats['avg']} руб."
+                f"В ТЕКУЩЕЙ ТАБЛИЦЕ (найдено {stats['cnt']} похожих):\n"
+                f"- Диапазон: {stats['min']} - {max(stats['max'], 1)} руб.\n"
+                f"- Медиана: {stats['med']} руб.\n"
+                f"- Средняя: {stats['avg']} руб."
             )
 
-        # 2. Формирование блока RAG (ИСТОРИЧЕСКАЯ ПАМЯТЬ)
+        # 2. RAG (ПАМЯТЬ)
         rag_block = ""
+        rag_avg_price = 0 # Для сравнения
         if rag_context:
             med = rag_context.get('median_price', 0)
             avg = rag_context.get('avg_price', 0)
-            cnt = rag_context.get('sample_count', 0)
+            rag_avg_price = avg
             knowledge = rag_context.get('knowledge', '')
-            
-            # Если это "заглушка" или чанка нет -> включаем режим Live-статистики
-            if not knowledge or "Нет детального" in knowledge:
-                rag_block = (
-                    f"СТАТУС ПАМЯТИ: Чанк не сформирован (Live-режим).\n"
-                    f"Историческая статистика (база {cnt} товаров):\n"
-                    f"- Историческая Медиана: {med} руб.\n"
-                    f"- Историческая Средняя: {avg} руб.\n"
-                    f"ИНСТРУКЦИЯ: Сравнивай цену товара ({current_item.get('price')} руб) с исторической медианой ({med}). "
-                    f"Если цена сильно ниже — ищи подвох."
-                )
-            else:
-                # Если есть полноценный чанк
-                rag_block = (
-                    f"СТАТУС ПАМЯТИ: Активен чанк знаний.\n"
-                    f"{knowledge}\n"
-                    f"Базовые метрики категории: Медиана {med} руб, Средняя {avg} руб.\n"
-                    f"ИНСТРУКЦИЯ: Используй этот контекст для глубокой оценки ликвидности."
-                )
+            rag_block = (
+                f"ИЗ ПАМЯТИ (Исторический опыт):\n"
+                f"- Ист. Медиана: {med} руб.\n"
+                f"- Ист. Средняя: {avg} руб.\n"
+                f"- Знания: {knowledge}\n"
+            )
         else:
-            rag_block = "Данных в памяти нет. Опирайся только на текущую выдачу."
+            rag_block = "В памяти нет данных по этому товару."
 
-        # 3. Блок правил
-        strat = "Максимальная маржа. Ищи ошибки в цене."
-        if priority == AnalysisPriority.QUALITY: strat = "Идеальное состояние, гарантия, комплект."
-        elif priority == AnalysisPriority.DEFICIT: strat = "Редкое/Топовое железо."
-        user_rules = f"{strat}\n{user_instructions}" if user_instructions else strat
+        # 3. АНАЛИЗ ПАРАМЕТРОВ ТОВАРА
+        item_price = current_item.get('price', 0)
+        item_views = current_item.get('views', 0)
+        item_cond = str(current_item.get('condition', '')).lower()
+        item_date = str(current_item.get('date_text', '')).lower()
+        
+        # --- Логика ЦЕНЫ (Сравнение с Таблицей И Памятью) ---
+        price_analysis = []
+        if item_price > 0:
+            # Сравнение с таблицей
+            if stats['med'] > 0:
+                diff_table = ((item_price - stats['med']) / stats['med']) * 100
+                if diff_table < -10: price_analysis.append(f"Ниже текущего рынка на {abs(int(diff_table))}%.")
+                elif diff_table > 10: price_analysis.append(f"Выше текущего рынка на {int(diff_table)}%.")
+            
+            # Сравнение с памятью (если данных достаточно)
+            if rag_avg_price > 0:
+                diff_rag = ((item_price - rag_avg_price) / rag_avg_price) * 100
+                if diff_rag < -15: price_analysis.append(f"Ниже исторической цены на {abs(int(diff_rag))}%.")
+        
+        price_str = " | ".join(price_analysis) if price_analysis else "Цена выглядит обычной."
 
-        # 4. Детали товара
-        item_details = (
-            f"Товар: {current_item.get('title')}\n"
-            f"Цена: {current_item.get('price')} ₽\n"
-            f"Город: {current_item.get('city', 'N/A')}\n"
-            f"Дата: {current_item.get('date_text', 'N/A')} | Просмотры: {current_item.get('views', 0)}\n"
-            f"Продавец ID: {current_item.get('seller_id', 'N/A')}\n"
-            f"Описание:\n{current_item.get('description', '')[:1200]}" # Чуть увеличили лимит
-        )
+        # --- Логика ПРОСМОТРОВ (Скам/Хайп) ---
+        views_analysis = "Просмотры в норме."
+        if item_views == 0:
+            views_analysis = "0 просмотров: Это ОЧЕНЬ СВЕЖЕЕ объявление. Шанс успеть первым!"
+        elif item_views > 500 and item_price < stats['med'] * 0.8:
+            views_analysis = f"ОПАСНО: {item_views} просмотров при низкой цене. Либо скам, либо уже продано."
+        
+        # --- Логика СОСТОЯНИЯ ---
+        cond_bonus = ""
+        if any(x in item_cond for x in ['нов', 'new', 'идеал', 'запеч']):
+            cond_bonus = "БОНУС: Состояние указано как НОВОЕ/ИДЕАЛ."
+        elif any(x in item_cond for x in ['запчаст', 'сломан', 'дефект', 'не рабоч', 'разбит']):
+            cond_bonus = "МИНУС: Товар сломан или на запчасти. Понижай оценку (если не ищем лом)."
 
+        # --- Логика ДАТЫ (Свежесть) ---
+        date_analysis = ""
+        if any(x in item_date for x in ['сегодня', 'час', 'мин', 'сек']):
+            date_analysis = "ДАТА: Только что (Очень актуально)."
+        elif any(x in item_date for x in ['вчера']):
+            date_analysis = "ДАТА: Свежее (Вчера)."
+        elif any(x in item_date for x in ['недел', 'месяц']):
+            # Простая эвристика: если "3 недели" или "месяц" - это старо
+            if '3 недел' in item_date or '4 недел' in item_date or 'месяц' in item_date:
+                date_analysis = "ДАТА: СТАРОЕ (>20 дней). Вероятно, неликвид или продано."
+        else:
+            # Для абсолютных дат (20 октября) оставляем на откуп LLM
+            pass
+
+        # 4. СБОРКА ПРОМПТА
         return f"""
 {cls.SYSTEM_BASE}
 
-=============================================================
-РАЗДЕЛ 1: ЖЁСТКИЕ ПРАВИЛА (ПРИОРИТЕТ 100%)
-=============================================================
-1. Стратегия: {user_rules}
-2. Не выдумывай цены.
-3. Игнорируй маркетинговый шум.
+[ОБЪЕКТ АНАЛИЗА]
+Товар: "{current_item.get('title')}"
+Цена: {item_price} руб.
+Город: {current_item.get('city', 'N/A')}
+Состояние: {current_item.get('condition', 'N/A')}
+Дата: {item_date} | Просмотры: {item_views}
+Описание:
+\"\"\"
+{current_item.get('description', '')[:2000]}
+\"\"\"
 
-=============================================================
-РАЗДЕЛ 2: КОНТЕКСТ АНАЛИЗА (ПРИОРИТЕТ 40%)
-=============================================================
-[А] ТЕКУЩАЯ СИТУАЦИЯ (Прямо сейчас в поиске):
-{current_market_str}
+[РЫНОЧНЫЙ КОНТЕКСТ]
+1. {current_market_str}
+2. {rag_block}
 
-[Б] ПАМЯТЬ ИИ (Исторический опыт):
-{rag_block}
+[ПОДСКАЗКИ АВТО-АНАЛИЗАТОРА]
+- ЦЕНА: {price_str}
+- АКТИВНОСТЬ: {views_analysis}
+- КАЧЕСТВО: {cond_bonus}
+- АКТУАЛЬНОСТЬ: {date_analysis}
 
-ИНСТРУКЦИЯ ПО КОНТЕКСТУ:
-Если "Текущая медиана" и "Историческая медиана" сильно отличаются, 
-значит рынок изменился (тренд). Учитывай это.
+[ИНСТРУКЦИИ ДЛЯ LLM]
+1. ЦЕНА: Если цена ниже средней по Таблице И по Памяти — это сильный сигнал GREAT_DEAL.
+2. ОПИСАНИЕ: Внимательно читай описание! Ищи скрытые дефекты ("после майнинга", "без проверки"), которые отменяют низкую цену.
+3. ДАТА: Если объявление старое (>30 дней) и цена хорошая — это подозрительно (почему не купили?). Снижай оценку.
+4. СОСТОЯНИЕ: "Новое" лучше "Б/У". "На запчасти" — это BAD (если не просили иное).
 
-=============================================================
-РАЗДЕЛ 3: ОБЪЕКТ АНАЛИЗА
-=============================================================
-{item_details}
+[ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ (ПРИОРИТЕТ ВЫШЕ ВСЕГО!)]
+{user_instructions}
 
-=============================================================
-ЗАДАЧА
-=============================================================
-Дай вердикт в JSON:
+[ФОРМАТ ОТВЕТА (JSON)]
 {{
   "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "SCAM",
-  "reason": "Жесткий комментарий (макс 10 слов)",
+  "reason": "Человеческий вывод (1-2 предложения). Упомяни цену, состояние и риски.",
   "market_position": "below_market" | "fair" | "overpriced",
   "defects": true/false
 }}

@@ -138,14 +138,7 @@ class ChunkCard(QFrame):
         
         fill = QFrame(p_bar)
         fill.setFixedHeight(4)
-        width_pct = min(max(progress, 5), 100) # минимум 5% чтобы было видно
-        # Note: реальная ширина устанавливается динамически, здесь упрощение через qss или layout
-        # Для простоты используем stylesheet на самом виджете-заполнителе, 
-        # но в Qt сложно задать ширину в % через CSS для вложенного виджета без Layout.
-        # Сделаем через QProgressBar для надежности или просто текст.
-        
-        # Упрощенный вариант - текстовый прогресс или стиль
-        # Но добавим визуальный бар через layout
+        width_pct = min(max(progress, 5), 100)
         bar_container = QWidget()
         bar_layout = QHBoxLayout(bar_container)
         bar_layout.setContentsMargins(0,0,0,0)
@@ -172,11 +165,8 @@ class ChunkCard(QFrame):
     def _render_ready(self, chunk_type):
         self.icon_label.setText("✓")
         
-        # Дата обновления
-        # --- ИСПРАВЛЕНИЕ: Показываем дату И ВРЕМЯ ---
         raw_date = self.chunk_data.get('last_updated', '')
         if len(raw_date) >= 16:
-            # Преобразуем YYYY-MM-DDTHH:MM... -> DD-MM-YYYY HH:MM
             last_upd = f"{raw_date[11:16]} • {raw_date[8:10]}.{raw_date[5:7]}.{raw_date[:4]}"
         else:
             last_upd = raw_date
@@ -186,10 +176,8 @@ class ChunkCard(QFrame):
         self.status_label.setText(f"Активен • {last_upd} • {size_kb:.1f} KB")
         self.delete_btn.setVisible(True)
         
-        # Контент (Summary)
         summary = self.chunk_data.get('summary')
         
-        # Если summary нет в корне, попробуем достать из JSON content
         if not summary and self.chunk_data.get('content'):
             import json
             try:
@@ -204,12 +192,9 @@ class ChunkCard(QFrame):
             lbl = QLabel(str(summary))
             lbl.setWordWrap(True)
             lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.4; border: none;")
-            # Ограничим высоту текста, если он огромный
             lbl.setMaximumHeight(100) 
             self.content_layout.addWidget(lbl)
             
-            # Если это PRODUCT, добавим метрики цены если есть
-            # (Можно расширять логику рендеринга по типу)
         else:
             lbl = QLabel("Нет краткого описания.")
             lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-style: italic; font-size: 11px; border: none;")
@@ -234,7 +219,6 @@ class ChunkCard(QFrame):
         self.status_label.setText(f"Сжат (экономия {saved}%) • {last_upd}")
         self.delete_btn.setVisible(True)
         
-        # Показываем сжатый контент (он обычно не читаем для человека, но покажем факт наличия)
         lbl = QLabel("Архивная запись. Доступна для анализа, занимает минимум места.")
         lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px; border: none;")
         self.content_layout.addWidget(lbl)
@@ -254,11 +238,6 @@ class ChunkCard(QFrame):
 
 
 class AIMemoryPanel(QWidget):
-    """
-    Панель управления памятью ИИ.
-    Показывает список чанков, позволяет обновлять память.
-    """
-    
     update_memory_requested = pyqtSignal()
     chunk_deleted = pyqtSignal(int)
     

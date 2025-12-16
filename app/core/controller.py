@@ -241,37 +241,39 @@ class ParserController(QObject):
         if not results: return False
         include_ai = config.get('include_ai', False)
         store_in_memory = config.get('store_in_memory', False)
-        # Если ничего не требуется - выходим
+        
         if (not include_ai and not store_in_memory):
             return False
-        # ВАЖНОЕ ИЗМЕНЕНИЕ: Если нужно только сохранить в память, делаем это сразу здесь,
-        # не запуская тяжелый AI процесс.
+            
         if store_in_memory and not include_ai:
             if self.memory_manager:
                 logger.info(f"Сохранение {len(results)} товаров в память (без AI анализа)...")
                 for item in results:
                     self.memory_manager.add_item(item)
-            return False  # Возвращаем False, чтобы цепочка продолжилась (advance_or_finish)
-        # Если мы здесь, значит include_ai = True. Запускаем анализ.
-        # store_in_memory передаем в контекст, чтобы сохранить ПОСЛЕ анализа.
-        user_instructions = config.get('ai_criteria', "")
+            return False
+
+        user_instructions = "" 
+
         search_tags = config.get('search_tags', [])
-        has_rag = config.get('store_in_memory', False) # Для анализа используем RAG если есть память
+        has_rag = config.get('store_in_memory', False)
+        
         priority = PromptBuilder.select_priority(
             table_size=len(results),
             user_instructions=user_instructions,
             has_rag=has_rag,
             search_tags=search_tags
         )
+        
         ai_debug = config.get('ai_debug_mode', False)
         store = config.get('store_in_memory', False)
         base_offset = config.get('ai_offset', 0)
+        
         context = {
             "mode": "analysis",
             "offset": base_offset,
             "queue_idx": queue_idx,
             "is_split": is_split,
-            "store_in_memory": store, # Если True, результаты анализа тоже попадут в память
+            "store_in_memory": store,
             "include_ai": include_ai,
             "priority": priority,
             "user_instructions": user_instructions,
@@ -279,6 +281,7 @@ class ParserController(QObject):
             "items": results,
         }
         self.queue_state.waiting_for_ai_sequence = True
+        
         self._run_ai_process(results, prompt=None, debug_mode=ai_debug, context=context)
         return True
 
@@ -377,9 +380,11 @@ class ParserController(QObject):
 
         self.ui_lock_requested.emit(True)
 
+        user_instructions = prompt if prompt else ""
+
         priority = PromptBuilder.select_priority(
             table_size=len(items),
-            user_instructions=prompt,
+            user_instructions=user_instructions,
             has_rag=False,
             search_tags=[]
         )
@@ -392,12 +397,12 @@ class ParserController(QObject):
             "store_in_memory": store_in_memory,
             "include_ai": True,
             "priority": priority,
-            "user_instructions": prompt,
+            "user_instructions": user_instructions,
             "has_rag": False,
             "items": items,
         }
 
-        self._run_ai_process(items, prompt, debug_mode=debug_mode, context=context)
+        self._run_ai_process(items, prompt=None, debug_mode=debug_mode, context=context)
     
     def _start_ai_filter(self, items: List[Dict], prompt: str,
                          queue_idx: int, is_split: bool,

@@ -102,11 +102,11 @@ class ConditionItem(QTableWidgetItem):
 
 class VerdictItem(QTableWidgetItem):
     SORT_ORDER = {
-        "GREAT_DEAL": 4,
-        "GOOD": 3,
-        "UNKNOWN": 2,
-        "BAD": 1,
-        "SCAM": 0
+        "GREAT_DEAL": 10,
+        "GOOD": 8,
+        "BAD": 3,
+        "SCAM": 1,
+        "UNKNOWN": 0
     }
 
     def __init__(self, raw_json: str):
@@ -120,8 +120,8 @@ class VerdictItem(QTableWidgetItem):
     
     def __lt__(self, other):
         if isinstance(other, VerdictItem):
-            s1 = self.SORT_ORDER.get(self.verdict, 2)
-            s2 = self.SORT_ORDER.get(other.verdict, 2)
+            s1 = self.SORT_ORDER.get(self.verdict, 0)
+            s2 = self.SORT_ORDER.get(other.verdict, 0)
             return s1 < s2
         return super().__lt__(other)
 
@@ -148,67 +148,48 @@ class VerdictItem(QTableWidgetItem):
             self.verdict = str(data.get("verdict", "UNKNOWN")).upper().strip()
             self.reason = str(data.get("reason", ""))
             self.defects = bool(data.get("defects", False))
-            m_pos = str(data.get("market_position", "")).lower()
-            self.market_position = m_pos
+            self.market_position = str(data.get("market_position", "")).lower()
 
-        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        except Exception:
+            # Fallback
             self.verdict = "UNKNOWN"
-            self.reason = str(self.raw_data)[:100]
-            m_pos = ""
-            self.market_position = ""
-
-        # ✅ НОВОЕ: Улучшенный формат с эмодзи
-        if self.verdict == "GREAT_DEAL":
-            display_text = "🎯 ОТЛИЧНАЯ СДЕЛКА"
-        elif self.verdict == "GOOD":
-            display_text = "✅ ХОРОШО"
-        elif self.verdict == "BAD":
-            display_text = "⚠️ ПЛОХО"
-        elif self.verdict == "SCAM":
-            display_text = "🚫 СКАМ"
-        else:
-            display_text = "❓ НЕИЗВЕСТНО"
-
-        # Добавляем индикаторы рынка
-        if m_pos == "below_market":
-            display_text += " 📉"
-        elif m_pos == "overpriced":
-            display_text += " 📈"
-
-        # Добавляем предупреждение о дефектах
-        if self.defects:
-            display_text += " ⚠️"
-
-        self.setText(display_text)
-
-        tooltip_parts = []
-    
-        # Блок 1: Вердикт + Причина (одним блоком)
-        verdict_block = f"Вердикт: {self.verdict}"
-        if self.reason:
-            verdict_block += f"\nПричина: {self.reason}"
-        tooltip_parts.append(verdict_block)
+            self.reason = "Ошибка чтения ответа AI"
         
-        # Блок 2: Позиция в таблице
+        v_map = {
+            "GREAT_DEAL": "💎 ОТЛИЧНО",
+            "GOOD": "✅ ХОРОШО",
+            "BAD": "❌ ПЛОХО",
+            "SCAM": "🚫 СКАМ",
+            "UNKNOWN": "❓"
+        }
+        v_str = v_map.get(self.verdict, self.verdict)
+
+        cell_text = v_str
+        if self.defects: cell_text += " ⚠️"
+        
+        # Рынок стрелочками
+        if self.market_position == "below_market": cell_text += " 📉"
+        elif self.market_position == "overpriced": cell_text += " 📈"
+
+        self.setText(cell_text)
+
+        tooltip = f"""
+        <b>ВЕРДИКТ: {v_str}</b>
+        <hr>
+        <b>📝 Анализ:</b><br>{self.reason}
+        <br><br>
+        """
+        
         if self.market_position:
-            if self.market_position == "below_market":
-                tooltip_parts.append("Позиция в таблице: Ниже среднего 📉")
-            elif self.market_position == "fair":
-                tooltip_parts.append("Позиция в таблице: Средняя цена →")
-            elif self.market_position == "overpriced":
-                tooltip_parts.append("Позиция в таблице: Выше среднего 📈")
-        
-        # Блок 3: Позиция на рынке (RAG заглушка)
-        tooltip_parts.append("Позиция на рынке: Мало данных")
-        
-        # Блок 4: Дефекты
+            m_text = "В рынке"
+            if self.market_position == "below_market": m_text = "Ниже рынка (Выгодно)"
+            elif self.market_position == "overpriced": m_text = "Выше рынка (Дорого)"
+            tooltip += f"<b>📊 Позиция:</b> {m_text}<br>"
+            
         if self.defects:
-            tooltip_parts.append("⚠️ Есть дефекты или проблемы")
+            tooltip += "<b>⚠️ Обнаружены дефекты!</b>"
         
-        # Собираем с двойным \n между БЛОКАМИ (не внутри блоков)
-        tooltip = "\n".join(tooltip_parts)
-        
-        self.setToolTip(tooltip)
+        self.setToolTip(tooltip.strip())
         self.setData(Qt.ItemDataRole.UserRole, self.raw_data)
         self.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
 
