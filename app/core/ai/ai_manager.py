@@ -11,6 +11,7 @@ from app.config import AI_CTX_SIZE, AI_GPU_LAYERS, AI_SERVER_PORT, MODELS_DIR
 from app.core.ai.server_manager import ServerManager
 from app.core.ai.llama_client import LlamaClient
 from app.core.ai.prompts import PromptBuilder, AnalysisPriority
+from app.core.text_utils import TextMatcher
 from app.core.log_manager import logger
 
 # --- Воркер для пакетной обработки товаров ---
@@ -473,11 +474,12 @@ class AIManager(QObject):
         prompts_list = []
         rag_messages_list = []
 
+        search_mode = context.get('search_mode', 'full')
+
         if prompt: 
             prompts_list = [prompt] * len(items)
             rag_messages_list = [None] * len(items)
         else:
-            # Авто-промпт с динамическим RAG
             prio = context.get('priority', 1)
             instr = context.get('user_instructions', "")
             
@@ -509,12 +511,19 @@ class AIManager(QObject):
 
                 rag_messages_list.append(log_msg)
 
+                similar_items = TextMatcher.filter_similar_items(
+                    target_title=item.get('title', ''), 
+                    all_items=items,
+                    threshold=0.35
+                )
+
                 p = PromptBuilder.build_analysis_prompt(
-                    items=[item], 
+                    items=similar_items,
                     priority=prio, 
                     current_item=item, 
                     user_instructions=instr, 
-                    rag_context=rag
+                    rag_context=rag,
+                    search_mode=search_mode
                 )
                 prompts_list.append(p)
 

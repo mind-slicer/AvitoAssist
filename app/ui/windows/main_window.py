@@ -724,10 +724,18 @@ class MainWindow(QWidget):
             pass
 
     def _on_parser_started_logic(self):
+        qs = self.controller.queue_state
+        idx = qs.current_queue_index
+
+        if 0 <= idx < len(qs.queues_config):
+            self.current_search_mode = qs.queues_config[idx].get("search_mode", "full")
+
         self.progress_panel.set_parser_mode(self.current_search_mode)
-        self.progress_panel.reset_parser_progress()
+
+        if self.current_search_mode != "primary":
+            self.progress_panel.reset_parser_progress()
+
         self.progress_panel.reset_ai_progress()
-        #self.progress_panel.ai_bar.setValue(0)
         
     def _on_queue_finished(self, results, idx, is_split):
         config = {}
@@ -737,17 +745,23 @@ class MainWindow(QWidget):
         
         logger.success(f"Очередь #{q_num} завершена. Получено {len(results)} шт...")
         
-        # Переключение UI на следующую очередь (если есть)
         next_idx = idx + 1
         if next_idx < len(self.controller.queue_state.queues_config):
             next_config = self.controller.queue_state.queues_config[next_idx]
             original_next_idx = next_config.get('original_index', next_idx)
-            
-            # Переключаем UI
+        
+            # --- ДОБАВИТЬ: заранее переключаем режим прогресс-бара под следующую очередь ---
+            next_mode = next_config.get("search_mode", "full")
+            self.current_search_mode = next_mode
+            self.progress_panel.set_parser_mode(next_mode)
+        
+            # В primary reset_parser_progress() делать нельзя (иначе вернёте 0..100 и сломаете marquee)
+            if next_mode != "primary":
+                self.progress_panel.reset_parser_progress()
+            # --- /ДОБАВИТЬ ---
+        
             self._safe_switch_queue_ui(original_next_idx)
-            
-            # Загружаем настройки, чтобы пользователь видел, что выполняется
-            self._load_queue_to_ui(original_next_idx)
+            #self._load_queue_to_ui(original_next_idx)
 
     def _on_parser_progress(self, val: int):
         clamped_val = max(0, min(100, val))

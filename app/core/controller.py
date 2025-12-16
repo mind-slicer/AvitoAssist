@@ -267,6 +267,8 @@ class ParserController(QObject):
         ai_debug = config.get('ai_debug_mode', False)
         store = config.get('store_in_memory', False)
         base_offset = config.get('ai_offset', 0)
+
+        search_mode = config.get('search_mode', 'full')
         
         context = {
             "mode": "analysis",
@@ -278,6 +280,7 @@ class ParserController(QObject):
             "priority": priority,
             "user_instructions": user_instructions,
             "has_rag": has_rag,
+            "search_mode": search_mode,
             "items": results,
         }
         self.queue_state.waiting_for_ai_sequence = True

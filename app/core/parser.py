@@ -842,8 +842,8 @@ class AvitoParser(QObject):
             url = f"{base_url}&p={page}" if "?" in base_url else f"{base_url}?p={page}"
         
             ok = PageLoader.safe_get(
-                self.driver_manager.driver, 
-                url, 
+                self.driver_manager.driver,
+                url,
                 self.is_stop_requested,
                 on_request=lambda: self.update_requests_count.emit(1, 0),
                 driver_manager=self.driver_manager,
@@ -856,6 +856,7 @@ class AvitoParser(QObject):
                 continue
         
             PageLoader.scroll_page(self.driver_manager.driver, self.is_stop_requested)
+            has_next = self._has_next_page(page)
             page_items = self._parse_page()
              
             if not page_items:
@@ -920,7 +921,8 @@ class AvitoParser(QObject):
             if is_deep_mode and items_added_on_page > 0:
                 logger.success("Обработка товаров завершена...", token="parser_deep")
         
-            if not self._has_next_page(page): 
+            if not has_next: 
+                logger.info("Следующая страница не найдена (конец пагинации)...")
                 break
              
             page += 1
@@ -1090,7 +1092,7 @@ class AvitoParser(QObject):
                     return True
         
         return False
-    
+
     def _parse_page(self) -> List[Dict[str, Any]]:
         items = []
         try:
@@ -1098,11 +1100,53 @@ class AvitoParser(QObject):
                 source = self.driver_manager.driver.page_source
                 soup = BeautifulSoup(source, 'lxml')
                 elements = soup.select(AvitoSelectors.ITEM_CONTAINER)
+                
                 for el in elements:
                     if self.is_stop_requested(): break
-                    if el.find_parent(class_="carousel"): continue
+                    
+                    # --- НАЧАЛО: Улучшенная фильтрация каруселей и рекомендаций ---
+                    is_carousel = False
+                    
+                    # Проверяем самого элемента и его родителей (до 6 уровней вверх достаточно)
+                    # Авито часто кладет рекомендации в контейнеры с data-marker="recommendations..."
+                    for parent in el.parents:
+                        if parent.name == 'body': 
+                            break
+                        
+                        # Получаем атрибуты
+                        p_classes = parent.get('class', [])
+                        # Превращаем список классов в строку для поиска
+                        p_class_str = " ".join(p_classes).lower() if p_classes else ""
+                        p_marker = parent.get('data-marker', '').lower()
+
+                        # Стоп-слова, указывающие на рекомендательные блоки
+                        stop_words = ['carousel', 'recommend', 'similar', 'suggest', 'slider']
+                        
+                        # 1. Проверка классов
+                        if any(sw in p_class_str for sw in stop_words):
+                            is_carousel = True
+                            break
+                        
+                        # 2. Проверка маркеров
+                        if any(sw in p_marker for sw in stop_words):
+                            is_carousel = True
+                            break
+                            
+                    if is_carousel:
+                        try:
+                            # Пытаемся выцепить заголовок для лога, чтобы понимать, что мы скипнули
+                            title_el = el.select_one(AvitoSelectors.PREVIEW_TITLE)
+                            t_text = title_el.get_text(strip=True)[:30] if title_el else "Unknown"
+                            # Используем dev логгер, чтобы не засорять UI пользователя, но видеть в debug.log
+                            logger.info(f"Исключено из карусели/рекомендаций: {t_text}...")
+                        except:
+                            pass
+                        continue
+                    # --- КОНЕЦ: Улучшенная фильтрация ---
+
                     item = ItemParser.parse_search_item(el)
                     if item: items.append(item)
+                    
         except Exception as e:
             logger.error(f"Ошибка парсинга страницы: {e}...")
         return items

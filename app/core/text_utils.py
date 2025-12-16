@@ -77,3 +77,24 @@ class TextMatcher:
             return cosine_sim[0].tolist()
         except Exception:
             return [0.0] * len(candidates)
+        
+    @staticmethod
+    def filter_similar_items(target_title: str, all_items: List[Dict], threshold: float = 0.35) -> List[Dict]:
+        if not target_title or not all_items:
+            return []
+            
+        candidates = [i.get('title', '') for i in all_items]
+        
+        scores = TextMatcher.calculate_similarity(target_title, candidates)
+        
+        result = []
+        for i, score in enumerate(scores):
+            if score >= threshold:
+                result.append(all_items[i])
+                
+        if len(result) < 3 and len(all_items) > 0:
+             # Сортируем по убыванию скора
+             zipped = sorted(zip(all_items, scores), key=lambda x: x[1], reverse=True)
+             return [x[0] for x in zipped[:10]]
+
+        return result
