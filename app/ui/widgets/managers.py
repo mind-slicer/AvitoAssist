@@ -275,7 +275,7 @@ class QueueItemWidget(QWidget):
     Содержит Чекбокс (для вкл/выкл) и Лейбл (для названия).
     """
     toggled = pyqtSignal(bool)
-    clicked = pyqtSignal() # Сигнал клика по телу (для выбора)
+    clicked = pyqtSignal()
 
     def __init__(self, text, is_checked=True, parent=None):
         super().__init__(parent)
@@ -305,10 +305,7 @@ class QueueItemWidget(QWidget):
         self.setLayout(layout)
 
     def mousePressEvent(self, event: QMouseEvent):
-        # Если клик не попал в чекбокс (а он не попадет, т.к. чекбокс отдельный виджет),
-        # то это клик по телу виджета -> значит выбор строки
         self.clicked.emit()
-        # Не вызываем super(), чтобы не портить логику
     
     def set_text(self, text):
         self.label.setText(text)
@@ -330,6 +327,7 @@ class QueueManagerWidget(QWidget):
     queue_changed = pyqtSignal(int)
     queue_removed = pyqtSignal(int)
     queue_toggled = pyqtSignal(int, bool)
+    queue_renamed = pyqtSignal(int, str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -350,7 +348,7 @@ class QueueManagerWidget(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
             Components.styled_list_widget()
-            + Components.styled_checkbox()   # ← добавили стиль чекбокса
+            + Components.styled_checkbox()
             + f"""
         QListWidget::item {{
             height: 32px;
@@ -365,39 +363,33 @@ class QueueManagerWidget(QWidget):
         )
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         
-        # Контекстное меню
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._on_queue_context_menu)
         
-        # Сигнал смены выбора
         self.list_widget.currentRowChanged.connect(
             lambda r: self.queue_changed.emit(r) if r >= 0 else None
         )
         
         main_layout.addWidget(self.list_widget)
         
-        # Добавляем первую очередь при старте
         self.add_queue()
     
-    def add_queue(self):
-        # Создаем контейнер-итем
+    def add_queue(self, name: str = None):
         item = QListWidgetItem()
-        item.setSizeHint(QSize(0, 34)) # Высота строки
+        item.setSizeHint(QSize(0, 34))
         
-        # Создаем наш кастомный виджет
         idx = self.list_widget.count() + 1
-        widget = QueueItemWidget(f"Очередь {idx}", is_checked=True)
+        default_name = f"Очередь {idx}"
+        widget_name = name if name else default_name
         
-        # Добавляем в список
+        widget = QueueItemWidget(widget_name, is_checked=True)
+
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, widget)
         
-        # Подключаем сигналы виджета к методам
-        # Используем замыкание (item=item), чтобы привязаться к конкретному объекту
         widget.toggled.connect(lambda c, i=item: self._on_widget_toggled(i, c))
         widget.clicked.connect(lambda i=item: self.list_widget.setCurrentItem(i))
         
-        # Обновляем блокировки (если теперь > 1, разблокируем первую)
         self._update_checkable_state()
         
         if self.list_widget.count() == 1:
@@ -408,7 +400,6 @@ class QueueManagerWidget(QWidget):
         if row >= 0 and self.list_widget.count() > 1:
             self.list_widget.takeItem(row)
             
-            # Переименовываем, чтобы сохранить порядок "Очередь 1, 2..." (опционально)
             for i in range(self.list_widget.count()):
                 itm = self.list_widget.item(i)
                 w = self.list_widget.itemWidget(itm)
@@ -419,20 +410,15 @@ class QueueManagerWidget(QWidget):
             self._update_checkable_state()
     
     def _update_checkable_state(self):
-        """
-        Блокирует чекбокс, если осталась ВСЕГО одна очередь.
-        """
         count = self.list_widget.count()
         for i in range(count):
             itm = self.list_widget.item(i)
             widget = self.list_widget.itemWidget(itm)
             if widget:
                 if count == 1:
-                    # Одна очередь: всегда включена и заблокирована
                     widget.set_checked(True)
                     widget.set_checkbox_enabled(False)
                 else:
-                    # Много очередей: разблокированы
                     widget.set_checkbox_enabled(True)
 
     def _on_widget_toggled(self, item, is_checked):
@@ -456,13 +442,14 @@ class QueueManagerWidget(QWidget):
         widget = self.list_widget.itemWidget(item)
         if not widget: return
         
-        # Используем диалог, чтобы избежать проблем с фокусом в списке
         new_name, ok = self._input_dialog("Переименовать", "Новое имя:", widget.text())
         if ok and new_name:
             widget.set_text(new_name)
+            row = self.list_widget.row(item)
+            if row >= 0:
+                self.queue_renamed.emit(row, new_name)
 
     def _input_dialog(self, title: str, label: str, default: str = "") -> tuple:
-        # Дублируем метод диалога, т.к. он удобен
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setModal(True)
@@ -495,8 +482,22 @@ class QueueManagerWidget(QWidget):
             widget = self.list_widget.itemWidget(item)
             if widget:
                 widget.set_checked(checked)
-                # После программного изменения тоже проверяем блокировку
                 self._update_checkable_state()
+
+    def set_queue_name(self, index: int, name: str):
+        if 0 <= index < self.list_widget.count():
+            item = self.list_widget.item(index)
+            widget = self.list_widget.itemWidget(item)
+            if widget:
+                widget.set_text(name)
+                
+    def get_queue_name(self, index: int) -> str:
+        if 0 <= index < self.list_widget.count():
+            item = self.list_widget.item(index)
+            widget = self.list_widget.itemWidget(item)
+            if widget:
+                return widget.text()
+        return ""
 
     def get_all_queues_count(self):
         return self.list_widget.count()

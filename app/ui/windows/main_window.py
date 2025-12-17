@@ -407,6 +407,9 @@ class MainWindow(QWidget):
             "forced_categories": self.search_widget.get_forced_categories(),
             "scanned_categories": self.search_widget.get_scanned_categories()
         })
+        if hasattr(self.controls_widget, "queue_manager_widget"):
+             current_name = self.controls_widget.queue_manager_widget.get_queue_name(idx)
+             state["name"] = current_name
         self.queue_manager.set_state(state, idx)
     
     def _sync_queues_with_ui(self):
@@ -433,15 +436,17 @@ class MainWindow(QWidget):
 
         ui_mgr = self.controls_widget.queue_manager_widget
 
-        # Досоздаём очереди в UI, пока их меньше, чем сохранённых состояний
         while ui_mgr.get_all_queues_count() < len(indices):
             ui_mgr.add_queue()
 
-        # Проставляем включенность чекбоксов из состояния
         for idx in indices:
             state = self.queue_manager.get_state(idx)
             is_enabled = state.get("queue_enabled", True)
             ui_mgr.set_queue_checked(idx, is_enabled)
+
+            saved_name = state.get("name", "")
+            if saved_name:
+                ui_mgr.set_queue_name(idx, saved_name)
 
     def _load_queue_to_ui(self, index: int):
         self._is_programmatic_update = True
@@ -492,8 +497,11 @@ class MainWindow(QWidget):
     def _on_queue_toggled(self, index: int, is_checked: bool):
         self.queue_manager.update_state({"queue_enabled": is_checked}, index)
         
-        status = "включена ✓" if is_checked else "отключена ✗"
+        status = "включена" if is_checked else "отключена"
         logger.info(f"Очередь #{index + 1} {status}...")
+
+    def _on_queue_renamed(self, index: int, new_name: str):
+        self.queue_manager.update_state({"name": new_name}, index)
 
     def _on_pause_neuronet_requested(self):
         self.progress_panel.ai_log.warning(f"Функция паузы нейросети еще не реализована в контроллере.")
@@ -530,26 +538,32 @@ class MainWindow(QWidget):
         
         queue_name = f"#{idx + 1}"
         state = self.queue_manager.get_state(idx)
-        tags = state.get("search_tags", [])
-        if tags:
-            tags_str = ", ".join(tags[:2])
-            if len(tags) > 2: tags_str += "..."
-            queue_name += f" ({tags_str})"
+
+        custom_name = state.get("name", "")
+        if custom_name:
+             queue_name = f"{custom_name}"
+        else:
+            tags = state.get("search_tags", [])
+            if tags:
+                tags_str = ", ".join(tags[:2])
+                if len(tags) > 2: tags_str += "..."
+                queue_name += f" ({tags_str})"
 
         dlg = ScanPromptDialog(queue_name, self)
         res = dlg.exec()
         
         if res == 10:
             logger.info(f"Запуск сканирования категорий для очереди {queue_name}...")
+            tags = state.get("search_tags", [])
             self.controller.scan_categories(tags)
             
         elif res == 20:
-            logger.info(f"Очередь {queue_name}: выбран авто-режим категорий.")
+            logger.info(f"Очередь {queue_name}: выбран авто-режим категорий...")
             self._validating_index = None
             self._process_next_validation_step()
             
         else:
-            logger.info("Запуск отменен пользователем.")
+            logger.info("Запуск отменен пользователем...")
             self._validation_queue.clear()
             self._validating_index = None
             self.controls_widget.set_ui_locked(False)
@@ -558,6 +572,10 @@ class MainWindow(QWidget):
         all_indices = self.queue_manager.get_all_queue_indices()
         active_configs = []
         
+        ui_mgr = None
+        if hasattr(self.controls_widget, "queue_manager_widget"):
+            ui_mgr = self.controls_widget.queue_manager_widget
+
         for idx in all_indices:
             state = self.queue_manager.get_state(idx)
             if state.get("queue_enabled", True):
@@ -565,6 +583,9 @@ class MainWindow(QWidget):
                     logger.warning(f"Очередь #{idx+1} пропущена: нет тегов...")
                     continue
                 state['original_index'] = idx
+                if ui_mgr:
+                    q_name = ui_mgr.get_queue_name(idx)
+                    state['queue_name'] = q_name
                 active_configs.append(state)
         
         if not active_configs:
@@ -588,11 +609,12 @@ class MainWindow(QWidget):
             if merge_file and os.path.exists(merge_file):
                 self.current_json_file = merge_file
                 self.current_results = self._load_results_file_silent(merge_file)
-                logger.info(f"Режим добавления: {os.path.basename(merge_file)}")
+                logger.info(f"Режим добавления: {os.path.basename(merge_file)}...")
             else:
-                self._create_new_results_file()
+                first_queue_name = first_config.get('queue_name', '')
+                self._create_new_results_file(queue_name=first_queue_name)
                 self.current_results = []
-                logger.info(f"Режим слияния: Создан новый файл для всех очередей")
+                logger.info(f"Режим слияния: создан новый файл для всех очередей...")
         
         base_count = len(self.current_results or [])
 
@@ -679,6 +701,9 @@ class MainWindow(QWidget):
         final_list = list(base_map.values()) + new_entries
         return final_list, added, updated, skipped
 
+    def _sanitize_filename(self, name: str) -> str:
+        return "".join(c if c.isalnum() or c in (' ', '-', '_', '.') else '_' for c in name).strip()
+
     def _on_parsing_finished(self, results: List[Dict]):
         idx = self.controller.queue_state.current_queue_index
         if idx < len(self.controller.queue_state.queues_config):
@@ -703,9 +728,15 @@ class MainWindow(QWidget):
             self.progress_panel.set_finished_state()
             logger.success("Парсинг завершен...")
 
-    def _create_new_results_file(self):
-        timestamp = time.strftime('%Y%m%d_%H%M%S')
-        filename = f"avito_search_{timestamp}.json"
+    def _create_new_results_file(self, queue_name: str = ""):
+        timestamp = time.strftime('%d%m%Y_%H%M%S')
+        
+        if queue_name:
+            safe_name = self._sanitize_filename(queue_name)
+            filename = f"avito_{safe_name}_{timestamp}.json"
+        else:
+            filename = f"avito_search_{timestamp}.json"
+            
         self.current_json_file = os.path.join(RESULTS_DIR, filename)
 
     def _save_results_to_file(self):
@@ -741,40 +772,32 @@ class MainWindow(QWidget):
         config = {}
         if idx < len(self.controller.queue_state.queues_config):
             config = self.controller.queue_state.queues_config[idx]
-        q_num = config.get('original_index', idx) + 1
-        
-        logger.success(f"Очередь #{q_num} завершена. Получено {len(results)} шт...")
+        q_name = config.get('queue_name', f"#{idx + 1}")
+        logger.success(f"Очередь #{q_name} завершена. Получено {len(results)} шт...")
         
         next_idx = idx + 1
         if next_idx < len(self.controller.queue_state.queues_config):
             next_config = self.controller.queue_state.queues_config[next_idx]
             original_next_idx = next_config.get('original_index', next_idx)
         
-            # --- ДОБАВИТЬ: заранее переключаем режим прогресс-бара под следующую очередь ---
             next_mode = next_config.get("search_mode", "full")
             self.current_search_mode = next_mode
             self.progress_panel.set_parser_mode(next_mode)
         
-            # В primary reset_parser_progress() делать нельзя (иначе вернёте 0..100 и сломаете marquee)
             if next_mode != "primary":
                 self.progress_panel.reset_parser_progress()
-            # --- /ДОБАВИТЬ ---
         
             self._safe_switch_queue_ui(original_next_idx)
-            #self._load_queue_to_ui(original_next_idx)
 
     def _on_parser_progress(self, val: int):
         clamped_val = max(0, min(100, val))
         
-        # Если режим не primary (там Value не имеет значения), обновляем значение
         if self.current_search_mode != "primary":
-            # Если вдруг диапазон сбился (например, равен 0-0), восстанавливаем 0-100
             if self.progress_panel.parser_bar.maximum() == 0:
                  self.progress_panel.parser_bar.setRange(0, 100)
             
             self.progress_panel.parser_bar.setValue(clamped_val)
         
-        # Логирование оставляем как было...
         if clamped_val > 0 and clamped_val < 100:
             logger.progress(f"Выполнение: {clamped_val}%", token="parser_global_progress")
         elif clamped_val == 100:
@@ -1122,22 +1145,34 @@ class MainWindow(QWidget):
                     logger.dev(f"Memory add_item error: {e}", level="ERROR")
 
     def _save_results_for_config(self, results: List[Dict], config: Dict, idx: int):
+        q_name = config.get("queue_name", f"Queue {idx+1}")
+        if not results:
+            logger.warning(f"Очередь '{q_name}': результатов нет, файл не создан...")
+            return
+        
         split_results = config.get("split_results", False)
         rewrite = config.get("rewrite_duplicates", False)
 
         if split_results:
-            timestamp = time.strftime('%Y%m%d_%H%M%S')
-            q_num = config.get('original_index', idx) + 1
-            filename = f"avito_search_q{q_num}_{timestamp}.json"
+            timestamp = time.strftime('%d%m%Y_%H%M%S')
+
+            raw_queue_name = config.get('queue_name', '')
+            if not raw_queue_name:
+                q_num = config.get('original_index', idx) + 1
+                raw_queue_name = f"queue_{q_num}"
+            
+            safe_name = self._sanitize_filename(raw_queue_name)
+            filename = f"avito_{safe_name}_{timestamp}.json"
             target_file = os.path.join(RESULTS_DIR, filename)
 
             base_items: List[Dict] = []
             merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
             self._save_list_to_file(merged, target_file)
-            logger.success(f"Очередь #{q_num}: Сохранено в {filename} (добавлено {added}, обновлено {updated}, пропущено {skipped})")
+            
+            logger.success(f"Очередь '{raw_queue_name}': Сохранено в {filename} (добавлено {added})...")
         else:
             if not self.current_json_file:
-                self._create_new_results_file()
+                self._create_new_results_file(queue_name=q_name)
 
             base_items = self.current_results
             merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
@@ -1157,16 +1192,13 @@ class MainWindow(QWidget):
                 self.results_area.mini_browser.refresh_files()
 
     def _open_rag_tab(self):
-        """Переключиться на Аналитику → вкладка RAG‑статус"""
-        # Страница Аналитика
         self._switch_page(1)
-        # Вкладка RAG‑статус (первая)
         if hasattr(self.analytics_widget, "tabs"):
             self.analytics_widget.tabs.setCurrentIndex(0)
 
     def _on_scan_finished(self, categories):
         if self._validating_index is not None:
-            logger.info(f"Категории получены. Открываем выбор для очереди #{self._validating_index + 1}")
+            logger.info(f"Категории получены. Открываем выбор для очереди #{self._validating_index + 1}...")
             
             state = self.queue_manager.get_state(self._validating_index)
             current_forced = state.get("forced_categories", [])
