@@ -318,15 +318,12 @@ class ControlsWidget(QWidget):
 
     def _update_duplicates_toggle_state(self):
         has_table = self.merge_table_combo.currentData() is not None
-        is_split = self.split_results_sw.isChecked()
-        self.rewrite_duplicates_sw.setEnabled(has_table and not is_split)
-        if not has_table or is_split:
+        self.rewrite_duplicates_sw.setEnabled(has_table)
+
+        if not has_table:
             self.rewrite_duplicates_sw.setChecked(False)
 
     def _on_split_results_toggled(self, checked):
-        self.merge_table_combo.setEnabled(not checked)
-        if checked:
-            self.merge_table_combo.setCurrentIndex(0)
         self._update_duplicates_toggle_state()
         self._emit_parameters_changed()
 
@@ -777,8 +774,6 @@ class ControlsWidget(QWidget):
             self.filter_defects_sw.setChecked(params.get("filter_defects", False))
             if hasattr(self, "rewrite_duplicates_sw"):
                 self.rewrite_duplicates_sw.setChecked(bool(params.get("rewrite_duplicates", False)))
-            if hasattr(self, "split_results_sw"):
-                self.split_results_sw.setChecked(bool(params.get("split_results", False)))
             if hasattr(self, "sort_combo"):
                 sort_type = params.get("sort_type", "date")
                 for i in range(self.sort_combo.count()):
@@ -831,7 +826,7 @@ class ControlsWidget(QWidget):
         if hasattr(self, "sort_combo"): self.sort_combo.setEnabled(not locked)
         if hasattr(self, "rewrite_duplicates_sw"): self.rewrite_duplicates_sw.setEnabled(not locked and self.merge_table_combo.currentData() is not None)
         if hasattr(self, "split_results_sw"): self.split_results_sw.setEnabled(not locked)
-        if hasattr(self, "merge_table_combo"): self.merge_table_combo.setEnabled(not locked and not self.split_results_sw.isChecked())
+        if hasattr(self, "merge_table_combo"): self.merge_table_combo.setEnabled(not locked)
         if hasattr(self, "queue_manager_widget"): self.queue_manager_widget.setEnabled(not locked)
         if hasattr(self, "blacklist_widget"): self.blacklist_widget.setEnabled(not locked)
         if hasattr(self, "search_mode_widget"): self.search_mode_widget.setEnabled(not locked)

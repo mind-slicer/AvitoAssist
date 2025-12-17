@@ -236,9 +236,13 @@ class SearchNavigator:
         current_url = self.driver.current_url
         need_navigation = False
         
+        parsed = urlparse(current_url)
+        clean_path = parsed.path.strip('/')
+        allowed_paths = ['moskva', 'rossiya', '']
+
         if "avito.ru" not in current_url:
             need_navigation = True
-        elif any(keyword in current_url for keyword in ["/catalog", "/audio", "/noutbuki", "/planshety", "/kompyutery", "/bytovaya"]):
+        elif clean_path not in allowed_paths:
             need_navigation = True
         else:
             try:
@@ -251,14 +255,14 @@ class SearchNavigator:
         if need_navigation:
             logger.dev("Сброс навигации на главную (Москва)...")
             if not PageLoader.safe_get(self.driver, "https://www.avito.ru/moskva"):
-                logger.warning("Не удалось загрузить главную страницу")
+                logger.warning("Не удалось загрузить главную страницу...")
                 return None
-            time.sleep(0.5 if fast_mode else 2)
+            time.sleep(1.5 if fast_mode else 2.5)
         
         search_input = None
         for i, selector in enumerate(AvitoSelectors.SEARCH_INPUTS):
             try:
-                search_input = WebDriverWait(self.driver, 2).until(
+                search_input = WebDriverWait(self.driver, 3).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                 )
                 if search_input.is_displayed():
@@ -280,7 +284,10 @@ class SearchNavigator:
         
             if fast_mode:
                 search_input.click()
-                search_input.clear()
+                try:
+                    search_input.clear()
+                except: pass
+                time.sleep(0.2)
                 search_input.send_keys(keywords)
             else:
                 self._human_type(search_input, keywords)
@@ -372,7 +379,9 @@ class SearchNavigator:
         collected_urls = []
         try:
             logger.info(f"Умный поиск: '{keywords}'...", token="smart_search")
-        
+
+            time.sleep(1.0)
+
             items = self._type_query(keywords)
             if not items:
                 logger.warning("Меню категорий не открылось...")
@@ -460,26 +469,38 @@ class SearchNavigator:
                     else:
                         items = self._type_query(keywords, fast_mode=True)
                         if items:
+                            tgt_norm = normalize(target_text)
                             for item in items:
-                                if item.text.replace("\n", " ").strip() == target_text:
+                                itm_text = item.text.replace("\n", " ").strip()
+                                if normalize(itm_text) == tgt_norm or tgt_norm in normalize(itm_text):
                                     target = {'text': target_text, 'element': item, 'index': 0}
                                     break
                      
-                    if not target: continue
+                    if not target: 
+                        logger.warning(f"Не удалось повторно найти элемент: {target_text}...")
+                        continue
         
                     try:
                         self.driver.execute_script("arguments[0].click();", target['element'])
                         time.sleep(1.5)
                         waited = 0
+                        found_url = False
                         while waited < 8:
                             time.sleep(0.5)
                             waited += 0.5
-                            if self._is_valid_url(self.driver.current_url) and self.driver.current_url not in collected_urls:
-                                collected_urls.append(self.driver.current_url)
+                            curr = self.driver.current_url
+                            if self._is_valid_url(curr):
+                                collected_urls.append(curr)
+                                found_url = True
                                 break
-                    except: pass
+                        
+                        if not found_url:
+                            logger.warning(f"URL не изменился после клика на {target_text}...")
+
+                    except Exception as e:
+                        logger.error(f"Ошибка клика: {e}...")
                 except Exception as e:
-                    logger.error(f"Сбой перехода '{target_text}'...: {e}")
+                    logger.error(f"Сбой перехода '{target_text}': {e}...")
                     continue
                  
             logger.success("Категории найдены...", token="smart_search")

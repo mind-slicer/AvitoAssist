@@ -263,6 +263,11 @@ class MainWindow(QWidget):
         top_layout.addWidget(self.search_widget)
 
         self.controls_widget = ControlsWidget()
+
+        split_saved = self.app_settings.get("global_split_results", False)
+        if hasattr(self.controls_widget, "split_results_sw"):
+            self.controls_widget.split_results_sw.setChecked(split_saved)
+
         top_layout.addWidget(self.controls_widget)
 
         # --- STATS CONTAINER (MODIFIED) ---
@@ -270,14 +275,6 @@ class MainWindow(QWidget):
         stats_layout = QHBoxLayout(stats_container)
         stats_layout.setContentsMargins(0, 0, 0, 0)
         stats_layout.setSpacing(Spacing.MD)
-
-        # OLD STATS WIDGETS COMMENTED OUT
-        #self.ai_stats_panel = AIStatsPanel(self)
-        # stats_layout.addWidget(self.ai_stats_panel)
-
-        #self.rag_stats_panel = RAGStatsPanel(self)
-        #self.rag_stats_panel.navigate_to_rag.connect(self._open_rag_tab)
-        # stats_layout.addWidget(self.rag_stats_panel)
         
         # NEW WIP PLACEHOLDER
         wip_frame = QFrame()
@@ -593,6 +590,15 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Ошибка", "Нет активных очередей с тегами для поиска!")
             return
 
+        # --- ПОЛУЧЕНИЕ ГЛОБАЛЬНОГО РЕЖИМА РАЗДЕЛЕНИЯ ---
+        global_split_mode = False
+        if hasattr(self.controls_widget, "split_results_sw"):
+            global_split_mode = self.controls_widget.split_results_sw.isChecked()
+
+        # Принудительно применяем глобальный режим ко всем очередям
+        for cfg in active_configs:
+            cfg['split_results'] = global_split_mode
+
         self.is_sequence_running = True
         self.controls_widget.set_ui_locked(True)
         
@@ -602,9 +608,9 @@ class MainWindow(QWidget):
         self.cnt_neuro = 0
         
         first_config = active_configs[0]
-        split_results = first_config.get("split_results", False)
         
-        if not split_results:
+        # Если разделение ВЫКЛЮЧЕНО (глобально) - готовим один общий файл
+        if not global_split_mode:
             merge_file = first_config.get("merge_with_table")
             if merge_file and os.path.exists(merge_file):
                 self.current_json_file = merge_file
@@ -617,15 +623,21 @@ class MainWindow(QWidget):
                 logger.info(f"Режим слияния: создан новый файл для всех очередей...")
         
         base_count = len(self.current_results or [])
-
+        
         for cfg in active_configs:
             cfg['debug_mode'] = self.app_settings.get('debug_mode', False)
             cfg['ai_debug_mode'] = self.app_settings.get('ai_debug', False)
             
-            if not split_results:
+            # Назначаем целевую таблицу в зависимости от глобального режима
+            if not global_split_mode:
                 cfg['context_table'] = self.current_json_file
             else:
-                cfg['context_table'] = None
+                # В режиме сплита проверяем персональную таблицу очереди
+                custom_table = cfg.get('merge_with_table')
+                if custom_table and os.path.exists(custom_table):
+                    cfg['context_table'] = custom_table
+                else:
+                    cfg['context_table'] = None
 
             cfg['ai_offset'] = base_count
         
@@ -1154,25 +1166,45 @@ class MainWindow(QWidget):
         rewrite = config.get("rewrite_duplicates", False)
 
         if split_results:
-            timestamp = time.strftime('%d%m%Y_%H%M%S')
-
-            raw_queue_name = config.get('queue_name', '')
-            if not raw_queue_name:
-                q_num = config.get('original_index', idx) + 1
-                raw_queue_name = f"queue_{q_num}"
+            target_file = config.get('context_table')
             
-            safe_name = self._sanitize_filename(raw_queue_name)
-            filename = f"avito_{safe_name}_{timestamp}.json"
-            target_file = os.path.join(RESULTS_DIR, filename)
+            if target_file and os.path.exists(target_file):
+                base_items = self._load_results_file_silent(target_file)
+                merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
+                self._save_list_to_file(merged, target_file)
+                
+                if self.current_json_file == target_file:
+                     self.current_results = merged
+                     self.results_area.load_full_history(merged)
+                
+                logger.success(f"Очередь '{q_name}': Добавлено {added}, Обновлено {updated} в {os.path.basename(target_file)}")
+                
+                if hasattr(self.results_area, "mini_browser"):
+                    self.results_area.mini_browser.refresh_files()
 
-            base_items: List[Dict] = []
-            merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
-            self._save_list_to_file(merged, target_file)
-            
-            logger.success(f"Очередь '{raw_queue_name}': Сохранено в {filename} (добавлено {added})...")
+            else:
+                timestamp = time.strftime('%d%m%Y_%H%M%S')
+                raw_queue_name = config.get('queue_name', '')
+                if not raw_queue_name:
+                    q_num = config.get('original_index', idx) + 1
+                    raw_queue_name = f"queue_{q_num}"
+                
+                safe_name = self._sanitize_filename(raw_queue_name)
+                filename = f"avito_{safe_name}_{timestamp}.json"
+                target_file = os.path.join(RESULTS_DIR, filename)
+
+                base_items: List[Dict] = []
+                merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
+                self._save_list_to_file(merged, target_file)
+                
+                logger.success(f"Очередь '{raw_queue_name}': Сохранено в {filename} (добавлено {added})...")
+
+                if hasattr(self.results_area, "mini_browser"):
+                    self.results_area.mini_browser.refresh_files()
+
         else:
             if not self.current_json_file:
-                self._create_new_results_file(queue_name=q_name)
+                 self._create_new_results_file(queue_name=q_name)
 
             base_items = self.current_results
             merged, added, updated, skipped = self._merge_results(results, base_items, rewrite)
@@ -1189,7 +1221,8 @@ class MainWindow(QWidget):
                     full_date=fulldate,
                     count=len(self.current_results)
                 )
-                self.results_area.mini_browser.refresh_files()
+                if hasattr(self.results_area, "mini_browser"):
+                    self.results_area.mini_browser.refresh_files()
 
     def _open_rag_tab(self):
         self._switch_page(1)
@@ -1781,6 +1814,11 @@ class MainWindow(QWidget):
         self._sync_queues_with_ui() 
 
         self.queue_manager.save_current_state()
+
+        if hasattr(self, 'controls_widget') and hasattr(self.controls_widget, "split_results_sw"):
+            self.app_settings["global_split_results"] = self.controls_widget.split_results_sw.isChecked()
+        self._save_settings()
+
         if hasattr(self, 'tracker'):
             self.tracker.stop()
         
