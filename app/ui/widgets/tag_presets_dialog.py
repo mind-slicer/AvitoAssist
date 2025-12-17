@@ -201,10 +201,6 @@ class TagPresetsDialog(QDialog):
         tools.addStretch(1)
         right.addLayout(tools)
 
-        hint = QLabel("Набор в меню ★ вставляет только теги корня; папка — теги рекурсивно.")
-        hint.setStyleSheet(Components.muted_label() if hasattr(Components, "muted_label") else Components.panel())
-        right.addWidget(hint)
-
         btn_box = QHBoxLayout()
         b_close = QPushButton("Закрыть")
         b_close.setMinimumSize(30, 25)

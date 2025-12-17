@@ -50,16 +50,26 @@ def build():
     
     print("\n--- Copying external resources ---")
     
+    # Копируем папки
     folders_to_copy = ["backends", "models", "icons"]
     for folder in folders_to_copy:
         src = folder
         dst = os.path.join(target_dir, folder)
         if os.path.exists(src):
-            print(f"Copying {src} -> {dst}")
+            print(f"Copying folder {src} -> {dst}")
             if os.path.exists(dst): shutil.rmtree(dst)
             shutil.copytree(src, dst)
         else:
-            print(f"WARNING: Folder '{src}' not found! AI might not work.")
+            print(f"WARNING: Folder '{src}' not found!")
+
+    # Копируем конкретные файлы (пресеты)
+    files_to_copy = ["tag_presets.json", "tag_presets_ignore.json"]
+    for filename in files_to_copy:
+        if os.path.exists(filename):
+            print(f"Copying file {filename} -> {target_dir}")
+            shutil.copy(filename, target_dir)
+        else:
+            print(f"WARNING: File '{filename}' not found! Run generate_cpu_presets.py first.")
 
     print(f"\n--- BUILD SUCCESSFUL ---")
     print(f"Executable is located in: {target_dir}/{app_name}.exe")

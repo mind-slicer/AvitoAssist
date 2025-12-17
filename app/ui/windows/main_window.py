@@ -1202,7 +1202,7 @@ class MainWindow(QWidget):
     def _on_categories_selected(self, cats):
         logger.info(f"Выбрано {len(cats)} категорий...")
 
-    def on_apply_tags_to_new_queue_requested(self, tags: list, is_ignore: bool):
+    def on_apply_tags_to_new_queue_requested(self, search_tags: list, ignore_tags: list):
         self._save_current_queue_state()
     
         if not hasattr(self.controls_widget, "queue_manager_widget"):
@@ -1216,11 +1216,9 @@ class MainWindow(QWidget):
         base_idx = self.queue_manager.get_current_index()
         base_state = self.queue_manager.get_state(base_idx).copy()
     
-        if is_ignore:
-            base_state["ignore_tags"] = list(tags)
-        else:
-            base_state["search_tags"] = list(tags)
-            base_state["forced_categories"] = []  # чтобы не тянуло старые категории
+        base_state["search_tags"] = list(search_tags)
+        base_state["ignore_tags"] = list(ignore_tags)
+        base_state["forced_categories"] = []  
     
         self.queue_manager.set_state(base_state, new_index)
         self.queue_manager.set_current_index(new_index)

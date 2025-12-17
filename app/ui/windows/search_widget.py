@@ -1,11 +1,13 @@
 import os
 import json
-from typing import List, Dict
+from typing import List, Dict, Set, Tuple
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QMessageBox,
-    QSizePolicy, QFrame, QLabel, QMenu, QWidgetAction
+    QSizePolicy, QFrame, QLabel, QMenu, QWidgetAction, QDialog,
+    QTreeWidget, QTreeWidgetItem, QApplication, QTreeWidgetItemIterator
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
+from PyQt6.QtGui import QColor
 
 from app.ui.widgets.tags import TagsInput
 from app.ui.widgets.category_selection_dialog import CategorySelectionDialog
@@ -13,22 +15,379 @@ from app.ui.widgets.tag_presets_dialog import TagPresetsDialog
 from app.ui.styles import Components, Palette, Spacing
 from app.config import BASE_APP_DIR
 
+
+class PresetsSelectPopup(QDialog):
+    def __init__(self, parent, 
+                 search_presets: dict, 
+                 ignore_presets: dict, 
+                 saved_checked: Set[str],    # Состояние галочек
+                 saved_expanded: Set[str],   # Состояние раскрытых папок
+                 primary_is_ignore: bool):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
+        self.saved_checked = set(saved_checked)
+        self.saved_expanded = set(saved_expanded)
+        self.primary_is_ignore = primary_is_ignore
+        
+        self.selected_search_tags = []
+        self.selected_ignore_tags = []
+        self.new_checked_state = set()
+        self.action_type = None 
+        
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {Palette.BG_DARK_2};
+                border: 1px solid {Palette.BORDER_SOFT};
+                border-radius: {Spacing.RADIUS_NORMAL}px;
+            }}
+            QTreeWidget {{
+                background-color: transparent;
+                border: none;
+                color: {Palette.TEXT};
+            }}
+            QTreeWidget::item {{ padding: 4px; }}
+            QTreeWidget::item:hover {{ background-color: {Palette.BG_DARK_3}; }}
+            QTreeWidget::item:selected {{ background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)}; color: {Palette.TEXT}; }}
+            QLabel {{ color: {Palette.TEXT_MUTED}; }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(Spacing.XS, Spacing.XS, Spacing.XS, Spacing.XS)
+        layout.setSpacing(Spacing.SM)
+        
+        # --- 1. ЗАГОЛОВОК И НАСТРОЙКИ ---
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(4, 0, 4, 0)
+        
+        lbl = QLabel("")
+        lbl.setStyleSheet("font-weight: bold; font-size: 11px;")
+        
+        manage_text = "⚙ Управление наборами фильтров" if primary_is_ignore else "⚙ Управление наборами поиска"
+        manage_mode = 'ignore' if primary_is_ignore else 'search'
+        
+        btn_manage = QPushButton(manage_text)
+        btn_manage.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_manage.setStyleSheet(f"border: none; color: {Palette.PRIMARY}; font-size: 11px; text-align: right;")
+        btn_manage.clicked.connect(lambda: self._on_manage(manage_mode))
+        
+        header_layout.addWidget(lbl)
+        header_layout.addStretch()
+        header_layout.addWidget(btn_manage)
+        layout.addLayout(header_layout)
+        
+        # --- 2. ДЕРЕВО ---
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        layout.addWidget(self.tree)
+        
+        # Наполняем дерево (сигналы еще НЕ подключены, ошибок не будет)
+        if primary_is_ignore:
+            self._add_root_section("ИСКЛЮЧАЕМ", ignore_presets, "ignore")
+            self._add_root_section("ИЩЕМ", search_presets, "search")
+        else:
+            self._add_root_section("ИЩЕМ", search_presets, "search")
+            self._add_root_section("ИСКЛЮЧАЕМ", ignore_presets, "ignore")
+
+        # --- 3. ЗОНА ПРЕДПРОСМОТРА ВЫБРАННОГО ---
+        summary_container = QFrame()
+        summary_container.setStyleSheet(f"background-color: {Palette.BG_DARK_3}; border-radius: 4px;")
+        summary_layout = QVBoxLayout(summary_container)
+        summary_layout.setContentsMargins(6, 6, 6, 6)
+        summary_layout.setSpacing(4)
+        
+        sum_header = QHBoxLayout()
+        self.lbl_summary_count = QLabel("Выбрано: 0")
+        self.lbl_summary_count.setStyleSheet("font-weight: bold; font-size: 10px;")
+        
+        btn_clear = QPushButton("Очистить всё")
+        btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_clear.setFixedSize(80, 16)
+        btn_clear.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {Palette.ERROR}; border: none; font-size: 10px; }}
+            QPushButton:hover {{ text-decoration: underline; }}
+        """)
+        btn_clear.clicked.connect(self._clear_all_checks)
+        
+        sum_header.addWidget(self.lbl_summary_count)
+        sum_header.addStretch()
+        sum_header.addWidget(btn_clear)
+        summary_layout.addLayout(sum_header)
+        
+        self.lbl_summary_text = QLabel("Нет тегов")
+        self.lbl_summary_text.setWordWrap(True)
+        self.lbl_summary_text.setStyleSheet(f"color: {Palette.TEXT_SECONDARY}; font-size: 10px;")
+        self.lbl_summary_text.setMaximumHeight(40)
+        summary_layout.addWidget(self.lbl_summary_text)
+        
+        layout.addWidget(summary_container)
+
+        # --- 4. КНОПКИ ДЕЙСТВИЙ ---
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(2)
+        
+        self.btn_apply_curr = QPushButton("✅ Применить в текущую очередь")
+        self.btn_apply_curr.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_apply_curr.setStyleSheet(self._btn_style(Palette.PRIMARY))
+        self.btn_apply_curr.clicked.connect(self._on_apply_current)
+        btn_layout.addWidget(self.btn_apply_curr)
+        
+        if not primary_is_ignore:
+            self.btn_apply_new = QPushButton("➕ Применить в новую очередь")
+            self.btn_apply_new.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn_apply_new.setStyleSheet(self._btn_style(Palette.PRIMARY))
+            self.btn_apply_new.clicked.connect(self._on_apply_new)
+            btn_layout.addWidget(self.btn_apply_new)
+            
+        layout.addLayout(btn_layout)
+        
+        self.resize(340, 600)
+        
+        # Обновляем текст summary первый раз (вручную, так как сигналы еще отключены)
+        self._refresh_summary() 
+
+        # --- 5. ВАЖНО: ПОДКЛЮЧАЕМ СИГНАЛЫ ТОЛЬКО СЕЙЧАС ---
+        # (чтобы избежать AttributeError при инициализации)
+        self.tree.itemChanged.connect(self._on_item_changed)
+        self.tree.itemExpanded.connect(self._on_item_expanded)
+        self.tree.itemCollapsed.connect(self._on_item_collapsed)
+
+    def _btn_style(self, color):
+        return f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.BORDER_SOFT};
+                border-radius: 4px;
+                color: {Palette.TEXT};
+                padding: 8px;
+                text-align: center;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {color};
+                color: {Palette.BG_DARK};
+                border-color: {color};
+            }}
+        """
+
+    def _add_root_section(self, title: str, presets: dict, tag_type: str):
+        root = QTreeWidgetItem([title])
+        root.setFlags(Qt.ItemFlag.ItemIsEnabled) 
+        root.setBackground(0, QColor(Palette.BG_DARK_3))
+        root.setForeground(0, QColor(Palette.TEXT_MUTED))
+        font = root.font(0)
+        font.setBold(True)
+        root.setFont(0, font)
+        self.tree.addTopLevelItem(root)
+        
+        root_key = f"ROOT:{tag_type}"
+        root.setData(0, Qt.ItemDataRole.UserRole + 2, root_key)
+        if root_key in self.saved_expanded:
+            root.setExpanded(True)
+
+        sorted_keys = sorted(presets.keys())
+        for name in sorted_keys:
+            node_data = presets[name]
+            preset_item = QTreeWidgetItem([f"📂 {name}"])
+            preset_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            
+            expand_key = f"{tag_type}|PRESET:{name}"
+            preset_item.setData(0, Qt.ItemDataRole.UserRole + 2, expand_key)
+            if expand_key in self.saved_expanded:
+                preset_item.setExpanded(True)
+                
+            root.addChild(preset_item)
+            self._add_children_recursive(preset_item, node_data, tag_type, expand_key)
+
+    def _add_children_recursive(self, parent_item, node_data, tag_type, parent_key_path):
+        children = node_data.get("children", [])
+        
+        for ch in children:
+            if ch.get("type") == "folder":
+                fname = ch.get('name', '')
+                item = QTreeWidgetItem([f"📁 {fname}"])
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                
+                expand_key = f"{parent_key_path}|{fname}"
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, expand_key)
+                parent_item.addChild(item)
+                if expand_key in self.saved_expanded:
+                    item.setExpanded(True)
+                
+                self._add_children_recursive(item, ch, tag_type, expand_key)
+                
+            elif ch.get("type") == "tag":
+                tag_val = ch.get("value", "")
+                item = QTreeWidgetItem([f"🏷 {tag_val}"])
+                
+                item.setData(0, Qt.ItemDataRole.UserRole, tag_val) 
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, tag_type)
+                
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                
+                state_key = f"{tag_type}|{tag_val}"
+                if state_key in self.saved_checked:
+                    item.setCheckState(0, Qt.CheckState.Checked)
+                else:
+                    item.setCheckState(0, Qt.CheckState.Unchecked)
+                
+                parent_item.addChild(item)
+
+    def _on_item_changed(self, item, column):
+        self._refresh_summary()
+
+    def _on_item_expanded(self, item):
+        key = item.data(0, Qt.ItemDataRole.UserRole + 2)
+        if key: self.saved_expanded.add(key)
+
+    def _on_item_collapsed(self, item):
+        key = item.data(0, Qt.ItemDataRole.UserRole + 2)
+        if key and key in self.saved_expanded:
+            self.saved_expanded.remove(key)
+
+    def _refresh_summary(self):
+        count = 0
+        preview_text = []
+        
+        iterator = QTreeWidgetItemIterator(self.tree, QTreeWidgetItemIterator.IteratorFlag.Checked)
+        while iterator.value():
+            item = iterator.value()
+            tag = item.data(0, Qt.ItemDataRole.UserRole)
+            if tag:
+                count += 1
+                if count <= 5: 
+                    preview_text.append(tag)
+            iterator += 1
+            
+        self.lbl_summary_count.setText(f"Выбрано: {count}")
+        
+        if count == 0:
+            self.lbl_summary_text.setText("Ничего не выбрано")
+            self.lbl_summary_text.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-style: italic; font-size: 10px;")
+        else:
+            txt = ", ".join(preview_text)
+            if count > 5: txt += f" ... и еще {count - 5}"
+            self.lbl_summary_text.setText(txt)
+            self.lbl_summary_text.setStyleSheet(f"color: {Palette.PRIMARY}; font-weight: bold; font-size: 10px;")
+
+    def _clear_all_checks(self):
+        self.tree.blockSignals(True)
+        iterator = QTreeWidgetItemIterator(self.tree, QTreeWidgetItemIterator.IteratorFlag.Checked)
+        while iterator.value():
+            item = iterator.value()
+            item.setCheckState(0, Qt.CheckState.Unchecked)
+            iterator += 1
+        self.tree.blockSignals(False)
+        self._refresh_summary()
+
+    def done(self, result):
+        """
+        Переопределяем закрытие диалога.
+        Используем рекурсивный обход вместо итератора, чтобы гарантированно 
+        сохранить состояние ВСЕХ элементов (даже скрытых внутри свернутых папок).
+        """
+        self.final_checked_state = set()
+        self.final_expanded_state = set()
+
+        def _traverse(item):
+            # 1. Сохраняем РАСКРЫТИЕ
+            # Важно: проверяем isExpanded(), даже если родитель свернут.
+            if item.isExpanded():
+                key = item.data(0, Qt.ItemDataRole.UserRole + 2)
+                if key:
+                    self.final_expanded_state.add(key)
+
+            # 2. Сохраняем ГАЛОЧКИ
+            if item.checkState(0) == Qt.CheckState.Checked:
+                tag = item.data(0, Qt.ItemDataRole.UserRole)
+                t_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+                if tag and t_type:
+                    self.final_checked_state.add(f"{t_type}|{tag}")
+            
+            # 3. Рекурсивно идем вглубь
+            for i in range(item.childCount()):
+                _traverse(item.child(i))
+
+        # Запускаем обход для всех корневых элементов
+        for i in range(self.tree.topLevelItemCount()):
+            _traverse(self.tree.topLevelItem(i))
+            
+        super().done(result)
+
+    def get_state(self):
+        """
+        Возвращает сохраненное состояние. 
+        Безопасно вызывать после закрытия окна.
+        """
+        # Если окно закрыли до инициализации (теоретически), возвращаем пустые/исходные наборы
+        if not hasattr(self, 'final_checked_state'):
+            return self.saved_checked, self.saved_expanded
+            
+        return self.final_checked_state, self.final_expanded_state
+
+    def _collect_final_state(self):
+        s_tags = []
+        i_tags = []
+        new_checked = set()
+        
+        iterator = QTreeWidgetItemIterator(self.tree, QTreeWidgetItemIterator.IteratorFlag.Checked)
+        while iterator.value():
+            item = iterator.value()
+            tag = item.data(0, Qt.ItemDataRole.UserRole)
+            t_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            
+            if tag and t_type:
+                if t_type == 'search': s_tags.append(tag)
+                elif t_type == 'ignore': i_tags.append(tag)
+                new_checked.add(f"{t_type}|{tag}")
+            iterator += 1
+            
+        self.selected_search_tags = list(set(s_tags))
+        self.selected_ignore_tags = list(set(i_tags))
+        self.new_checked_state = new_checked
+
+    def _on_apply_current(self):
+        self._collect_final_state()
+        self.action_type = 'apply_curr'
+        self.accept()
+
+    def _on_apply_new(self):
+        self._collect_final_state()
+        self.action_type = 'apply_new'
+        self.accept()
+        
+    def _on_manage(self, mode):
+        self._collect_final_state()
+        if mode == 'search': self.action_type = 'manage_search'
+        else: self.action_type = 'manage_ignore'
+        self.accept()
+
 class SearchWidget(QWidget):
     tags_changed = pyqtSignal(list)
     ignore_tags_changed = pyqtSignal(list)
     scan_categories_requested = pyqtSignal(list)
     categories_selected = pyqtSignal(list)
     categories_changed = pyqtSignal()
-    apply_tags_to_new_queue_requested = pyqtSignal(list, bool)
+    
+    # --- ИЗМЕНЕНИЕ: Сигнал теперь передает (search_tags, ignore_tags)
+    apply_tags_to_new_queue_requested = pyqtSignal(list, list)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         from app.ui.windows.controls_widget import SearchModeWidget
         self.search_mode_widget = SearchModeWidget()
-        self.cached_scanned_categories: List[dict] = [] # Теперь точно List[dict]
+        self.cached_scanned_categories: List[dict] = []
         self.cached_forced_categories: List[str] = []
+        
         self.tag_presets: Dict[str, dict] = {}
         self.ignore_tag_presets: Dict[str, dict] = {}
+        
+        self.presets_checked_state: Set[str] = set()
+        self.presets_expanded_state: Set[str] = {"ROOT:search", "ROOT:ignore"}
+        
         self._current_category_count = 1
         self._load_tag_presets()
         self._load_ignore_tag_presets()
@@ -187,29 +546,18 @@ class SearchWidget(QWidget):
         return self.cached_scanned_categories
 
     def set_scanned_categories(self, categories: List[dict]):
-        """
-        Принимает список словарей категорий и автоматически выбирает одну 'ГЛАВНУЮ' (или первую).
-        """
         self.cached_scanned_categories = categories
-        
-        # Умный выбор дефолтной категории
         best_choice = None
-        
-        # 1. Ищем помеченную как ГЛАВНАЯ
         for cat in categories:
             if cat.get('type') == 'ГЛАВНАЯ':
                 best_choice = cat.get('text')
                 break
-        
-        # 2. Если нет, берем первую попавшуюся
         if not best_choice and categories:
             best_choice = categories[0].get('text')
-            
         if best_choice:
             self.cached_forced_categories = [best_choice]
         else:
             self.cached_forced_categories = []
-            
         self._emit_categories_changed()
 
     def get_forced_categories(self) -> List[str]: return self.cached_forced_categories
@@ -227,178 +575,68 @@ class SearchWidget(QWidget):
         return self._current_category_count
     
     def _on_tag_presets_clicked(self):
-        self._show_cross_presets_menu(self.btn_presets, primary_is_ignore=False)
+        self._show_presets_popup(self.btn_presets, primary_is_ignore=False)
 
     def _on_ignore_tag_presets_clicked(self):
-        self._show_cross_presets_menu(self.btn_presets_ignore, primary_is_ignore=True)
+        self._show_presets_popup(self.btn_presets_ignore, primary_is_ignore=True)
 
-    def _show_cross_presets_menu(self, btn, primary_is_ignore: bool):
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu {{ background-color: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border: 1px solid {Palette.BORDER_SOFT}; }}"
-        )
-
-        action_payload = {}
-
-        def _safe_add_single_tag(tag: str, target_input, target_is_ignore: bool):
-            tag = str(tag or "").strip()
-            if not tag:
-                return
-
-            # конфликт между полями (как в твоих validator’ах, но для клика из меню)
-            other_input = self.search_tags_input if target_is_ignore else self.ignore_tags_input
-            if tag in (other_input.get_tags() or []):
-                self._show_tooltip(target_input, f"'{tag}' уже в соседнем поле!")
-                return
-
-            cur = target_input.get_tags() or []
-            if tag in cur:
-                return
-
-            target_input.set_tags(cur + [tag])
-
-        def _add_disabled_line(m: QMenu, text: str):
-            a = m.addAction(text)
-            a.setEnabled(False)
-            return a
-
-        def _add_folder_preview(m: QMenu, folder_node: dict, target_input, target_is_ignore: bool):
-            folder_tags = self._collect_folder_only_tags(folder_node)  # только текущая папка
-            m.addSeparator()
-
-            if not folder_tags:
-                _add_disabled_line(m, " (нет тегов в папке)")
-                m.addSeparator()
-                return
-
-            max_show = 10
-            for t in folder_tags[:max_show]:
-                wa = QWidgetAction(m)
-                btn = QPushButton(f"🏷 {t}")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setFlat(True)
-                btn.setStyleSheet(
-                    f"QPushButton {{ color: {Palette.TEXT}; background: transparent; padding: 4px 8px; text-align: left; }}"
-                    f"QPushButton:hover {{ background-color: {Palette.BG_DARK_3}; }}"
-                )
-                btn.clicked.connect(lambda _, tag=t: _safe_add_single_tag(tag, target_input, target_is_ignore))
-                wa.setDefaultWidget(btn)
-                m.addAction(wa)
-
-            if len(folder_tags) > max_show:
-                _add_disabled_line(m, f"… ещё {len(folder_tags) - max_show}")
-
-            m.addSeparator()
-
-        def _add_section(
-            *,
-            title: str,
-            presets_dict: dict,
-            target_input,
-            target_is_ignore: bool,
-        ):
-            _add_disabled_line(menu, f"── {title} ──")
-
-            def add_folder_submenu(parent_menu: QMenu, preset_name: str, folder_node: dict):
-                for ch in (folder_node.get("children") or []):
-                    if self._is_folder_node(ch):
-                        sub = parent_menu.addMenu(f"📁 {ch.get('name', '')}")
-
-                        act_apply_folder = sub.addAction("✅ Применить папку")
-                        act_apply_folder_newq = sub.addAction("➕ Применить папку к новой очереди")
-
-                        action_payload[act_apply_folder] = ("folder", preset_name, ch, target_input, target_is_ignore)
-                        action_payload[act_apply_folder_newq] = ("folder_new_queue", preset_name, ch, target_input, target_is_ignore)
-
-                        _add_folder_preview(sub, ch, target_input, target_is_ignore)
-                        add_folder_submenu(sub, preset_name, ch)
-
-            # Корни наборов
-            for preset_name in sorted((presets_dict or {}).keys()):
-                root = self._normalize_preset_value_to_root_folder(presets_dict.get(preset_name))
-
-                act_root = menu.addAction(f"📂 {preset_name}")
-                action_payload[act_root] = ("root", preset_name, None, target_input, target_is_ignore)
-
-                if not self._has_root_tags(root):
-                    _add_disabled_line(menu, " (нет тегов в корне)")
-
-                # Папки 1-го уровня (как у тебя было)
-                for ch in (root.get("children") or []):
-                    if self._is_folder_node(ch):
-                        sub = menu.addMenu(f" 📁 {preset_name} / {ch.get('name', '')}")
-
-                        act_apply_folder = sub.addAction("✅ Применить папку")
-                        act_apply_folder_newq = sub.addAction("➕ Применить папку к новой очереди")
-
-                        action_payload[act_apply_folder] = ("folder", preset_name, ch, target_input, target_is_ignore)
-                        action_payload[act_apply_folder_newq] = ("folder_new_queue", preset_name, ch, target_input, target_is_ignore)
-
-                        _add_folder_preview(sub, ch, target_input, target_is_ignore)
-                        add_folder_submenu(sub, preset_name, ch)
-
-            # Управление пресетами именно этой секции
-            if not (presets_dict or {}):
-                _add_disabled_line(menu, " (нет наборов)")
-            
-            menu.addSeparator()
-            manage_text = "⚙ Управление пресетами фильтра..." if target_is_ignore else "⚙ Управление пресетами поиска..."
-            act_manage = menu.addAction(manage_text)
-            action_payload[act_manage] = ("manage", None, None, None, target_is_ignore)
-            menu.addSeparator()
-
-        own_suffix = " → применить к этому полю"
-        other_suffix = " → применить к соседнему полю"
-
-        # Порядок секций: сначала та, по которой кликнули, потом соседняя
-        if not primary_is_ignore:
-            _add_section(title="ИЩЕМ" + own_suffix, presets_dict=self.tag_presets,
-                         target_input=self.search_tags_input, target_is_ignore=False)
-            _add_section(title="ИСКЛЮЧАЕМ" + other_suffix, presets_dict=self.ignore_tag_presets,
-                         target_input=self.ignore_tags_input, target_is_ignore=True)
+    def _show_presets_popup(self, btn, primary_is_ignore: bool):
+        # (код выбора словарей остается прежним...)
+        if primary_is_ignore:
+            presets_dict = self.ignore_tag_presets
+            target_input = self.ignore_tags_input
         else:
-            _add_section(title="ИСКЛЮЧАЕМ" + own_suffix, presets_dict=self.ignore_tag_presets,
-                         target_input=self.ignore_tags_input, target_is_ignore=True)
-            _add_section(title="ИЩЕМ" + other_suffix, presets_dict=self.tag_presets,
-                         target_input=self.search_tags_input, target_is_ignore=False)
+            presets_dict = self.tag_presets
+            target_input = self.search_tags_input
 
-        selected_action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        if not selected_action:
-            return
-
-        payload = action_payload.get(selected_action)
-        if not payload:
-            return
-
-        kind, preset_name, folder_node, target_input, target_is_ignore = payload
-
-        if kind == "manage":
-            if target_is_ignore:
-                self._open_ignore_tag_presets_editor()
-            else:
+        popup = PresetsSelectPopup(
+            parent=self, 
+            search_presets=self.tag_presets,
+            ignore_presets=self.ignore_tag_presets,
+            saved_checked=self.presets_checked_state,   
+            saved_expanded=self.presets_expanded_state,
+            primary_is_ignore=primary_is_ignore
+        )
+        
+        global_pos = btn.mapToGlobal(QPoint(0, btn.height()))
+        popup.move(global_pos)
+        
+        # 1. Запускаем диалог
+        res = popup.exec()
+        
+        # 2. ИЗМЕНЕНИЕ: ВСЕГДА сохраняем состояние (галочки и папки),
+        # даже если кликнули мимо (Rejected) или нажали Отмена.
+        new_checked, new_expanded = popup.get_state()
+        self.presets_checked_state = new_checked
+        self.presets_expanded_state = new_expanded
+        
+        # 3. Обрабатываем действия только если была нажата кнопка (Accepted)
+        if res == QDialog.DialogCode.Accepted:
+            action = popup.action_type
+            s_tags = popup.selected_search_tags
+            i_tags = popup.selected_ignore_tags
+            
+            if action == 'manage_search':
                 self._open_tag_presets_editor()
-            return
-
-        if kind == "root":
-            root = self._normalize_preset_value_to_root_folder(
-                (self.ignore_tag_presets if target_is_ignore else self.tag_presets).get(preset_name)
-            )
-            tags = self._collect_root_only_tags(root)
-            if tags:
-                target_input.set_tags(tags)
-            return
-
-        if kind == "folder":
-            tags = self._collect_tags_recursive(folder_node)
-            if tags:
-                target_input.set_tags(tags)
-            return
-
-        if kind == "folder_new_queue":
-            tags = self._collect_tags_recursive(folder_node)
-            if tags:
-                self.apply_tags_to_new_queue_requested.emit(tags, target_is_ignore)
-            return
+            elif action == 'manage_ignore':
+                self._open_ignore_tag_presets_editor()
+            
+            elif action == 'apply_curr':
+                # Логика применения в текущую очередь
+                if s_tags:
+                    curr_s = self.search_tags_input.get_tags()
+                    self.search_tags_input.set_tags(list(set(curr_s + s_tags)))
+                
+                if i_tags:
+                    curr_i = self.ignore_tags_input.get_tags()
+                    self.ignore_tags_input.set_tags(list(set(curr_i + i_tags)))
+                    
+            elif action == 'apply_new':
+                # Логика применения в новую очередь
+                if not s_tags and not i_tags:
+                    QMessageBox.warning(self, "Пусто", "Выберите хотя бы один тег!")
+                    return
+                self.apply_tags_to_new_queue_requested.emit(s_tags, i_tags)
 
     def _open_tag_presets_editor(self):
         dlg = TagPresetsDialog(self.tag_presets, self, window_title="Пресеты поиска", tag_color=Palette.TERTIARY)
