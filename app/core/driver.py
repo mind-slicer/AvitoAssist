@@ -3,6 +3,7 @@ import time
 import random
 import pickle
 import logging
+import psutil
 from dataclasses import dataclass
 from typing import Sequence, Optional, Tuple, Callable
 
@@ -286,11 +287,15 @@ class DriverManager:
     
     def cleanup(self):
         if self._driver:
-            if self.config.use_cookies:
-                self._save_cookies()
             try:
-                self._driver.close()
-            except:
+                browser_pid = self._driver.service.process.pid
+                self._driver.quit()
+
+                parent = psutil.Process(browser_pid)
+                for child in parent.children(recursive=True):
+                    child.kill()
+                parent.kill()
+            except Exception:
                 pass
-            self._driver = None
-            self._request_count = 0
+            finally:
+                self._driver = None

@@ -3,6 +3,7 @@ import json
 import glob
 import asyncio
 import re
+import requests
 from typing import List, Dict, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, Qt
@@ -145,15 +146,6 @@ class AIChatWorker(QThread):
             await client.close()
 
 class AIChunkCultivationWorker(QThread):
-    """
-    Воркер для культивации ОДНОГО чанка памяти.
-    Возвращает результат как dict:
-      - status: 'success' / 'error'
-      - content: dict с JSON-контентом чанка (при успехе)
-      - summary: краткое резюме (опционально)
-      - error: текст ошибки (при неуспехе)
-    """
-
     finished = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
@@ -177,11 +169,10 @@ class AIChunkCultivationWorker(QThread):
     async def _cultivate_chunk(self):
         client = LlamaClient(self.port)
         try:
-            if not self._is_running:
-                self.finished.emit({"status": "error", "error": "cancelled"})
+            if hasattr(self, '_is_running') and not self._is_running:
+                self.finished.emit({"status": "error", "error": "cancelled", "chunk_id": self.chunk_id})
                 return
 
-            # Параметры генерации такие же, как для обычной аналитики
             gen_params = {
                 "response_format": {"type": "json_object"},
                 "temperature": 0.2,
@@ -197,7 +188,7 @@ class AIChunkCultivationWorker(QThread):
             messages = [
                 {
                     "role": "system",
-                    "content": "Ты аналитик рынка. Отвечай ТОЛЬКО валидным JSON по заданной схеме чанка.",
+                    "content": "Ты аналитик рынка объявлений Avito. Твоя задача — свести данные в единый JSON. Отвечай ТОЛЬКО валидным JSON объектом.",
                 },
                 {"role": "user", "content": self.prompt},
             ]
@@ -213,50 +204,75 @@ class AIChunkCultivationWorker(QThread):
                 params=gen_params,
             )
 
-            if not response:
-                msg = f"Пустой ответ AI при культивации чанка {self.chunk_id}"
-                self.error_signal.emit(msg)
-                self.finished.emit({"status": "error", "error": msg})
+            if not response or not isinstance(response, str) or len(response.strip()) < 10:
+                msg = f"ИИ вернул пустой или слишком короткий ответ для чанка {self.chunk_id}..."
+                logger.error(msg, token="ai-cult")
+                if hasattr(self, 'error_signal'):
+                    self.error_signal.emit(msg)
+                self.finished.emit({"status": "error", "error": msg, "chunk_id": self.chunk_id})
                 return
 
-            # Очистка JSON такая же идея, как в AIProcessingWorker
-            text = response
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if match:
-                text = match.group(0)
-            text = text.replace("``````", "").strip()
+            text = response.strip()
+            
+            if '```' in text:
+                match_json = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+                if match_json:
+                    text = match_json.group(1)
+                else:
+                    parts = text.split('```')
+                    if len(parts) > 1:
+                        text = parts[1]
+                        if text.strip().lower().startswith('json'):
+                            text = text.strip()[4:].strip()
+
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if not match:
+                err = f"В ответе ИИ не найден JSON-объект для чанка {self.chunk_id}..."
+                logger.error(err, token="ai-cult")
+                if hasattr(self, 'error_signal'):
+                    self.error_signal.emit(err)
+                self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
+                return
+
+            clean_json_text = match.group(0).strip()
 
             try:
-                data = json.loads(text)
-            except Exception as e:
-                err = f"JSON decode error for chunk {self.chunk_id}: {e}"
+                data = json.loads(clean_json_text)
+            except json.JSONDecodeError as e:
+                err = f"Ошибка парсинга JSON для чанка {self.chunk_id}: {str(e)}..."
                 logger.error(err, token="ai-cult")
-                self.error_signal.emit(err)
-                self.finished.emit({"status": "error", "error": str(e)})
+                if hasattr(self, 'error_signal'):
+                    self.error_signal.emit(err)
+                self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
                 return
 
-            # Пытаемся вытащить summary из стандартных полей
             summary = None
             if isinstance(data, dict):
-                summary = (
-                    data.get("analysis", {}).get("summary")
-                    if isinstance(data.get("analysis"), dict)
-                    else None
-                )
+                analysis = data.get("analysis", {})
+                if isinstance(analysis, dict):
+                    summary = analysis.get("summary")
+                
                 if not summary:
                     summary = data.get("summary")
+            else:
+                err = f"ИИ вернул некорректный тип данных для чанка {self.chunk_id}..."
+                self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
+                return
 
             result = {
                 "status": "success",
                 "content": data,
-                "summary": summary,
+                "summary": summary if summary else "Анализ завершен",
+                "chunk_id": self.chunk_id
             }
             self.finished.emit(result)
+
         except Exception as e:
-            err = f"Ошибка культивации чанка {self.chunk_id}: {e}"
-            logger.error(err, token="ai-cult")
-            self.error_signal.emit(str(e))
-            self.finished.emit({"status": "error", "error": str(e)})
+            err = f"Критический сбой при культивации чанка {self.chunk_id}: {str(e)}"
+            logger.error(err, token="ai-cult", exc_info=True)
+            if hasattr(self, 'error_signal'):
+                self.error_signal.emit(str(e))
+            self.finished.emit({"status": "error", "error": str(e), "chunk_id": self.chunk_id})
         finally:
             await client.close()
 
@@ -277,8 +293,6 @@ class AICultivationWorker(QThread):
     async def _cultivate(self):
         client = LlamaClient(self.port)
         try:
-            # Берем категории, где много товаров (топ-10 по активности)
-            # Используем прямой SQL к MemoryManager, так как метода get_top пока нет
             raw_stats = self.memory.get_all_statistics(limit=15)
             
             processed_count = 0
@@ -286,9 +300,8 @@ class AICultivationWorker(QThread):
                 if not self._is_running: break
                 
                 key = st['product_key']
-                items = self.memory.find_similar_items(key, limit=50)
+                items = self.memory.find_similar_items(key, limit=20)
                 
-                # Анализируем только если набралось хотя бы 5 товаров
                 if len(items) < 5: continue 
 
                 prompt = PromptBuilder.build_knowledge_prompt(key, items)
@@ -390,6 +403,8 @@ class AIManager(QObject):
         self._debug_logs = False
 
         self._chunk_workers: Dict[int, AIChunkCultivationWorker] = {}
+        self._cultivation_queue = []
+        self._is_cultivating_now = False
 
     def _find_default_model(self) -> Optional[str]:
         if not os.path.exists(MODELS_DIR):
@@ -449,21 +464,21 @@ class AIManager(QObject):
         self.health_timer.start(1000)
 
     def _check_health_and_notify(self):
-        import requests
+        port = self.server_manager.get_port()
         try:
-            port = self.server_manager.get_port()
-            logger.info(f"Checking AI server health on port {port}", token="ai-health")
-            resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=0.5)
+            resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
             if resp.status_code == 200:
-                self.health_timer.stop()
                 self._server_ready = True
-                logger.info("AI server is ready", token="ai-health")
-                self.progress_signal.emit("AI готов к работе")
                 self.server_ready_signal.emit()
+                self.server_manager._is_starting = False 
+                self.health_timer.stop()
+                logger.info("AI готов к работе", token="ai-manager")
+            elif resp.status_code == 503:
+                self.progress_signal.emit("Модель загружается в память...")
             else:
-                logger.error(f"AI server health check failed with status code {resp.status_code}", token="ai-health")
-        except Exception as e:
-            logger.error(f"AI server health check failed: {e}", token="ai-health")
+                self.error_signal.emit(f"Server health error: {resp.status_code}")
+        except requests.exceptions.RequestException:
+            pass
 
     def start_processing(self, items: List[Dict], prompt: Optional[str], debug_mode: bool, context: Dict):
         self.ensure_server()
@@ -546,69 +561,92 @@ class AIManager(QObject):
         self.processing_worker.error_signal.connect(self.error_signal.emit)
         self.processing_worker.start()
 
-    def start_cultivation_for_chunk(self, chunk_id: int, chunk_type: str,
-                                    prompt: str, on_complete):
+    def start_cultivation_for_chunk(self, chunk_id, chunk_type, prompt, on_complete):
         """
-        Специализированный метод для культивации ОДНОГО чанка.
-        Вызывается ChunkCultivationManager.
+        Добавляет чанк в очередь на культивацию вместо немедленного запуска.
         """
-        # 1. Гарантируем, что сервер поднят
-        self.ensure_server()
-
-        # Если сервер ещё поднимается – подождать готовности и перезапустить
-        if not self._server_ready:
-            QTimer.singleShot(
-                500,
-                lambda: self.start_cultivation_for_chunk(
-                    chunk_id, chunk_type, prompt, on_complete
-                ),
-            )
-            logger.info(
-                "AI server is starting, chunk cultivation will resume when ready...",
-                token="ai-cult",
-            )
+        # Проверяем, нет ли уже этого чанка в очереди
+        if any(item['id'] == chunk_id for item in self._cultivation_queue):
             return
 
-        # 2. Запускаем отдельный воркер на этот чанк
+        self._cultivation_queue.append({
+            "id": chunk_id,
+            "type": chunk_type,
+            "prompt": prompt,
+            "callback": on_complete
+        })
+        
+        logger.info(f"Чанк {chunk_id} добавлен в очередь (всего: {len(self._cultivation_queue)})", token="ai-cult")
+        
+        # Пытаемся запустить обработку очереди
+        QTimer.singleShot(100, self._process_cultivation_queue)
+
+    def _process_cultivation_queue(self):
+        """
+        Обрабатывает очередь культивации строго по одному чанку.
+        """
+        if self._is_cultivating_now:
+            return # Уже что-то обрабатывается
+
+        if not self._cultivation_queue:
+            return # Очередь пуста
+
+        # Проверка готовности сервера
+        if not self._server_ready:
+            self.ensure_server()
+            # Повтор через секунду, пока сервер не прогреется
+            QTimer.singleShot(1000, self._process_cultivation_queue)
+            return
+
+        self._is_cultivating_now = True
+        task = self._cultivation_queue.pop(0)
+        
+        chunk_id = task["id"]
+        logger.info(f"Начало обработки из очереди: чанк {chunk_id}", token="ai-cult")
+
         port = self.server_manager.get_port()
         worker = AIChunkCultivationWorker(
             port=port,
             chunk_id=chunk_id,
-            chunk_type=chunk_type,
+            chunk_type=task["type"],
             memory_manager=self.memory_manager,
             model_name=self._model_name,
-            prompt=prompt,
+            prompt=task["prompt"]
         )
+        
+        # Сохраняем ссылку на воркер, чтобы его не съел сборщик мусора
         self._chunk_workers[chunk_id] = worker
 
-        def _on_finished(result: dict, cid=chunk_id):
+        def _handle_finished(result: dict):
             try:
-                on_complete(result)
+                task["callback"](result)
             finally:
-                w = self._chunk_workers.pop(cid, None)
-                if w is not None:
+                # Очистка и запуск следующего
+                w = self._chunk_workers.pop(chunk_id, None)
+                if w:
+                    w.quit()
+                    w.wait()
                     w.deleteLater()
+                
+                self._is_cultivating_now = False
+                # Пауза между чанками 1 сек, чтобы дать GPU "отдышаться"
+                QTimer.singleShot(1000, self._process_cultivation_queue)
 
-        worker.finished.connect(_on_finished)
+        worker.finished.connect(_handle_finished)
         worker.error_signal.connect(self.error_signal.emit)
         worker.start()
 
     def start_cultivation(self):
-        # 1. Убедиться, что есть модель и сервер запущен
         self.ensure_server()
         
-        # Если сервер ещё поднимается – подождать готовности
         if not self._server_ready:
-            # Повторно запустим культивацию, когда сервер станет готов
             self.server_ready_signal.connect(
                 lambda: self.start_cultivation(),
                 Qt.ConnectionType.SingleShotConnection
             )
-            # Мягкий информационный сигнал в UI (а не ошибка)
             logger.info("Идёт запуск AI сервера, культивация начнётся автоматически...", token="ai-cult")
             return
         
-        # 2. Если уже что-то делает – не запускать вторую задачу
         if self.has_pending_tasks():
             logger.warning("ИИ занят другой задачей...", token="ai-cult")
             self.error_signal.emit("ИИ занят другой задачей")
@@ -616,14 +654,12 @@ class AIManager(QObject):
             self.all_finished_signal.emit()
             return
         
-        # 3. Нормальный путь: запускаем воркер культивации
         logger.info("Запуск воркера культивации...", token="ai-cult")
         self.cultivation_worker = AICultivationWorker(
             port=self.server_manager.get_port(),
             memory_manager=self.memory_manager,
             model_name=self._model_name
         )
-        # По завершении воркера поднимем all_finished, чтобы UI разблокировался
         self.cultivation_worker.finished_signal.connect(self.all_finished_signal.emit)
         self.cultivation_worker.error_signal.connect(self.error_signal.emit)
         self.cultivation_worker.start()
@@ -703,7 +739,7 @@ class AIManager(QObject):
             self.chat_worker.wait()
             self.chat_worker = None
         self.server_manager.stop_server()
-        self.server_ready = False
+        self._server_ready = False
 
     def refresh_resource_usage(self) -> dict:
         ram = self.server_manager.get_memory_info()

@@ -2,7 +2,7 @@
   "0": {
     "name": "Очередь 1",
     "search_tags": [
-      "процессор intel"
+      "видеокарта rtx"
     ],
     "ignore_tags": [],
     "min_price": 0,
@@ -10,9 +10,9 @@
     "search_mode": "primary",
     "ai_criteria": "",
     "include_ai": false,
-    "store_in_memory": false,
+    "store_in_memory": true,
     "max_pages": 0,
-    "max_items": 50,
+    "max_items": 900,
     "all_regions": false,
     "filter_defects": false,
     "forced_categories": [],
@@ -31,7 +31,7 @@
     "queue_name": "Очередь 1",
     "debug_mode": false,
     "ai_debug_mode": false,
-    "context_table": "E:\\wip2\\results\\avito_Очередь 1_17122025_133411.json",
+    "context_table": "E:\\wip2\\results\\avito_Очередь 1_21122025_180937.json",
     "ai_offset": 0
   }
 }

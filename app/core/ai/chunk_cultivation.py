@@ -41,7 +41,7 @@ class ChunkCultivationManager(QObject):
         self._cultivation_timer.start(60_000)
 
         self.default_time_threshold = 30 * 60
-        self.default_data_threshold = 20
+        self.default_data_threshold = 30
 
     def check_and_cultivate(self):
         # 1. Сначала проверим, не нужно ли создать новые чанки
@@ -113,7 +113,7 @@ class ChunkCultivationManager(QObject):
 
     def _check_data_volume_trigger(self, chunk: Dict) -> bool:
         new_count = chunk.get("new_data_items_count") or 0
-        return int(new_count) >= self.default_data_threshold
+        return new_count >= self.default_data_threshold
 
     def _initiate_cultivation(self, chunk: Dict, trigger: ChunkCultivationTrigger):
         chunk_id = chunk.get("id")

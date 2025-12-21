@@ -76,6 +76,7 @@ class MemoryManager:
     def _init_db(self):
         with self._lock:
             c = self._conn.cursor()
+            self._conn.execute("PRAGMA journal_mode=WAL;")
             
             # --- Таблица сырых товаров (Операционная память) ---
             c.execute("""CREATE TABLE IF NOT EXISTS items (

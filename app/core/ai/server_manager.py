@@ -4,6 +4,7 @@ import subprocess
 import socket
 import psutil
 import atexit
+import time
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.core.log_manager import logger
 from app.config import AI_BACKEND_PREFERENCE
@@ -15,6 +16,7 @@ class ServerManager(QObject):
 
     def __init__(self, model_path: str, port: int = 8080):
         super().__init__()
+        self._is_starting = False
         self.model_path = model_path
         self.requested_port = port
         self.actual_port = port
@@ -96,13 +98,10 @@ class ServerManager(QObject):
 
     # TODO КОНТЕКСТ ЗДЕСЬ!
     def start_server(self, ctx_size: int = 2048, gpu_layers: int = -1, batch_size: int = 512, gpu_device: int = 0, backend_preference: str = "auto"):
-        import time # Добавить импорт, если нет в начале файла
-
-        if self.is_running():
-            self.server_started.emit()
+        if self.is_running() or self._is_starting:
             return
 
-        self.stop_server()
+        self._is_starting = True
 
         if not os.path.exists(self.model_path):
             self.error_occurred.emit(f"Файл модели не найден: {self.model_path}")
@@ -127,10 +126,11 @@ class ServerManager(QObject):
         cmd = [
             server_exe,
             "-m", self.model_path,
-            "--ctx-size", str(ctx_size),
             "--port", str(self.actual_port),
             "--host", "127.0.0.1",
-            "--batch-size", str(batch_size)
+            "--ctx-size", str(ctx_size),
+            "--batch-size", str(batch_size),
+            "--no-mmap"
         ]
         
         if final_gpu_layers != 0:
