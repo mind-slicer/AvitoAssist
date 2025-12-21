@@ -142,23 +142,19 @@ class ServerManager(QObject):
             env["GGML_VULKAN_DEVICE"] = str(gpu_device)
 
         try:
-            # FIX: stdin=subprocess.DEVNULL обязателен для --windowed
             self.process = subprocess.Popen(
                 cmd,
                 env=env, 
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE, # Читаем ошибки
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-                text=True # Чтобы stderr читался как текст
+                text=True
             )
             
-            # --- ДИАГНОСТИКА ПАДЕНИЯ ---
-            # Ждем 1 секунду и проверяем, жив ли процесс
             time.sleep(1.0)
             
             if self.process.poll() is not None:
-                # Процесс умер! Читаем предсмертную записку
                 _, stderr = self.process.communicate()
                 error_msg = stderr if stderr else f"Код выхода: {self.process.returncode}"
                 logger.error(f"AI сервер упал при старте: {error_msg}")

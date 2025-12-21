@@ -468,41 +468,10 @@ class ParserController(QObject):
         self.ensure_ai_manager()
         self.ai_manager._debug_logs = debug_mode
         self.ai_manager.start_chat_request(messages)
-
-#    def start_cultivation(self):
-#        self.ensure_ai_manager()
-#
-#        if not self.ai_manager:
-#            logger.error("Менеджер ИИ не инициализирован...", token="ai-cult")
-#            self.error_occurred.emit("AI Manager не готов")
-#            self.ui_lock_requested.emit(False)
-#            self.cultivation_finished.emit()
-#            return
-#
-#        if not self.ai_manager.has_model():
-#            logger.error("Модель AI не загружена...", token="ai-cult")
-#            self.error_occurred.emit("Модель AI не загружена")
-#            self.ui_lock_requested.emit(False)
-#            self.cultivation_finished.emit()
-#            return
-#
-#        if self.ai_manager.has_pending_tasks():
-#            logger.warning("AI уже выполняет задачу...", token="ai-cult")
-#            self.error_occurred.emit("AI занят другой задачей")
-#            self.ui_lock_requested.emit(False)
-#            self.cultivation_finished.emit()
-#            return
-#
-#        logger.info("Запуск культивации памяти...", token="ai-cult")
-#        self.ui_lock_requested.emit(True)
-#        self.ai_manager.start_cultivation()
-#
-#        # Подключаем сигнал завершения культивации для разблокировки UI
-#        self.ai_manager.all_finished_signal.connect(self._on_cultivation_finished)
     
     def start_cultivation(self):
         if self.chunk_manager:
-            logger.info("Запуск актуализации памяти (через ChunkManager)...")
+            logger.info("Запуск актуализации памяти...")
             # Менеджер сам решит, какие чанки обновлять и сам управляет потоками
             self.chunk_manager.request_user_cultivation()
         else:

@@ -77,7 +77,7 @@ class MemoryManager:
         with self._lock:
             c = self._conn.cursor()
             self._conn.execute("PRAGMA journal_mode=WAL;")
-            
+
             # --- Таблица сырых товаров (Операционная память) ---
             c.execute("""CREATE TABLE IF NOT EXISTS items (
                 id INTEGER PRIMARY KEY, avito_id TEXT UNIQUE, title TEXT, price INTEGER, 
@@ -190,6 +190,8 @@ class MemoryManager:
                 )
             """)
 
+            c.execute("ALTER TABLE aiknowledge_v2 ADD COLUMN retry_count INTEGER DEFAULT 0")
+
             self._conn.commit()
 
     # --- Knowledge Methods (Legacy + v2) ---
@@ -276,7 +278,7 @@ class MemoryManager:
         rows = self._execute(
             """
             SELECT * FROM aiknowledge_v2
-            WHERE status IN ('PENDING', 'INITIALIZING')
+            WHERE status = 'PENDING'
             ORDER BY created_at ASC
             """,
             fetch_all=True,

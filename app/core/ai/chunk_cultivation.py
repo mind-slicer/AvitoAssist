@@ -5,7 +5,6 @@ from datetime import datetime
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 from app.core.log_manager import logger
-# Импортируем новый класс промптов
 from app.core.ai.prompts import ChunkCultivationPrompts
 
 class ChunkType(Enum):
@@ -48,7 +47,6 @@ class ChunkCultivationManager(QObject):
         # (вызываем редко или по таймеру, но здесь для надежности можно проверить)
         # self._create_new_chunks_from_data() # Можно включить авто-создание здесь
 
-        # 2. Обрабатываем существующие
         pending_chunks = self.memory.get_pending_chunks()
         if not pending_chunks:
             return
@@ -74,15 +72,12 @@ class ChunkCultivationManager(QObject):
         return chunk_id
 
     def request_user_cultivation(self):
-        """Пользователь нажал кнопку"""
-        # 1. Сначала ищем новые паттерны в данных
         self._create_new_chunks_from_data()
         
-        # 2. Потом запускаем обработку всего, что есть
         pending = self.memory.get_pending_chunks()
         
         if not pending:
-            logger.info("Нет чанков, требующих обновления.", token="ai-cult")
+            logger.info("Нет чанков, требующих обновления...", token="ai-cult")
             return
             
         logger.info(f"Запуск культивации для {len(pending)} чанков...", token="ai-cult")
@@ -153,19 +148,25 @@ class ChunkCultivationManager(QObject):
 
         if status == "success" and isinstance(content, dict):
             self.memory.update_chunk_content(chunk_id, content, summary=summary)
-            # Статус READY ставится внутри update_chunk_content, но эмитим сигнал явно
             self.chunk_status_changed.emit(chunk_id, ChunkStatus.READY.value)
             self.cultivation_ready.emit(chunk_id)
-            logger.success(f"Chunk {chunk_id} готов!", token="ai-cult")
+            logger.success(f"Чанк {chunk_id} готов...", token="ai-cult")
         else:
             error_msg = result.get("error") or "unknown"
-            logger.error(f"Chunk {chunk_id} failed: {error_msg}", token="ai-cult")
-            # Можно сбросить в PENDING или оставить FAILED
-            # self.memory.update_chunk_status(chunk_id, ChunkStatus.PENDING.value) 
-            # Пока оставим как есть, чтобы не зациклить ошибки
+            logger.error(f"Чанк {chunk_id} не готов из-за ошибки: {error_msg}...", token="ai-cult")
+            
+            chunk = self.memory.get_chunk_by_id(chunk_id)
+            retry_count = chunk.get('retry_count', 0) + 1
+            MAX_RETRIES = 3
+
+            if retry_count < MAX_RETRIES:
+                self.memory.update_chunk_with_retry(chunk_id, 'PENDING', retry_count)
+                logger.warning(f"Chunk {chunk_id} retry {retry_count}/{MAX_RETRIES}", token="ai-cult")
+            else:
+                self.memory.update_chunk_status(chunk_id, 'FAILED')
+            logger.error(f"Chunk {chunk_id} permanently failed after {MAX_RETRIES} attempts", token="ai-cult")
 
     def _build_cultivation_prompt(self, chunk: Dict) -> str:
-        """Строит промпт используя ChunkCultivationPrompts"""
         chunk_type = chunk.get("chunk_type")
         chunk_key = chunk.get("chunk_key")
 
@@ -187,12 +188,12 @@ class ChunkCultivationManager(QObject):
 
         if chunk_type == ChunkType.DATABASE.value:
             base_stats = self.memory.get_stats() or {}
-            all_cats = self.memory.get_all_statistics(limit=1) # count check only
+            all_cats = self.memory.get_all_statistics(limit=1)
             # Нужно получить реальное кол-во категорий, сейчас хак через items count
             # Лучше добавить метод в memory. get_stats() уже возвращает total items.
             db_stats = {
                 "total_items": base_stats.get("total", 0),
-                "total_categories": "Много" # Заглушка, если нет точного счетчика
+                "total_categories": "Много"
             }
             return ChunkCultivationPrompts.build_database_cultivation_prompt(db_stats)
 
@@ -202,11 +203,7 @@ class ChunkCultivationManager(QObject):
         raise ValueError(f"Unknown chunk type: {chunk_type}")
 
     def _create_new_chunks_from_data(self):
-        """
-        Использует SmartChunkDetector для поиска и создания новых PENDING чанков.
-        """
-        # Импорт внутри метода во избежание циклического импорта
         from app.core.ai.smart_chunk_detector import SmartChunkDetector
         
-        logger.info("SmartDetector: сканирование базы на новые знания...", token="ai-det")
+        logger.info("Сканирование базы на новые знания...", token="ai-det")
         SmartChunkDetector.create_missing_chunks(self.memory, self)
