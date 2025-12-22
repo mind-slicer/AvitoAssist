@@ -132,8 +132,9 @@ class ServerManager(QObject):
             "--ctx-size", str(ctx_size),
             "--batch-size", str(batch_size),
             "--no-mmap",
-            "-np", "1", #?
-            "--cache-ram", "0"
+            "--cache-ram", "0",
+            "-kvu",
+            "-np", "1",
             #"-ctk", "q8_0",
             #"-ctv", "q8_0",
         ]
