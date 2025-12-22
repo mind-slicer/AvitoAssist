@@ -133,10 +133,10 @@ class ServerManager(QObject):
             "--batch-size", str(batch_size),
             "--no-mmap",
             "--cache-ram", "0",
+            "-ctk", "q8_0", # TODO: улучшить для NVIDIA и AMD (bf16)?
+            "-ctv", "q8_0", # TODO: улучшить для NVIDIA и AMD (bf16)?
             "-kvu",
             "-np", "1",
-            #"-ctk", "q8_0",
-            #"-ctv", "q8_0",
         ]
         
         if final_gpu_layers != 0:

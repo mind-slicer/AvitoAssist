@@ -48,14 +48,13 @@ class AIProcessingWorker(QThread):
             
             gen_params = {
                 "response_format": {"type": "json_object"}, 
-                "temperature": 0.2,
-                "top_k": 40,
-                "top_p": 0.9,
-                "repeat_penalty": 1.1,
+                "temperature": 0.3,
+                "top_k": 64,
+                "top_p": 0.95,
+                "min_p": 0.05,
+                "repeat_penalty": 1.05,
                 "max_tokens": 1024,
-                "mirostat_mode": 0,       
-                #"mirostat_tau": 5.0,
-                #"mirostat_eta": 0.1,
+                "mirostat_mode": 0
             }
 
             for i, item in enumerate(self.items):
@@ -126,10 +125,11 @@ class AIChatWorker(QThread):
         client = LlamaClient(self.port)
         try:
             chat_params = {
-                "temperature": 0.7,
-                "top_k": 50,
+                "temperature": 1.0,
+                "top_k": 64,
                 "top_p": 0.95,
-                "repeat_penalty": 1.1,
+                "min_p": 0.0,
+                "repeat_penalty": 1.0,
                 "max_tokens": 2048
             }
             
@@ -182,8 +182,8 @@ class AIChunkCultivationWorker(QThread):
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "max_tokens": 1024,
-                "mirostat_mode": 2,
+                "max_tokens": 2048,
+                "mirostat_mode": 1,
                 "mirostat_tau": 5.0,
                 "mirostat_eta": 0.1
             }
