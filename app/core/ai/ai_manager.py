@@ -52,10 +52,10 @@ class AIProcessingWorker(QThread):
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
                 "max_tokens": 1024,
-                "mirostat_mode": 2,       
-                "mirostat_tau": 5.0,
-                "mirostat_eta": 0.1,
-                "cache_prompt": False
+                "mirostat_mode": 0,       
+                #"mirostat_tau": 5.0,
+                #"mirostat_eta": 0.1,
+                #"cache_prompt": True
             }
 
             for i, item in enumerate(self.items):
@@ -453,6 +453,11 @@ class AIManager(QObject):
                 gpu_device=self._gpu_device,
                 backend_preference=self._backend
             )
+        elif not self._server_ready:
+            # Сервер жив, но приложение не видит готовности. Перезапускаем проверку.
+            if not self.health_timer.isActive():
+                self.progress_signal.emit("Подключение к нейросети...")
+                self.health_timer.start(1000)
         elif self._server_ready:
             self.server_ready_signal.emit()
 
@@ -463,19 +468,29 @@ class AIManager(QObject):
     def _check_health_and_notify(self):
         port = self.server_manager.get_port()
         try:
-            resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+            # proxies={} важно для обхода системных VPN/Proxy
+            resp = requests.get(
+                f"http://127.0.0.1:{port}/health",
+                timeout=5.0,
+                proxies={"http": None, "https": None}
+            )
+            
             if resp.status_code == 200:
                 self._server_ready = True
                 self.server_ready_signal.emit()
-                self.server_manager._is_starting = False 
+                self.server_manager._is_starting = False
                 self.health_timer.stop()
-                logger.info("AI готов к работе", token="ai-manager")
+                logger.success("AI готов к работе (Health OK)", token="ai-manager")
             elif resp.status_code == 503:
                 self.progress_signal.emit("Модель загружается в память...")
+                logger.dev("AI: 503 Loading...", level="DEBUG")
             else:
-                self.error_signal.emit(f"Server health error: {resp.status_code}")
-        except requests.exceptions.RequestException:
-            pass
+                logger.warning(f"AI ответил кодом: {resp.status_code}", token="ai-manager")
+        
+        except requests.exceptions.ConnectionError:
+            logger.dev("AI: Нет соединения с 127.0.0.1 (порт еще закрыт)", level="DEBUG")
+        except Exception as e:
+            logger.error(f"AI Health ошибка: {e}")
 
     def start_processing(self, items: List[Dict], prompt: Optional[str], debug_mode: bool, context: Dict):
         self.ensure_server()

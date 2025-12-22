@@ -7,7 +7,7 @@ import atexit
 import time
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.core.log_manager import logger
-from app.config import AI_BACKEND_PREFERENCE
+from app.config import AI_BACKEND_PREFERENCE, BASE_APP_DIR
 
 class ServerManager(QObject):
     server_started = pyqtSignal()
@@ -21,6 +21,7 @@ class ServerManager(QObject):
         self.requested_port = port
         self.actual_port = port
         self.process: subprocess.Popen = None
+        self._log_file = None
 
         atexit.register(self.stop_server)
 
@@ -131,9 +132,10 @@ class ServerManager(QObject):
             "--ctx-size", str(ctx_size),
             "--batch-size", str(batch_size),
             "--no-mmap",
-            "-np", "1",
-            "-ctk", "q8_0", #
-            "-ctv", "q8_0", #
+            "-np", "1", #?
+            "--cache-ram", "0"
+            #"-ctk", "q8_0",
+            #"-ctv", "q8_0",
         ]
         
         if final_gpu_layers != 0:
@@ -145,28 +147,39 @@ class ServerManager(QObject):
             env["GGML_VULKAN_DEVICE"] = str(gpu_device)
 
         try:
+            log_path = os.path.join(BASE_APP_DIR, "ai_server.log")
+            self._log_file = open(log_path, "w", encoding="utf-8")
+
             self.process = subprocess.Popen(
                 cmd,
                 env=env, 
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stdout=self._log_file,
+                stderr=self._log_file,
                 stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                 text=True
             )
             
             time.sleep(1.0)
-            
+
             if self.process.poll() is not None:
-                _, stderr = self.process.communicate()
-                error_msg = stderr if stderr else f"Код выхода: {self.process.returncode}"
-                logger.error(f"AI сервер упал при старте: {error_msg}")
-                self.error_occurred.emit(f"Сбой старта AI: {error_msg[:200]}...")
+                self._log_file.close()
+                self._log_file = None
+                
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        error_msg = f.read()
+                except:
+                    error_msg = "Не удалось прочитать лог ошибки."
+
+                full_err = error_msg if error_msg else f"Код выхода: {self.process.returncode}"
+                logger.error(f"AI сервер упал при старте: {full_err}...")
+                self.error_occurred.emit(f"Сбой старта AI: {full_err[:200]}...")
                 self.process = None
                 return
 
             self.server_started.emit()
-            logger.info(f"AI сервер успешно работает на порту {self.actual_port}")
+            logger.info(f"AI сервер успешно работает на порту {self.actual_port}...")
             
         except Exception as e:
             self.error_occurred.emit(f"Ошибка Popen: {e}")
@@ -215,6 +228,12 @@ class ServerManager(QObject):
             logger.dev(f"AI stop_server error: {e}", level="ERROR")
         finally:
             self.process = None
+            if self._log_file:
+                try:
+                    self._log_file.close()
+                except:
+                    pass
+                self._log_file = None
             self.server_stopped.emit(0)
 
     def set_model_path(self, new_path: str):

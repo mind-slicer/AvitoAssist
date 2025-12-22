@@ -5,6 +5,15 @@ data/
 icons/
 results/
 
+app_settings.json
+AvitoAssist.spec
+folder_tree.py
+generate_presets.py
+merge_python_files.py
+queues_state.json
+tag_presets.json
+tag_presets_ignore.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
