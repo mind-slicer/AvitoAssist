@@ -351,11 +351,13 @@ class PresetsSelectPopup(QDialog):
 
     def _on_apply_current(self):
         self._collect_final_state()
+        self._clear_all_checks()
         self.action_type = 'apply_curr'
         self.accept()
 
     def _on_apply_new(self):
         self._collect_final_state()
+        self._clear_all_checks()
         self.action_type = 'apply_new'
         self.accept()
         

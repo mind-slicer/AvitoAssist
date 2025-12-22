@@ -563,9 +563,16 @@ class MainWindow(QWidget):
             self._validating_index = None
             self.controls_widget.set_ui_locked(False)
 
+    def _get_current_ai_instructions(self) -> str:
+        if hasattr(self, 'memory_panel'):
+            instr_list = self.memory_panel.get_instructions()
+            return "\n".join([f"- {i}" for i in instr_list])
+        return ""
+
     def _finalize_and_start_search(self):
         all_indices = self.queue_manager.get_all_queue_indices()
         active_configs = []
+        user_instr = self._get_current_ai_instructions()
         
         ui_mgr = None
         if hasattr(self.controls_widget, "queue_manager_widget"):
@@ -625,6 +632,7 @@ class MainWindow(QWidget):
         for cfg in active_configs:
             cfg['debug_mode'] = self.app_settings.get('debug_mode', False)
             cfg['ai_debug_mode'] = self.app_settings.get('ai_debug', False)
+            cfg['user_instructions'] = user_instr
             
             # Назначаем целевую таблицу в зависимости от глобального режима
             if not global_split_mode:
@@ -1038,8 +1046,13 @@ class MainWindow(QWidget):
         if hasattr(self, 'memory_panel'):
             user_instructions = self.memory_panel.get_instructions()
 
-        debug_mode = self.app_settings.get('ai_debug', False)
-        self.controller.ai_manager.start_chat_request(chat_history, user_instructions=user_instructions)
+        current_table = self.current_results if self.current_results else []
+
+        self.controller.ai_manager.start_chat_request(
+            chat_history, 
+            user_instructions=user_instructions,
+            current_table_data=current_table
+        )
 
     def rebuild_rag_cache(self):
         if self.is_sequence_running:

@@ -469,8 +469,12 @@ class ParserController(QObject):
     
     def start_cultivation(self):
         if self.chunk_manager:
+            user_instr = ""
+            if hasattr(self.parent(), '_get_current_ai_instructions'):
+                user_instr = self.parent()._get_current_ai_instructions()
+
             logger.info("Запуск актуализации памяти...", token="ai-cult")
-            self.chunk_manager.request_user_cultivation()
+            self.chunk_manager.request_user_cultivation(user_instructions=user_instr)
         else:
             logger.error("Менеджер \"Памяти ИИ\" не инициализирован...")
 

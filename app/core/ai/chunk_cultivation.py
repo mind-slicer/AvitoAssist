@@ -71,7 +71,7 @@ class ChunkCultivationManager(QObject):
         self.chunk_status_changed.emit(chunk_id, ChunkStatus.PENDING.value)
         return chunk_id
 
-    def request_user_cultivation(self):
+    def request_user_cultivation(self, user_instructions: str = ""):
         self._create_new_chunks_from_data()
         
         pending = self.memory.get_pending_chunks()
@@ -82,7 +82,11 @@ class ChunkCultivationManager(QObject):
             
         logger.info(f"Запуск культивации для {len(pending)} чанков...", token="ai-cult")
         for chunk in pending:
-            self._initiate_cultivation(chunk, ChunkCultivationTrigger.USER_BUTTON)
+            self._initiate_cultivation(
+                chunk, 
+                ChunkCultivationTrigger.USER_BUTTON, 
+                user_instructions=user_instructions
+            )
 
     def _check_triggers(self):
         try:
@@ -110,7 +114,7 @@ class ChunkCultivationManager(QObject):
         new_count = chunk.get("new_data_items_count") or 0
         return new_count >= self.default_data_threshold
 
-    def _initiate_cultivation(self, chunk: Dict, trigger: ChunkCultivationTrigger):
+    def _initiate_cultivation(self, chunk: Dict, trigger: ChunkCultivationTrigger, user_instructions: str = ""):
         chunk_id = chunk.get("id")
         chunk_type = chunk.get("chunk_type")
 
@@ -136,6 +140,7 @@ class ChunkCultivationManager(QObject):
                 chunk_type=chunk_type,
                 prompt=prompt,
                 on_complete=lambda result: self._on_cultivation_complete(chunk_id, result),
+                user_instructions=user_instructions
             )
         except Exception as e:
             logger.error(f"Failed to build prompt/start for chunk {chunk_id}: {e}")

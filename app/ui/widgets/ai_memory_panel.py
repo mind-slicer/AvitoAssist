@@ -3,11 +3,13 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit
+    QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit,
+    QTextEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent
+from PyQt6.QtGui import QTextOption
 
-from app.ui.styles import Components, Palette, Spacing
+from app.ui.styles import Components, Palette, Spacing, Typography
 from app.core.log_manager import logger
 from app.config import BASE_APP_DIR
 
@@ -381,60 +383,61 @@ class AIMemoryPanel(QWidget):
         text = self.new_instr_edit.text().strip()
         if not text: return
         self.new_instr_edit.clear()
-        
-        # Создаем карточку
+
         card = QFrame()
         card.setStyleSheet(f"""
             QFrame {{
-                background-color: {Palette.BG_LIGHT}; 
-                border: 1px solid {Palette.BORDER_PRIMARY}; 
-                border-radius: 6px; 
-                padding: 4px;
+                background-color: {Palette.BG_LIGHT};
+                border: 1px solid {Palette.BORDER_PRIMARY};
+                border-radius: 6px;
             }}
         """)
-        card_layout = QVBoxLayout(card)
+        card_layout = QHBoxLayout(card)
         card_layout.setContentsMargins(8, 8, 8, 8)
+        card_layout.setSpacing(10)
+
+        # Вместо QLabel используем QTextEdit для идеального переноса длинных слов
+        text_area = QTextEdit()
+        text_area.setReadOnly(True)
+        text_area.setPlainText(text)
+        text_area.setFrameShape(QFrame.Shape.NoFrame)
+        text_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        text_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        top_layout = QHBoxLayout()
+        # Стилизация под обычный текст
+        text_area.setStyleSheet(f"""
+            background: transparent;
+            color: {Palette.TEXT};
+            font-family: {Typography.UI};
+            font-size: 13px;
+            border: none;
+        """)
         
-        # Текст инструкции
-        lbl = QLabel(text)
-        lbl.setWordWrap(True) 
-        lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 13px; border: none;")
-        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        
-        # Кнопка удаления
-        btn_delete = QPushButton("×")
+        # Магия переноса слов в любом месте (break-all)
+        text_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        text_area.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
+
+        # Подгонка высоты под текст
+        doc = text_area.document()
+        doc.setTextWidth(240) # Фиксируем ширину текста
+        h = doc.size().height() + 10
+        text_area.setFixedHeight(int(h))
+        text_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        btn_delete = QPushButton("X")
         btn_delete.setFixedSize(20, 20)
         btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_delete.setStyleSheet(f"""
-            QPushButton {{
-                color: {Palette.TEXT_MUTED};
-                background: transparent;
-                border: none;
-                font-weight: bold;
-                font-size: 16px;
-            }}
-            QPushButton:hover {{
-                color: {Palette.ERROR};
-            }}
-        """)
-        # Важно: используем замыкание для передачи ссылки на card
+        btn_delete.setStyleSheet(f"color: {Palette.TEXT_MUTED}; border: none; font-size: 16px; font-weight: bold;")
         btn_delete.clicked.connect(lambda _, c=card: self._remove_instr_card(c))
+
+        card_layout.addWidget(text_area, 1)
+        card_layout.addWidget(btn_delete, 0, Qt.AlignmentFlag.AlignTop)
+
+        # Добавляем в список ПЕРЕД стрейчем
+        self.instr_layout.insertWidget(self.instr_layout.count() - 1, card)
         
-        top_layout.addWidget(lbl, 1)
-        top_layout.addWidget(btn_delete, 0, Qt.AlignmentFlag.AlignTop)
-        
-        card_layout.addLayout(top_layout)
-        
-        # Вставляем в конец списка, но ПЕРЕД stretch-элементом
-        # Если stretch нет (первый элемент), просто добавляем
-        count = self.instr_layout.count()
-        if count > 0:
-            # Предполагаем, что addStretch был вызван в init_ui
-            self.instr_layout.insertWidget(count - 1, card)
-        else:
-            self.instr_layout.addWidget(card)
+        # Выключаем горизонтальный скролл в самом контейнере
+        self.instr_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def _remove_instr_card(self, card):
         self.instr_layout.removeWidget(card)

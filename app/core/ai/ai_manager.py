@@ -498,7 +498,7 @@ class AIManager(QObject):
         self.processing_worker.error_signal.connect(self.error_signal.emit)
         self.processing_worker.start()
 
-    def start_cultivation_for_chunk(self, chunk_id, chunk_type, prompt, on_complete):
+    def start_cultivation_for_chunk(self, chunk_id, chunk_type, prompt, on_complete, user_instructions: str = ""):
         if any(item['id'] == chunk_id for item in self._cultivation_queue):
             return
 
@@ -506,7 +506,8 @@ class AIManager(QObject):
             "id": chunk_id,
             "type": chunk_type,
             "prompt": prompt,
-            "callback": on_complete
+            "callback": on_complete,
+            "user_instructions": user_instructions
         })
         
         logger.info(f"Чанк {chunk_id} добавлен в очередь (всего: {len(self._cultivation_queue)})", token="ai-cult")
@@ -538,7 +539,8 @@ class AIManager(QObject):
             chunk_type=task["type"],
             memory_manager=self.memory_manager,
             model_name=self._model_name,
-            prompt=task["prompt"]
+            prompt=task["prompt"],
+            user_instructions=task.get("user_instructions", "")
         )
         
         self._chunk_workers[chunk_id] = worker
@@ -560,7 +562,7 @@ class AIManager(QObject):
         worker.error_signal.connect(self.error_signal.emit)
         worker.start()
 
-    def start_chat_request(self, messages: list, user_instructions: list = None):
+    def start_chat_request(self, messages: list, user_instructions: list = None, current_table_data: list = None):
         self.ensure_server()
         if not self._server_ready:
             self.server_ready_signal.connect(lambda: self.start_chat_request(messages, user_instructions), Qt.ConnectionType.SingleShotConnection)
@@ -573,7 +575,25 @@ class AIManager(QObject):
         
         if user_instructions:
             rules = "\n".join([f"- {r}" for r in user_instructions])
-            sys_content += f"\n\n[ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]:\n{rules}"
+            sys_content += f"\n\n[ТВОИ ГЛОБАЛЬНЫЕ ПРАВИЛА И ПРИОРИТЕТЫ]:\n{rules}"
+
+        db_context = ""
+        if self.memory_manager:
+            stats = self.memory_manager.get_rag_status()
+            db_context = (
+                f"\n[КОНТЕКСТ ТВОЕЙ БАЗЫ ДАННЫХ]:\n"
+                f"- Всего просмотрено товаров: {stats['total_items']}\n"
+                f"- Сформировано аналитических ячеек памяти: {stats['total_categories']}\n"
+            )
+
+        table_context = ""
+        if current_table_data:
+            titles = [f"• {i.get('title')} ({i.get('price')}р)" for i in current_table_data[:15]]
+            table_context = (
+                f"\n[КОНТЕКСТ ТЕКУЩЕЙ ТАБЛИЦЫ (первые 15 лотов)]:\n"
+                + "\n".join(titles) +
+                f"\nВсего в таблице: {len(current_table_data)} объявлений."
+            )
 
         last_msg = messages[-1]['content'].lower() if messages else ""
         is_market_query = any(w in last_msg for w in ['цена', 'сколько', 'рынок', 'стоит', 'стоимость', 'почем', 'анализ', 'статистика', 'средняя', 'медиана'])
@@ -605,7 +625,8 @@ class AIManager(QObject):
             if len(msg.get('content', '')) > MAX_MSG_LENGTH:
                 msg['content'] = msg['content'][:MAX_MSG_LENGTH] + "...[обрезано]"
 
-        final_messages = [{"role": "system", "content": sys_content + rag_injection}]
+        #final_messages = [{"role": "system", "content": sys_content + rag_injection}]
+        final_messages = [{"role": "system", "content": sys_content + db_context + table_context + rag_injection}]
         for m in trimmed_messages:
             if m['role'] != 'system':
                 final_messages.append(m)
