@@ -1,9 +1,4 @@
-"""
-Система промптов для AI анализа (Специализация: Вторичный рынок ПК и комплектующих)
-"""
 import statistics
-import re
-from collections import defaultdict
 from typing import List, Dict, Optional
 from enum import IntEnum
 
@@ -13,7 +8,6 @@ class AnalysisPriority(IntEnum):
     QUALITY = 3
 
 class PromptBuilder:
-    # Список целевого железа для контекста
     HARDWARE_INTERESTS = """
 === СПИСОК ИНТЕРЕСУЮЩЕГО ЖЕЛЕЗА ===
 1. ВИДЕОКАРТЫ:
@@ -33,7 +27,6 @@ class PromptBuilder:
 ===================================
 """
 
-    # Базовый системный промпт
     SYSTEM_BASE = f"""Ты — циничный и профессиональный скупщик компьютерной техники на вторичном рынке (Avito). 
 Твоя цель — найти ликвидный товар для перепродажи с прибылью.
 
@@ -62,7 +55,6 @@ class PromptBuilder:
 }}
 """
     
-    # Промпт для нейро-фильтра
     NEURO_FILTER_TEMPLATE = """
 Ты работаешь ЖЁСТКИМ фильтром объявлений Авито для скупщика компьютерной техники.
 Твоя задача — решить, стоит ли вообще рассматривать объявление.
@@ -176,12 +168,10 @@ class PromptBuilder:
         item_cond = str(current_item.get('condition', '')).lower()
         item_date = str(current_item.get('date_text', '')).lower()
         
-        # --- Логика ЦЕНЫ ---
         price_analysis = []
         if item_price > 0 and stats['med'] > 0:
             diff_table = ((item_price - stats['med']) / stats['med']) * 100
             
-            # Градации оценки цены
             if diff_table < -30:
                 price_analysis.append(f"ЭКСТРЕМАЛЬНО НИЗКАЯ ЦЕНА (на {abs(int(diff_table))}% ниже рынка). Внимание: высокий риск скама или дефекта!")
             elif diff_table < -15:
@@ -195,7 +185,6 @@ class PromptBuilder:
             else:
                 price_analysis.append("Справедливая рыночная цена (Fair Price).")
             
-            # Доп. сравнение с памятью
             if rag_avg_price > 0:
                 diff_rag = ((item_price - rag_avg_price) / rag_avg_price) * 100
                 if diff_rag < -20: 
@@ -206,10 +195,8 @@ class PromptBuilder:
         # --- Логика ПРОСМОТРОВ ---
         views_analysis = "Просмотры в норме."
         if search_mode == 'primary':
-            # В Primary режиме просмотры не парсятся (обычно 0)
             views_analysis = "Просмотры: Нет данных (быстрый поиск). Не используй это как фактор."
         else:
-            # В Full/Neuro режиме просмотры есть
             if item_views == 0:
                 views_analysis = "0 просмотров: Только что выложено. Шанс забрать первым!"
             elif item_views < 50:
@@ -231,11 +218,9 @@ class PromptBuilder:
         elif any(x in item_date for x in ['вчера']):
             date_analysis = "ДАТА: Свежее (Вчера)."
         elif any(x in item_date for x in ['недел', 'месяц']):
-            # Простая эвристика: если "3 недели" или "месяц" - это старо
             if '3 недел' in item_date or '4 недел' in item_date or 'месяц' in item_date:
                 date_analysis = "ДАТА: СТАРОЕ (>20 дней). Вероятно, неликвид или продано."
         else:
-            # Для абсолютных дат (20 октября) оставляем на откуп LLM
             pass
 
         # СБОРКА ПРОМПТА
@@ -281,54 +266,6 @@ class PromptBuilder:
   "defects": true/false
 }}
 """
-    
-    @classmethod
-    def build_knowledge_prompt(cls, product_key: str, items: List[Dict]) -> str:
-        """
-        Промпт для генерации знаний (сводки) по категории (Этап Культивации).
-        """
-        sample_items = items[:40] # Берем сэмпл для анализа
-        
-        items_text = ""
-        prices = []
-        for i in sample_items:
-            p = i.get('price', 0)
-            if isinstance(p, int) and p > 0: prices.append(p)
-            desc = i.get('description', '')[:100].replace('\n', ' ')
-            items_text += f"- {i.get('title')} | {p} руб | {desc}\n"
-
-        if not prices: return ""
-
-        avg = int(sum(prices) / len(prices))
-        med = int(statistics.median(prices))
-
-        return f"""
-{cls.SYSTEM_BASE}
-
-Твоя задача — проанализировать выборку товаров из категории: "{product_key}".
-Создай "Заметку для базы знаний", которая поможет оценивать такие товары в будущем.
-
-СТАТИСТИКА:
-- Лотов: {len(sample_items)}
-- Средняя: {avg} | Медиана: {med}
-- Мин: {min(prices)} | Макс: {max(prices)}
-
-СПИСОК (Сэмпл):
-{items_text}
-
-ЗАДАНИЕ:
-Напиши JSON-отчет с анализом рынка.
-1. summary: Краткая выжимка (1-2 предл). Что это, норма цены?
-2. risk_factors: На что смотреть? (майнинг, подделки, дефекты).
-3. price_range_notes: Текстовое описание диапазонов цен.
-
-JSON ФОРМАТ:
-{{
-  "summary": "...",
-  "risk_factors": "...",
-  "price_range_notes": "..."
-}}
-"""
 
     @classmethod
     def build_neuro_filter_prompt(
@@ -337,15 +274,7 @@ JSON ФОРМАТ:
     ignore_tags: List[str],
     user_criteria: str = ""
     ) -> str:
-        """
-        Строит промпт для нейро-фильтра:
-        - при пустых user_criteria работает как "чистый" фильтр по search_tags/ignore_tags;
-        - при непустых user_criteria явно делает их жёсткими правилами.
-        """
-    
-        # 1. Форматируем теги для чтения моделью
         if isinstance(search_tags, str):
-            # на случай, если где-то передали строку
             search_list = [t.strip() for t in search_tags.split(",") if t.strip()]
         else:
             search_list = [t.strip() for t in search_tags or [] if t.strip()]
@@ -358,16 +287,13 @@ JSON ФОРМАТ:
         search_str = ", ".join(search_list) if search_list else "Любые комплектующие из списка интересов"
         ignore_str = ", ".join(ignore_list) if ignore_list else "Нет (бан-слов нет)"
     
-        # 2. Блок доп. критериев
         user_criteria = (user_criteria or "").strip()
         if not user_criteria:
-            # Чистый нейро-поиск: явно говорим, что доп. критериев нет
             criteria_block = (
                 "НЕТ дополнительных критериев. Оцени объявление ТОЛЬКО по поисковым тегам "
                 "и бан-словам, строго следуя правилам фильтра выше."
             )
         else:
-            # Явно подчёркиваем, что это жёсткие правила от пользователя
             criteria_block = (
                 "Пользователь задал СЛЕДУЮЩИЕ ЖЁСТКИЕ критерии отбора "
                 "(они важнее любых эвристик нейросети):\n"
@@ -380,16 +306,11 @@ JSON ФОРМАТ:
             user_criteria=criteria_block,
         )
 
-class ChunkCultivationPrompts:
-    """Специализированные промпты для создания структур знаний (чанков)"""
-    
+class ChunkCultivationPrompts: 
     @staticmethod
-    def build_product_cultivation_prompt(product_key: str, items: list) -> str:
-        """Промпт для анализа конкретного товара/серии"""
-        
-        # Формируем компактный список примеров
+    def build_product_cultivation_prompt(product_key: str, items: list) -> str:  
         items_text = ""
-        for item in items[:40]: # Лимит 40, чтобы не забить контекст
+        for item in items[:40]:
             p = item.get('price', 0)
             t = item.get('title', 'N/A')
             v = item.get('verdict', 'N/A')
@@ -421,9 +342,7 @@ class ChunkCultivationPrompts:
         """
     
     @staticmethod
-    def build_category_cultivation_prompt(category_key: str, stats: dict) -> str:
-        """Промпт для анализа целой категории"""
-        
+    def build_category_cultivation_prompt(category_key: str, stats: dict) -> str:    
         return f"""
         АНАЛИЗ КАТЕГОРИИ ТОВАРОВ: "{category_key}"
         
@@ -449,9 +368,7 @@ class ChunkCultivationPrompts:
         """
     
     @staticmethod
-    def build_database_cultivation_prompt(db_stats: dict) -> str:
-        """Промпт для анализа всей базы"""
-        
+    def build_database_cultivation_prompt(db_stats: dict) -> str:  
         return f"""
         ГЛОБАЛЬНЫЙ АНАЛИЗ БАЗЫ ДАННЫХ.
         

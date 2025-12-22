@@ -1,20 +1,14 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QScrollArea, QFrame, QSizePolicy, QToolTip
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QScrollArea, QFrame, QSizePolicy, QToolTip, QListWidget,
+    QLineEdit, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEvent
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent
 
-# Импортируем стили проекта (предполагаем, что они есть согласно структуре)
-from app.ui.styles import Components, Palette, Typography, Spacing
+from app.ui.styles import Components, Palette, Spacing
 
-class ChunkCard(QFrame):
-    """
-    Карточка для отображения одного чанка памяти.
-    Визуализирует статус: PENDING, INITIALIZING, READY, COMPRESSED.
-    """
-    
-    deleted = pyqtSignal(int)  # сигнал удаления (chunk_id)
+class ChunkCard(QFrame):    
+    deleted = pyqtSignal(int)
     
     def __init__(self, chunk_data: dict, parent=None):
         super().__init__(parent)
@@ -22,7 +16,6 @@ class ChunkCard(QFrame):
         self.chunk_id = chunk_data.get('id')
         self.status = chunk_data.get('status')
         
-        # Базовый стиль карточки
         self.setStyleSheet(f"""
             QFrame {{
                 background-color: {Palette.BG_LIGHT};
@@ -36,23 +29,19 @@ class ChunkCard(QFrame):
         self._update_appearance()
     
     def _init_ui(self):
-        """Строит структуру карточки"""
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(12, 12, 12, 12)
         self.layout.setSpacing(8)
         
-        # --- HEADER ---
         header_layout = QHBoxLayout()
         header_layout.setSpacing(8)
         
-        # Иконка типа/статуса
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(24, 24)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.icon_label.setStyleSheet("font-size: 16px; border: none; background: transparent;")
         header_layout.addWidget(self.icon_label)
         
-        # Заголовок и статус
         title_layout = QVBoxLayout()
         title_layout.setSpacing(2)
         
@@ -67,7 +56,6 @@ class ChunkCard(QFrame):
         
         header_layout.addLayout(title_layout, stretch=1)
         
-        # Кнопка удаления (крестик)
         self.delete_btn = QPushButton("✕")
         self.delete_btn.setFixedSize(24, 24)
         self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -98,14 +86,12 @@ class ChunkCard(QFrame):
         self.layout.addWidget(self.content_container)
     
     def _update_appearance(self):
-        """Обновляет UI в зависимости от данных и статуса"""
         self.status = self.chunk_data.get('status')
         title = self.chunk_data.get('title') or f"Chunk #{self.chunk_id}"
         chunk_type = self.chunk_data.get('chunk_type', 'UNKNOWN')
         
         self.title_label.setText(title)
         
-        # Очистка контента перед перерисовкой
         self._clear_content()
         
         if self.status == 'PENDING':
@@ -123,15 +109,14 @@ class ChunkCard(QFrame):
     def _render_pending(self):
         self.icon_label.setText("⏳")
         self.status_label.setText("В ожидании обработки...")
-        self.delete_btn.setVisible(True) # Можно удалить даже если не готово
+        self.delete_btn.setVisible(True)
 
     def _render_initializing(self):
         self.icon_label.setText("⚙️")
         progress = self.chunk_data.get('progress_percent', 0)
         self.status_label.setText(f"Формирование знаний... {progress}%")
-        self.delete_btn.setVisible(False) # Нельзя удалить во время генерации
+        self.delete_btn.setVisible(False)
         
-        # Прогресс бар
         p_bar = QFrame()
         p_bar.setFixedHeight(4)
         p_bar.setStyleSheet(f"background: {Palette.BG_DARK}; border-radius: 2px;")
@@ -245,11 +230,10 @@ class AIMemoryPanel(QWidget):
         super().__init__(parent)
         self.memory_manager = None
         self.chunk_manager = None
-        self.cards = {} # chunk_id -> ChunkCard
+        self.cards = {}
         
         self._init_ui()
         
-        # Таймер для обновления интерфейса (если что-то крутится)
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self._refresh_active_chunks)
         
@@ -258,31 +242,25 @@ class AIMemoryPanel(QWidget):
         layout.setContentsMargins(Spacing.MD, Spacing.MD, Spacing.MD, Spacing.MD)
         layout.setSpacing(Spacing.MD)
         
-        # --- Header ---
         header = QFrame()
         header.setStyleSheet(Components.panel())
         header_layout = QHBoxLayout(header)
-        # Важно: выравнивание контента в хедере по верху, чтобы не плавало
         header_layout.setAlignment(Qt.AlignmentFlag.AlignTop) 
         
-        # Левая часть хедера (Заголовок + Иконка + Статистика)
         left_block = QVBoxLayout()
         left_block.setSpacing(4)
         left_block.setContentsMargins(0, 0, 0, 0)
         
-        # Верхняя строка: Текст + Иконка
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
         top_row.setContentsMargins(0, 0, 0, 0)
-        # Принудительно прижимаем элементы влево
         top_row.setAlignment(Qt.AlignmentFlag.AlignLeft) 
         
-        t_lbl = QLabel("Долговременная память ИИ")
+        t_lbl = QLabel("Память ИИ")
         t_lbl.setStyleSheet(Components.section_title())
-        t_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred) # Не даем растягиваться
+        t_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         top_row.addWidget(t_lbl)
         
-        # Иконка информации
         self.info_icon = QLabel("ⓘ")
         self.info_icon.setCursor(Qt.CursorShape.PointingHandCursor)
         self.info_icon.setStyleSheet(f"""
@@ -290,17 +268,16 @@ class AIMemoryPanel(QWidget):
                 color: {Palette.PRIMARY};
                 font-size: 18px;
                 font-weight: bold;
-                margin-top: 2px; /* Чуть опустить визуально */
+                margin-top: 2px;
             }}
             QLabel:hover {{
                 color: {Palette.PRIMARY};
             }}
         """)
         
-        # Текст тултипа (HTML для форматирования)
         tooltip_text = """
         <div style='width: 400px; font-family: sans-serif;'>
-            <h3 style='color: #88C0D0;'>🧠 Как работает Память ИИ?</h3>
+            <h3 style='color: #88C0D0;'>Как работает Память ИИ?</h3>
             <p>Эта система позволяет нейросети запоминать рыночные тренды, чтобы не анализировать каждый товар "с нуля".</p>
             <hr>
             <h4>1. Автоматическое обнаружение</h4>
@@ -315,8 +292,6 @@ class AIMemoryPanel(QWidget):
             <p>Когда вы анализируете новые объявления, ИИ сначала смотрит в Память. 
             Если он знает эту категорию, он сравнит цену товара с <b>рыночной статистикой (медианой и средней)</b>, 
             учитывая тренды и риски, сохраненные ранее.</p>
-            <hr>
-            <p style='color: #EBCB8B;'><i>💡 Совет: Обновляйте память раз в неделю, чтобы ИИ знал свежие цены.</i></p>
         </div>
         """
         self.info_icon.setToolTip(tooltip_text)
@@ -325,17 +300,19 @@ class AIMemoryPanel(QWidget):
         top_row.addWidget(self.info_icon)
         left_block.addLayout(top_row)
         
-        # Нижняя строка: Статистика
         self.stats_lbl = QLabel("Загрузка...")
         self.stats_lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 12px;")
         left_block.addWidget(self.stats_lbl)
         
         header_layout.addLayout(left_block)
-        header_layout.addStretch() # Толкаем все влево
+        header_layout.addStretch()
         
         layout.addWidget(header)
         
-        # --- Scroll Area ---
+        columns_layout = QHBoxLayout()
+        columns_layout.setSpacing(Spacing.LG)
+
+        left_col = QVBoxLayout()
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet(Components.scroll_area())
@@ -349,9 +326,8 @@ class AIMemoryPanel(QWidget):
         self.cards_layout.addStretch()
         
         self.scroll.setWidget(self.cards_container)
-        layout.addWidget(self.scroll)
+        left_col.addWidget(self.scroll)
         
-        # --- Footer ---
         footer_layout = QHBoxLayout()
         footer_layout.addStretch()
         
@@ -359,13 +335,55 @@ class AIMemoryPanel(QWidget):
         self.btn_update.setStyleSheet(Components.start_button())
         self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_update.clicked.connect(self._on_update_clicked)
+        left_col.addWidget(self.btn_update, 0, Qt.AlignmentFlag.AlignRight)
         
-        footer_layout.addWidget(self.btn_update)
-        layout.addLayout(footer_layout)
+        columns_layout.addLayout(left_col, stretch=3)
+        
+        right_col = QFrame()
+        right_col.setFixedWidth(300)
+        right_col.setStyleSheet(Components.panel())
+        right_vbox = QVBoxLayout(right_col)
+        
+        instr_lbl = QLabel("ИНСТРУКЦИИ ИИ")
+        instr_lbl.setStyleSheet(Components.subsection_title())
+        right_vbox.addWidget(instr_lbl)
+
+        self.instr_list = QListWidget()
+        self.instr_list.setStyleSheet(Components.styled_list_widget())
+        right_vbox.addWidget(self.instr_list)
+
+        self.new_instr_edit = QLineEdit()
+        self.new_instr_edit.setPlaceholderText("Добавить правило...")
+        self.new_instr_edit.setStyleSheet(Components.text_input())
+        self.new_instr_edit.returnPressed.connect(self._add_instruction_manual)
+        right_vbox.addWidget(self.new_instr_edit)
+        
+        columns_layout.addWidget(right_col)
+        layout.addLayout(columns_layout)
+
+    def _add_instruction_manual(self):
+        text = self.new_instr_edit.text().strip()
+        if not text: return
+        self.new_instr_edit.clear()
+        from app.ui.widgets.ai_control_panel import RemovableListItem
+        item = QListWidgetItem(self.instr_list)
+        widget = RemovableListItem(text, item, self, color=Palette.SUCCESS)
+        widget.removed.connect(lambda i: self.instr_list.takeItem(self.instr_list.row(i)))
+        item.setSizeHint(widget.sizeHint())
+        self.instr_list.addItem(item)
+        self.instr_list.setItemWidget(item, widget)
+
+    def get_instructions(self) -> list:
+        instr = []
+        for i in range(self.instr_list.count()):
+            wdg = self.instr_list.itemWidget(self.instr_list.item(i))
+            if wdg:
+                lbls = wdg.findChildren(QLabel)
+                if lbls: instr.append(lbls[0].text())
+        return instr
 
     def eventFilter(self, obj, event):
         if obj == self.info_icon and event.type() == QEvent.Type.ToolTip:
-            # -1 означает, что тултип не исчезнет, пока курсор не уйдет
             QToolTip.showText(event.globalPos(), obj.toolTip(), obj, obj.rect(), -1)
             return True
         return super().eventFilter(obj, event)
@@ -374,7 +392,6 @@ class AIMemoryPanel(QWidget):
         self.memory_manager = memory_manager
         self.chunk_manager = chunk_manager
         
-        # Подписка на сигналы менеджера
         if self.chunk_manager:
             self.chunk_manager.chunk_status_changed.connect(self._on_chunk_status_changed)
             self.chunk_manager.cultivation_ready.connect(self._on_cultivation_ready)
@@ -384,17 +401,13 @@ class AIMemoryPanel(QWidget):
     def _load_all_chunks(self):
         if not self.memory_manager: return
         
-        # Очистка
         for cid, card in list(self.cards.items()):
             self.cards_layout.removeWidget(card)
             card.deleteLater()
         self.cards.clear()
         
-        # Загрузка
         chunks = self.memory_manager.get_all_chunks()
         
-        # Сортировка: сначала INITIALIZING, потом PENDING, потом новые READY
-        # (SQL уже сортирует по date desc, но статусы важнее)
         def sort_key(c):
             s = c.get('status')
             if s == 'INITIALIZING': return 0
@@ -403,8 +416,6 @@ class AIMemoryPanel(QWidget):
             
         chunks.sort(key=sort_key)
         
-        # Удаляем стретч в конце перед добавлением (мы его добавим обратно в конце списка)
-        # Hacky way to keep items at top
         item = self.cards_layout.takeAt(self.cards_layout.count() - 1)
         if item.widget(): item.widget().deleteLater()
         
@@ -418,8 +429,6 @@ class AIMemoryPanel(QWidget):
         card = ChunkCard(chunk_data)
         card.deleted.connect(self._on_card_deleted)
         self.cards[chunk_data['id']] = card
-        # Добавляем в начало (перед stretch, который мы пока убрали, но если используем insertWidget 0...)
-        # Проще вставлять в конец списка перед stretch
         self.cards_layout.insertWidget(self.cards_layout.count(), card)
 
     def _on_card_deleted(self, chunk_id):
@@ -438,30 +447,23 @@ class AIMemoryPanel(QWidget):
         self.btn_update.setText("Запуск процессов...")
         self.update_memory_requested.emit()
         
-        # Визуальный отклик
-        QTimer.singleShot(2000, lambda: self.btn_update.setText("⚡ Актуализировать память"))
+        QTimer.singleShot(2000, lambda: self.btn_update.setText("Актуализировать память"))
         QTimer.singleShot(2000, lambda: self.btn_update.setEnabled(True))
 
     def _on_chunk_status_changed(self, chunk_id, new_status):
         if chunk_id in self.cards:
-            # Обновляем существующую
             data = self.memory_manager.get_chunk_by_id(chunk_id)
             if data:
                 self.cards[chunk_id].update_data(data)
         else:
-            # Возможно это новый чанк
             data = self.memory_manager.get_chunk_by_id(chunk_id)
             if data:
-                # Нужно вставить аккуратно, удалив stretch и вернув
-                # Для простоты:
-                self.cards_layout.takeAt(self.cards_layout.count() - 1) # remove stretch
+                self.cards_layout.takeAt(self.cards_layout.count() - 1)
                 self._add_card(data)
                 self.cards_layout.addStretch()
         
         self._update_stats()
         
-        # Если что-то формируется, можно включить таймер для обновления прогресс баров
-        # (в данной реализации они обновляются через сигнал, но таймер надежнее для UI)
         if new_status == 'INITIALIZING':
             if not self.refresh_timer.isActive():
                 self.refresh_timer.start(1000)
@@ -474,12 +476,10 @@ class AIMemoryPanel(QWidget):
         self._update_stats()
 
     def _refresh_active_chunks(self):
-        # Проверяем, есть ли активные процессы
         active = False
         for cid, card in self.cards.items():
             if card.status == 'INITIALIZING':
                 active = True
-                # Можно перечитать прогресс из БД
                 data = self.memory_manager.get_chunk_by_id(cid)
                 if data:
                     card.update_data(data)

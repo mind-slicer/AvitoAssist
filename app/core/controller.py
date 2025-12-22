@@ -9,7 +9,6 @@ from app.core.ai.prompts import PromptBuilder
 from app.core.log_manager import logger
 
 
-# Simple queue
 @dataclass
 class QueueState:
     queues_config: List[Dict[str, Any]] = field(default_factory=list)
@@ -69,7 +68,6 @@ class ParserController(QObject):
         self.progress_updated.emit(value)
 
     def ensure_ai_manager(self):
-        """Ensure AI manager exists (singleton pattern)"""
         if not self.ai_manager:
             self.ai_manager = AIManager(memory_manager=self.memory_manager)
             self.ai_manager.progress_signal.connect(self._on_ai_text_progress)
@@ -471,12 +469,10 @@ class ParserController(QObject):
     
     def start_cultivation(self):
         if self.chunk_manager:
-            logger.info("Запуск актуализации памяти...")
-            # Менеджер сам решит, какие чанки обновлять и сам управляет потоками
+            logger.info("Запуск актуализации памяти...", token="ai-cult")
             self.chunk_manager.request_user_cultivation()
         else:
-            logger.error("ChunkManager не инициализирован!")
-            self.error_occurred.emit("Ошибка: ChunkManager не готов")
+            logger.error("Менеджер \"Памяти ИИ\" не инициализирован...")
 
     def _on_cultivation_finished(self):
         logger.info("Культивация завершена...", token="ai-cult")
@@ -504,7 +500,7 @@ class ParserController(QObject):
         return self.queue_state.total_queues
     
     def cleanup(self):
-        self._is_stopping = True # Блокируем новые запуски
+        self._is_stopping = True
         
         if self.queue_state.is_sequence_running:
             self.stop_sequence()

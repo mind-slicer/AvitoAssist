@@ -5,9 +5,9 @@ from typing import List, Dict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QStackedWidget,
     QSplitter, QScrollArea, QFrame, QApplication, QMessageBox,
-    QLabel, QDialog, QTextBrowser, QDialogButtonBox
+    QLabel, QDialog
 )
-from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCursor
 
 from app.core.controller import ParserController
@@ -23,10 +23,8 @@ from app.ui.windows.controls_widget import ControlsWidget
 from app.ui.windows.queue_state_manager import QueueStateManager
 from app.ui.windows.settings_manager import SettingsDialog
 from app.ui.widgets.results_area import ResultsAreaWidget
-from app.ui.widgets.ai_stats_panel import AIStatsPanel
 from app.ui.widgets.progress_and_logs_panel import ProgressAndLogsPanel
 from app.ui.styles import Components, Palette, Spacing, Typography
-from app.ui.widgets.rag_stats_panel import RAGStatsPanel
 from app.ui.widgets.category_selection_dialog import CategorySelectionDialog
 from app.core.log_manager import logger
 
@@ -826,6 +824,7 @@ class MainWindow(QWidget):
         else:
             self._enable_ai_features()
 
+    # TODO
     def _show_no_model_notification(self):
         msg_box = QMessageBox(self)
         msg_box.setIcon(QMessageBox.Icon.Information)
@@ -843,7 +842,7 @@ class MainWindow(QWidget):
         msg_box.exec()
 
     def _enable_ai_features(self):
-        self.btn_analytics.setEnabled(False)
+        self.btn_analytics.setEnabled(True)
         self.btn_analytics.setToolTip("")
         self.btn_analytics.setStyleSheet(Components.nav_button())
         
@@ -859,7 +858,6 @@ class MainWindow(QWidget):
             self.controls_widget.include_ai_sw.setToolTip("")
 
             if hasattr(self.controls_widget, 'include_ai_lbl'):
-                # Восстанавливаем текст в зависимости от состояния
                 is_on = self.controls_widget.include_ai_sw.isChecked()
                 self.controls_widget.include_ai_lbl.setText("Вкл" if is_on else "Выкл")
                 self.controls_widget.include_ai_lbl.setStyleSheet(
@@ -916,7 +914,6 @@ class MainWindow(QWidget):
             )
 
     def _disable_ai_features(self):
-        # 1. Блокируем вкладку Аналитика
         self.btn_analytics.setEnabled(False)
         self.btn_analytics.setToolTip("Требуется модель нейросети. Откройте 'Настройки'.")
         
@@ -935,7 +932,6 @@ class MainWindow(QWidget):
             }}
         """)
 
-        # 2. Блокируем кнопку "Нейро" в режимах поиска
         if hasattr(self.search_widget, 'search_mode_widget'):
             mode_widget = self.search_widget.search_mode_widget
             if hasattr(mode_widget, 'btn_neuro'):
@@ -946,7 +942,6 @@ class MainWindow(QWidget):
                     "Откройте Настройки → Нейросеть для установки"
                 )
 
-                # Визуальный стиль заблокированной кнопки
                 mode_widget.btn_neuro.setStyleSheet(f"""
                     QPushButton {{
                         background-color: {Palette.BG_DARK_3};
@@ -962,12 +957,10 @@ class MainWindow(QWidget):
                     }}
                 """)
 
-                # Если текущий режим "neuro" - переключаем на "full"
                 current_mode = mode_widget.get_mode()
                 if current_mode == "neuro":
                     mode_widget.set_mode("full")
 
-        # 3. Блокируем тумблеры AI в контролах
         if hasattr(self.controls_widget, 'include_ai_sw'):
             self.controls_widget.include_ai_sw.setEnabled(False)
             self.controls_widget.include_ai_sw.setChecked(False)
@@ -975,7 +968,6 @@ class MainWindow(QWidget):
                 "Требуется модель нейросети\nОткройте Настройки"
             )
 
-            # Обновляем стиль лейбла
             if hasattr(self.controls_widget, 'include_ai_lbl'):
                 self.controls_widget.include_ai_lbl.setText("Недоступно")
                 self.controls_widget.include_ai_lbl.setStyleSheet(
@@ -1003,11 +995,9 @@ class MainWindow(QWidget):
                     )
                 )
         
-        # 4. Блокируем AI Criteria
         if hasattr(self.controls_widget, 'ai_criteria_container'):
             self.controls_widget.ai_criteria_container.setEnabled(False)
 
-            # Добавляем визуальное затемнение
             if hasattr(self.controls_widget, 'ai_criteria_input'):
                 self.controls_widget.ai_criteria_input.setPlaceholderText(
                     "Недоступно: требуется модель нейросети"
@@ -1026,15 +1016,12 @@ class MainWindow(QWidget):
         logger.info(f"Откройте 'Настройки → Нейросеть' для установки модели...")
 
     def handle_ai_result(self, idx, json_text, context):
-        # Обновить таблицу
         self.results_area.results_table.update_ai_column(idx, json_text)
 
-        # Сохранить в память если нужно
         if context.get('storeinmemory'):
             items = context.get('items', [])
             if idx < len(items):
                 item = items[idx]
-                # Добавить вердикт из JSON
                 parsed = json.loads(json_text)
                 item['verdict'] = parsed.get('verdict')
                 item['reason'] = parsed.get('reason')
@@ -1042,23 +1029,22 @@ class MainWindow(QWidget):
                 item['defects'] = parsed.get('defects')
                 self.memory_manager.add_item(item)
 
-    def on_chat_message_sent(self, messages: list):
-        """Обработка отправки сообщения в чат"""
+    def on_chat_message_sent(self, chat_history: list):
         if not self.controller.ai_manager:
-            self.analytics_widget.on_ai_reply("❌ AI не доступен. Загрузите модель в настройках.")
+            self.analytics_widget.on_ai_reply("ИИ не доступен. Загрузите модель в настройках.")
             return
 
-        # Отправляем в AI Manager
-        debug_mode = self.app_settings.get('ai_debug', False)
-        self.controller.send_chat_message(messages, debug_mode=debug_mode)
+        user_instructions = []
+        if hasattr(self, 'memory_panel'):
+            user_instructions = self.memory_panel.get_instructions()
 
+        debug_mode = self.app_settings.get('ai_debug', False)
+        self.controller.ai_manager.start_chat_request(chat_history, user_instructions=user_instructions)
 
     def rebuild_rag_cache(self):
-        """Фоновая агрегация RAG-статистики (каждые 10 минут)"""
         if self.is_sequence_running:
             return
 
-        # Запускаем в фоне
         import threading
         def rebuild_task():
             try:
@@ -1303,7 +1289,6 @@ class MainWindow(QWidget):
         import os
         from datetime import datetime
         basename = os.path.basename(path).replace("avito_", "").replace(".json", "")
-        # Добавлена проверка на существование файла во избежание краша, если файл удален извне
         if os.path.exists(path):
             fulldate = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%d.%m.%Y %H:%M")
         else:
@@ -1403,7 +1388,7 @@ class MainWindow(QWidget):
                             item.get('id', ''),
                             item.get('price', ''),
                             item.get('title', ''),
-                            item.get('link', ''),  # Ссылка в отдельной колонке
+                            item.get('link', ''),
                             item.get('views', ''),
                             item.get('date', ''),
                             item.get('address', ''),
@@ -1414,24 +1399,21 @@ class MainWindow(QWidget):
             elif filepath.endswith('.xlsx'):
                 try:
                     import openpyxl
-                    from openpyxl.styles import Font, Alignment
+                    from openpyxl.styles import Font
                 except ImportError:
                     QMessageBox.critical(self, "Ошибка", "Для экспорта в Excel установите библиотеку: pip install openpyxl")
                     return
 
-                # Для Excel делаем название кликабельной ссылкой
                 headers = ['ID', 'Цена', 'Название (ссылка)', 'Просмотров', 'Дата', 'Город', 'Описание', 'Вердикт ИИ']
 
                 wb = openpyxl.Workbook()
                 ws = wb.active
                 ws.append(headers)
 
-                # Стиль для заголовков
                 for cell in ws[1]:
                     cell.font = Font(bold=True)
 
-                for idx, item in enumerate(items, start=2):  # Начинаем со второй строки (первая - заголовки)
-                    # Получить вердикт ИИ
+                for idx, item in enumerate(items, start=2):
                     ai_data = item.get('ai', {})
                     if isinstance(ai_data, str):
                         import json
@@ -1450,11 +1432,10 @@ class MainWindow(QWidget):
                     title = item.get('title', '')
                     link = item.get('link', '')
 
-                    # Добавляем строку
                     ws.append([
                         item.get('id', ''),
                         item.get('price', ''),
-                        title,  # Сначала текст, потом добавим гиперссылку
+                        title,
                         item.get('views', ''),
                         item.get('date', ''),
                         item.get('address', ''),
@@ -1462,14 +1443,12 @@ class MainWindow(QWidget):
                         ai_text
                     ])
 
-                    # Делаем название гиперссылкой (колонка C = 3)
                     if link:
                         cell = ws.cell(row=idx, column=3)
                         cell.hyperlink = link
-                        cell.font = Font(color="0563C1", underline="single")  # Синий цвет и подчеркивание
+                        cell.font = Font(color="0563C1", underline="single")
                         cell.value = title
 
-                # Автоширина колонок
                 for column in ws.columns:
                     max_length = 0
                     column_letter = column[0].column_letter
@@ -1479,7 +1458,7 @@ class MainWindow(QWidget):
                                 max_length = max(max_length, len(str(cell.value)))
                         except:
                             pass
-                    adjusted_width = min(max_length + 2, 50)  # Ограничиваем максимальную ширину
+                    adjusted_width = min(max_length + 2, 50)
                     ws.column_dimensions[column_letter].width = adjusted_width
 
                 wb.save(filepath)
@@ -1493,19 +1472,16 @@ class MainWindow(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать:\n{e}")
 
     def on_analyze_file_requested(self, filepath: str):
-        """Проанализировать файл из мини-браузера"""
         items = self._load_results_file_silent(filepath)
         if items:
             self.on_analyze_table_requested(items)
 
     def on_addmemory_file_requested(self, filepath: str):
-        """Добавить файл в память из мини-браузера"""
         items = self._load_results_file_silent(filepath)
         if items:
             self.on_add_to_memory_requested(items)
 
     def on_export_file_requested(self, filepath: str):
-        """Экспортировать файл из мини-браузера"""
         items = self._load_results_file_silent(filepath)
         if items:
             self.on_export_table_requested(items)
@@ -1523,7 +1499,6 @@ class MainWindow(QWidget):
         )
 
     def on_addmemory_item_requested(self, item: Dict):
-        """Добавить один элемент в память"""
         if self.memory_manager.add_item(item):
             logger.success(f"Элемент {item.get('id', 'N/A')} добавлен в память ИИ")
             QMessageBox.information(self, "Успех", "Элемент добавлен в память ИИ")
@@ -1541,7 +1516,7 @@ class MainWindow(QWidget):
         rows = self.results_area.results_table.selectedItems()
         if not rows:
             return
-        # Берем первую выделенную строку, колонка с названием у тебя известна, допустим 2
+
         row = rows[0].row()
         title_item = self.results_area.results_table.item(row, 2)
         if not title_item:
@@ -1560,10 +1535,7 @@ class MainWindow(QWidget):
                 break
         self._save_results_to_file()
         
-        # --- ОБНОВЛЕНИЕ ТРЕКЕРА ---
         if hasattr(self, 'tracker'):
-            # Передаем текущий список и ПУТЬ К ТЕКУЩЕМУ ФАЙЛУ
-            # Это важно, чтобы трекер знал, в какой файл писать изменения
             if self.current_json_file:
                 self.tracker.update_items_from_current_table(self.current_results, self.current_json_file)
             
@@ -1578,23 +1550,18 @@ class MainWindow(QWidget):
         source_file = updated_item.get('_source_file')
         item_id = str(updated_item.get('id', ''))
         
-        # Сценарий 1: Товар из текущей открытой таблицы
         if self.current_json_file and source_file == self.current_json_file:
             for i, item in enumerate(self.current_results):
                 if str(item.get('id', '')) == item_id:
                     self.current_results[i].update(updated_item)
-                    # Чистим служебное поле перед сохранением, если нужно
-                    # if '_source_file' in self.current_results[i]: del self.current_results[i]['_source_file']
                     break
             
             self._save_results_to_file()
-            self.results_area.load_full_history(self.current_results) # Обновляем UI
+            self.results_area.load_full_history(self.current_results)
             logger.info(f"Трекер обновил товар {item_id} (в текущем окне).")
 
-        # Сценарий 2: Товар из файла, который сейчас ЗАКРЫТ
         elif source_file and os.path.exists(source_file):
             try:
-                # Загружаем файл тихо
                 import gzip
                 data = []
                 is_gzip = False
@@ -1604,16 +1571,14 @@ class MainWindow(QWidget):
                     with gzip.open(source_file, 'rt', encoding='utf-8') as f: data = json.load(f)
                     is_gzip = True
                 
-                # Обновляем запись
                 updated = False
                 for i, item in enumerate(data):
                     if str(item.get('id', '')) == item_id:
                         data[i].update(updated_item)
-                        if '_source_file' in data[i]: del data[i]['_source_file'] # Чистим мусор
+                        if '_source_file' in data[i]: del data[i]['_source_file']
                         updated = True
                         break
                 
-                # Если обновили - сохраняем обратно
                 if updated:
                     if is_gzip:
                         with gzip.open(source_file, 'wt', encoding='utf-8') as f:
@@ -1690,13 +1655,9 @@ class MainWindow(QWidget):
         except: return []
 
     def _switch_page(self, index):
-        # index 0 = Parser
-        # index 1 = Analytics
-        # index 2 = Memory (мы добавляли её третьей в init_ui)
         
         self.stack.setCurrentIndex(index)
         
-        # Управляем состоянием кнопок (чтобы "горела" активная)
         self.btn_parser.setChecked(index == 0)
         self.btn_analytics.setChecked(index == 1)
         self.btn_memory.setChecked(index == 2)
@@ -1739,11 +1700,8 @@ class MainWindow(QWidget):
                     settings = json.load(f)
             except: pass
         
-        # --- FIX: Валидация путей при переносе на другой ПК ---
         model_path = settings.get("ai_model_path")
         if model_path:
-            # Если путь не существует (например, другая буква диска или юзер),
-            # но файл лежит в папке models рядом с exe
             if not os.path.exists(model_path):
                 from app.config import MODELS_DIR
                 filename = os.path.basename(model_path)
@@ -1754,7 +1712,7 @@ class MainWindow(QWidget):
                     settings["ai_model_path"] = local_candidate
                 else:
                     logger.warning(f"Модель не найдена по пути: {model_path}. Сброс.")
-                    settings["ai_model_path"] = "" # Сбрасываем, чтобы не крашить AI менеджер
+                    settings["ai_model_path"] = ""
                     
         return settings
         
@@ -1788,14 +1746,12 @@ class MainWindow(QWidget):
     def apply_initial_geometry(self):
         app = QApplication.instance()
         screen = app.screenAt(QCursor.pos()) or app.primaryScreen()
-        avail = screen.availableGeometry()  # доступная область текущего экрана [web:21][web:27]
+        avail = screen.availableGeometry()
 
         preferred_w, preferred_h = 2200, 1320
         margin = 40
 
-        # Если окно не помещается — разворачиваем на весь экран этого монитора
         if preferred_w > avail.width() or preferred_h > avail.height():
-            # Важно: maximize, а не setGeometry на "весь desktop"
             self.move(avail.topLeft())
             self.showMaximized()
             return

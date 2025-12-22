@@ -95,7 +95,6 @@ class RAGStatusWidget(QWidget):
         self.table.cellClicked.connect(self.on_row_clicked)
 
     def on_row_clicked(self, row: int, col: int):
-        """Показать сводку по выбранной категории"""
         item = self.table.item(row, 0)
         if not item:
             return

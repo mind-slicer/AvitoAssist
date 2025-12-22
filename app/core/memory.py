@@ -99,18 +99,8 @@ class MemoryManager:
             c.execute("""CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY, role TEXT, content TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )""")
-            
-            # --- Концептуальная память (Legacy) ---
-            c.execute("""CREATE TABLE IF NOT EXISTS ai_knowledge (
-                product_key TEXT PRIMARY KEY,
-                summary TEXT,
-                risk_factors TEXT,
-                price_range_notes TEXT,
-                last_updated TEXT
-            )""")
 
-            # --- ТИПИЗИРОВАННЫЕ ЧАНКИ ПАМЯТИ v2 ---
-            # Исправлено: UNIQUE constraint перенесен в конец
+            # --- ТИПИЗИРОВАННЫЕ ЧАНКИ ПАМЯТИ ---
             c.execute("""
                 CREATE TABLE IF NOT EXISTS aiknowledge_v2 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,26 +180,12 @@ class MemoryManager:
 
             self._conn.commit()
 
-    # --- Knowledge Methods (Legacy + v2) ---
-
-    def add_knowledge(self, product_key: str, summary: str, risks: str, prices: str):
-        now = datetime.now().isoformat()
-        self._execute("""
-            INSERT OR REPLACE INTO ai_knowledge (product_key, summary, risk_factors, price_range_notes, last_updated)
-            VALUES (?, ?, ?, ?, ?)
-        """, (product_key, summary, risks, prices, now), commit=True)
-
-    def get_knowledge(self, product_key: str) -> Optional[Dict]:
-        row = self._execute("SELECT * FROM ai_knowledge WHERE product_key = ?", (product_key,), fetch_one=True)
-        return dict(row) if row else None
-    
-    def get_all_knowledge_summaries(self) -> List[Dict]:
-        rows = self._execute("SELECT product_key, summary, last_updated FROM ai_knowledge ORDER BY last_updated DESC", fetch_all=True)
-        return [dict(r) for r in rows] if rows else []
-
-    def delete_knowledge(self, product_key: str):
-        self._execute("DELETE FROM ai_knowledge WHERE product_key = ?", (product_key,), commit=True)
-        self._execute("DELETE FROM statistics WHERE product_key = ?", (product_key,), commit=True)
+            try:
+                c.execute("DROP TABLE IF EXISTS ai_knowledge")
+                c.execute("DROP TABLE IF EXISTS chat_history") 
+                self._conn.commit()
+            except Exception as e:
+                logger.dev(f"Sanitation migration info: {e}")
 
     # --- v2 Methods ---
 
@@ -543,12 +519,12 @@ class MemoryManager:
 
     def get_rag_status(self):
         i = self._execute("SELECT COUNT(*) FROM items", fetch_one=True)
-        k = self._execute("SELECT COUNT(*) FROM ai_knowledge", fetch_one=True)
-        last = self._execute("SELECT last_updated FROM ai_knowledge ORDER BY last_updated DESC LIMIT 1", fetch_one=True)
-        
+        k = self._execute("SELECT COUNT(*) FROM aiknowledge_v2 WHERE status='READY'", fetch_one=True)
+        last = self._execute("SELECT last_updated FROM aiknowledge_v2 ORDER BY last_updated DESC LIMIT 1", fetch_one=True)
+
         return {
-            'total_items': i[0] if i else 0, 
-            'total_categories': k[0] if k else 0, 
+            'total_items': i[0] if i else 0,
+            'total_categories': k[0] if k else 0,
             'status': 'ok' if i and i[0] > 0 else 'empty',
             'last_rebuild': last['last_updated'] if last else "Никогда"
         }
