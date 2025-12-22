@@ -892,7 +892,7 @@ class MainWindow(QWidget):
 
             if hasattr(self.controls_widget, 'ai_criteria_input'):
                 self.controls_widget.ai_criteria_input.setPlaceholderText(
-                    "Например: только на гарантии, белый цвет..."
+                    "Например: только на гарантии, с оригинальной упаковкой..."
                 )
                 self.controls_widget.ai_criteria_input.setStyleSheet(
                     Components.text_input()

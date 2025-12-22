@@ -1,50 +1,41 @@
-from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QWidget, QHBoxLayout, QLabel, QVBoxLayout
-from PyQt6.QtCore import Qt, QTimer, QSize
-from PyQt6.QtGui import QColor, QFont, QIcon
-from app.ui.styles import Palette, Typography, Spacing
+from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QWidget, QHBoxLayout, QLabel
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont
+from app.ui.styles import Palette, Spacing
 
 class LogItemWidget(QWidget):
-    """
-    Виджет одной строки лога. 
-    Умеет показывать иконку или анимированный спиннер.
-    """
     def __init__(self, text, style, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(Spacing.SM, 2, Spacing.SM, 2)
         layout.setSpacing(Spacing.MD)
 
-        # Метка для иконки/спиннера (фиксированная ширина для выравнивания)
         self.icon_lbl = QLabel()
         self.icon_lbl.setFixedWidth(24)
         self.icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # Метка текста
         self.text_lbl = QLabel(text)
         self.text_lbl.setWordWrap(True)
-        # Разрешаем выделение текста мышкой
         self.text_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         
-        # Настройка шрифтов
         font = QFont("Segoe UI", 9)
         self.text_lbl.setFont(font)
-        self.icon_lbl.setFont(QFont("Segoe UI Emoji", 10)) # Для эмодзи
+        self.icon_lbl.setFont(QFont("Segoe UI Emoji", 10))
         
         self.timer = None
         self._style = style
 
-        # Инициализация стиля
         if style == "process":
             self._init_spinner()
         else:
             self._set_static_icon(style)
 
         layout.addWidget(self.icon_lbl)
-        layout.addWidget(self.text_lbl, 1) # 1 = растягиваться
+        layout.addWidget(self.text_lbl, 1)
 
     def _set_static_icon(self, style):
         color = Palette.TEXT
-        icon = "🔹" # info default
+        icon = "🔹"
         
         if style == "success":
             icon = "✨"
@@ -94,13 +85,8 @@ class LogItemWidget(QWidget):
         self.text_lbl.setStyleSheet(f"color: {color};")
 
 class SmartLogWidget(QListWidget):
-    """
-    Умный список логов.
-    Поддерживает обновление строк по токенам.
-    """
     def __init__(self):
         super().__init__()
-        # Прозрачный фон, убираем рамки
         self.setStyleSheet(f"""
             QListWidget {{
                 background: {Palette.BG_DARK_2}; 
@@ -117,38 +103,51 @@ class SmartLogWidget(QListWidget):
         """)
         self.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.active_tokens = {} # token -> QListWidgetItem
+        self.sticky_tokens = ["ai_batch", "ai_timer"]
+        self.active_tokens = {}
 
     def add_log(self, token, text, style, replace):
-        # 1. Если нужно обновить существующую строку (например, прогресс)
-        if replace and token and token in self.active_tokens:
+        if token and token in self.active_tokens:
             item = self.active_tokens[token]
             widget = self.itemWidget(item)
             if widget:
-                widget.set_text(text)
-                # Если стиль сменился с process на success/error (финализация)
-                if style in ["success", "error"] and getattr(widget, "_style", "") == "process":
+                display_text = f"Нейросеть анализирует: {text}" if token == "ai_batch" else text
+                widget.set_text(display_text)
+                
+                if style in ["success", "error"] and widget._style == "process":
                     widget.transform_to_static(success=(style == "success"))
-                    # Удаляем токен, так как процесс завершен
-                    del self.active_tokens[token]
-            return
+                return
 
-        # 2. Иначе добавляем новую строку
         item = QListWidgetItem()
         widget = LogItemWidget(text, style)
-        
-        # Важно: задаем размер элемента списка равным размеру виджета
         item.setSizeHint(widget.sizeHint())
-        
-        self.addItem(item)
-        self.setItemWidget(item, widget)
-        
-        # Автоскролл вниз
-        self.scrollToBottom()
 
-        # Если у строки есть токен (это процесс), запоминаем её
+        if token in self.sticky_tokens:
+            self.addItem(item)
+        else:
+            insert_idx = self.count()
+            for i in range(self.count()):
+                current_item = self.item(i)
+                for t, itm in self.active_tokens.items():
+                    if itm == current_item and t in self.sticky_tokens:
+                        insert_idx = i
+                        break
+                if insert_idx < self.count(): break
+            
+            self.insertItem(insert_idx, item)
+
+        self.setItemWidget(item, widget)
         if token:
             self.active_tokens[token] = item
+            
+        self.scrollToBottom()
+
+    def remove_log(self, token):
+        if token in self.active_tokens:
+            item = self.active_tokens.pop(token)
+            row = self.row(item)
+            if row != -1:
+                self.takeItem(row)
 
     def clear_logs(self):
         self.clear()

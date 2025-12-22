@@ -1,7 +1,6 @@
 import logging
 import sys
 import os
-from datetime import datetime
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from app.config import BASE_APP_DIR
@@ -15,12 +14,8 @@ class SingletonMeta(type(QObject)):
         return cls._instances[cls]
 
 class LogManager(QObject, metaclass=SingletonMeta):
-    """
-    Единый центр управления логами.
-    """
-    
-    # Сигнал для UI: (token, text, style, replace_existing)
-    ui_log_signal = pyqtSignal(str, str, str, bool) 
+    ui_log_signal = pyqtSignal(str, str, str, bool)
+    ui_delete_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -52,44 +47,38 @@ class LogManager(QObject, metaclass=SingletonMeta):
         ch.setLevel(logging.INFO)
         self.dev_logger.addHandler(ch)
 
+    def delete_log(self, token: str):
+        if token:
+            self.ui_delete_signal.emit(token)
+
     # --- Публичное API ---
 
     def info(self, text: str, token: str = None):
-        """Обычное сообщение (синий/белый). Если token передан, заменяет строку."""
         self.dev_logger.info(f"[UI:INFO] {text}")
         replace = token is not None
         self.ui_log_signal.emit(token, text, "info", replace)
 
     def success(self, text: str, token: str = None):
-        """Успех (зеленый). Если token передан, заменяет строку (например, завершает прогресс)."""
         self.dev_logger.info(f"[UI:OK] {text}")
         replace = token is not None
         self.ui_log_signal.emit(token, text, "success", replace)
 
     def warning(self, text: str, token: str = None):
-        """Предупреждение (желтый)."""
         self.dev_logger.warning(f"[UI:WARN] {text}")
         replace = token is not None
         self.ui_log_signal.emit(token, text, "warning", replace)
 
     def error(self, text: str, token: str = None, exc_info=False):
-        """Ошибка (красный)."""
         self.dev_logger.error(f"[UI:ERR] {text}", exc_info=exc_info)
         replace = token is not None
         self.ui_log_signal.emit(token, text, "error", replace)
 
     def progress(self, text: str, token: str):
-        """
-        Создает или обновляет строку с анимацией загрузки (спиннером).
-        Обязательно передавать token.
-        """
         self.ui_log_signal.emit(token, text, "process", True)
 
     def dev(self, text: str, level="DEBUG"):
-        """Чисто технический лог, в UI не попадает"""
         if level == "DEBUG": self.dev_logger.debug(text)
         elif level == "INFO": self.dev_logger.info(text)
         elif level == "ERROR": self.dev_logger.error(text)
 
-# Глобальный экземпляр
 logger = LogManager()

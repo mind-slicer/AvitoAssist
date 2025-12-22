@@ -5,6 +5,7 @@ import asyncio
 import re
 import requests
 import gc
+import time
 from typing import List, Dict, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, Qt
@@ -55,7 +56,6 @@ class AIProcessingWorker(QThread):
                 "mirostat_mode": 0,       
                 #"mirostat_tau": 5.0,
                 #"mirostat_eta": 0.1,
-                #"cache_prompt": True
             }
 
             for i, item in enumerate(self.items):
@@ -317,6 +317,10 @@ class AIManager(QObject):
         self._cultivation_queue = []
         self._is_cultivating_now = False
 
+        self.analysis_timer = QTimer()
+        self.analysis_timer.timeout.connect(self._tick_analysis_timer)
+        self.start_ts = 0
+
     def _find_default_model(self) -> Optional[str]:
         if not os.path.exists(MODELS_DIR):
             os.makedirs(MODELS_DIR, exist_ok=True)
@@ -416,8 +420,10 @@ class AIManager(QObject):
 
         prompts_list = []
         rag_messages_list = []
-
         search_mode = context.get('search_mode', 'full')
+
+        self.start_ts = time.time()
+        self.analysis_timer.start(1000) 
 
         if prompt: 
             prompts_list = [prompt] * len(items)
@@ -486,6 +492,7 @@ class AIManager(QObject):
         self.processing_worker.result_signal.connect(self.result_signal.emit)
         self.processing_worker.finished_signal.connect(self.finished_signal.emit)
         self.processing_worker.finished_signal.connect(self.all_finished_signal.emit)
+        self.processing_worker.finished_signal.connect(self._on_processing_finished)
         self.processing_worker.error_signal.connect(self.error_signal.emit)
         self.processing_worker.start()
 
@@ -609,6 +616,15 @@ class AIManager(QObject):
         self.chat_worker.response_signal.connect(self.chat_response_signal.emit)
         self.chat_worker.start()
     
+    def _tick_analysis_timer(self):
+        elapsed = int(time.time() - self.start_ts)
+        time_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        logger.info(f"Прошедшее время анализа: {time_str}...", token="ai_timer")
+
+    def _on_processing_finished(self):
+        self.analysis_timer.stop()
+        logger.delete_log("ai_batch") 
+
     def has_pending_tasks(self) -> bool:
         return (self.processing_worker and self.processing_worker.isRunning()) or (self.chat_worker and self.chat_worker.isRunning())
 

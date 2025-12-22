@@ -1,5 +1,4 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel, QProgressBar
-from PyQt6.QtCore import Qt
 
 from app.ui.styles import Components, Palette, Spacing
 from app.ui.widgets.smart_log_widget import SmartLogWidget
@@ -16,25 +15,21 @@ class ProgressAndLogsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.SM)
 
-        # --- Прогресс бары ---
         bars_container = QWidget()
         bars_layout = QVBoxLayout(bars_container)
         bars_layout.setContentsMargins(0, 0, 0, 0)
         bars_layout.setSpacing(4)
 
-        # Парсер бар
         self.parser_label = QLabel("Прогресс поиска:")
         self.parser_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
         
         self.parser_bar = QProgressBar()
-        # По умолчанию обычный режим, скрыт или на нуле
         self.parser_bar.setRange(0, 100)
         self.parser_bar.setValue(0)
         self.parser_bar.setStyleSheet(Components.progress_bar(Palette.PRIMARY))
         self.parser_bar.setFixedHeight(6)
         self.parser_bar.setTextVisible(False)
         
-        # AI бар
         self.ai_label = QLabel("Прогресс нейросети:")
         self.ai_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
         
@@ -44,7 +39,7 @@ class ProgressAndLogsPanel(QWidget):
         self.ai_bar.setStyleSheet(Components.progress_bar(Palette.TERTIARY))
         self.ai_bar.setFixedHeight(6)
         self.ai_bar.setTextVisible(False)
-        self.ai_bar.setEnabled(True)  # на всякий случай, чтобы Qt не серил его как disabled
+        self.ai_bar.setEnabled(True)
 
         bars_layout.addWidget(self.parser_label)
         bars_layout.addWidget(self.parser_bar)
@@ -53,7 +48,6 @@ class ProgressAndLogsPanel(QWidget):
         
         layout.addWidget(bars_container)
 
-        # --- Табы с логами ---
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(f"""
             QTabWidget::pane {{ border: 1px solid {Palette.BORDER_SOFT}; background-color: {Palette.BG_DARK_2}; }}
@@ -78,19 +72,18 @@ class ProgressAndLogsPanel(QWidget):
 
     def _connect_logger(self):
         logger.ui_log_signal.connect(self.main_log_widget.add_log)
+        logger.ui_delete_signal.connect(self.main_log_widget.remove_log)
     
     def set_parser_mode(self, mode: str):
-        self.parser_bar.reset() # Сброс внутренних состояний Qt
+        self.parser_bar.reset()
         
         if mode == "primary":
-            # Бесконечный режим: min=0, max=0 запускает анимацию Marquee
             self.parser_bar.setRange(0, 0)
             self.parser_bar.setTextVisible(False)
         else:
-            # Обычный режим: 0-100%
             self.parser_bar.setRange(0, 100)
             self.parser_bar.setValue(0)
-            self.parser_bar.setTextVisible(False) # Или True, если хочешь видеть %
+            self.parser_bar.setTextVisible(False)
 
     def reset_parser_progress(self):
         self.parser_bar.setRange(0, 100)
