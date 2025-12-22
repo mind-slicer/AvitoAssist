@@ -131,7 +131,6 @@ class MainWindow(QWidget):
             ai_manager=self.controller.ai_manager
         )
 
-        # Если панель уже создана в init_ui, обновляем ей менеджеры
         if hasattr(self, 'memory_panel'):
             self.memory_panel.set_managers(
                 self.memory_manager,
@@ -155,6 +154,7 @@ class MainWindow(QWidget):
         self.stack.addWidget(self.analytics_page)
         self.memory_panel = AIMemoryPanel()
         self.stack.addWidget(self.memory_panel)
+        self.memory_panel.load_instructions_from_disk()
 
         if not self.controller.chunk_manager:
             self.controller.chunk_manager = ChunkCultivationManager(
@@ -1768,6 +1768,7 @@ class MainWindow(QWidget):
     def closeEvent(self, event):
         self._save_current_queue_state()
         self._sync_queues_with_ui() 
+        self.memory_panel.save_instructions_to_disk()
 
         self.queue_manager.save_current_state()
 

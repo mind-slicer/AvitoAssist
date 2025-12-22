@@ -153,7 +153,7 @@ class AIChunkCultivationWorker(QThread):
     error_signal = pyqtSignal(str)
 
     def __init__(self, port: int, chunk_id: int, chunk_type: str,
-                 memory_manager, model_name: str, prompt: str):
+                 memory_manager, model_name: str, prompt: str, user_instructions: str = ""):
         super().__init__()
         self.port = port
         self.chunk_id = chunk_id
@@ -162,6 +162,7 @@ class AIChunkCultivationWorker(QThread):
         self.model_name = model_name
         self.prompt = prompt
         self._is_running = True
+        self.user_instructions = user_instructions
 
     def stop(self):
         self._is_running = False
@@ -188,11 +189,12 @@ class AIChunkCultivationWorker(QThread):
                 "mirostat_eta": 0.1
             }
 
+            system_content = "Ты аналитик рынка объявлений Avito. Твоя задача — свести данные в единый JSON."
+            if self.user_instructions:
+                system_content += f"\n\nВАЖНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ:\n{self.user_instructions}\nОБЯЗАТЕЛЬНО СЛЕДУЙ ИМ."
+
             messages = [
-                {
-                    "role": "system",
-                    "content": "Ты аналитик рынка объявлений Avito. Твоя задача — свести данные в единый JSON. Отвечай ТОЛЬКО валидным JSON объектом.",
-                },
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": self.prompt},
             ]
 

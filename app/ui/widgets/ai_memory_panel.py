@@ -1,11 +1,15 @@
+import json
+import os
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QSizePolicy, QToolTip, QListWidget,
-    QLineEdit, QListWidgetItem
+    QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent
 
 from app.ui.styles import Components, Palette, Spacing
+from app.core.log_manager import logger
+from app.config import BASE_APP_DIR
 
 class ChunkCard(QFrame):    
     deleted = pyqtSignal(int)
@@ -340,7 +344,7 @@ class AIMemoryPanel(QWidget):
         columns_layout.addLayout(left_col, stretch=3)
         
         right_col = QFrame()
-        right_col.setFixedWidth(300)
+        right_col.setFixedWidth(320)
         right_col.setStyleSheet(Components.panel())
         right_vbox = QVBoxLayout(right_col)
         
@@ -348,39 +352,128 @@ class AIMemoryPanel(QWidget):
         instr_lbl.setStyleSheet(Components.subsection_title())
         right_vbox.addWidget(instr_lbl)
 
-        self.instr_list = QListWidget()
-        self.instr_list.setStyleSheet(Components.styled_list_widget())
-        right_vbox.addWidget(self.instr_list)
-
+        self.instr_scroll = QScrollArea()
+        self.instr_scroll.setWidgetResizable(True)
+        self.instr_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.instr_scroll.setStyleSheet("background: transparent; border: none;")
+        
+        self.instr_container = QWidget()
+        self.instr_container.setStyleSheet("background: transparent;")
+        self.instr_layout = QVBoxLayout(self.instr_container)
+        self.instr_layout.setSpacing(10)
+        self.instr_layout.setContentsMargins(0, 0, 5, 0) # Отступ для скроллбара
+        self.instr_layout.addStretch() # Растяжка снизу
+        
+        self.instr_scroll.setWidget(self.instr_container)
+        right_vbox.addWidget(self.instr_scroll)
+        
+        # Поле ввода (остается прежним, только привязку к методу проверить)
         self.new_instr_edit = QLineEdit()
-        self.new_instr_edit.setPlaceholderText("Добавить правило...")
+        self.new_instr_edit.setPlaceholderText("Добавить инструкцию...")
         self.new_instr_edit.setStyleSheet(Components.text_input())
-        self.new_instr_edit.returnPressed.connect(self._add_instruction_manual)
+        self.new_instr_edit.returnPressed.connect(self.add_instruction_manual)
         right_vbox.addWidget(self.new_instr_edit)
         
         columns_layout.addWidget(right_col)
         layout.addLayout(columns_layout)
 
-    def _add_instruction_manual(self):
+    def add_instruction_manual(self):
         text = self.new_instr_edit.text().strip()
         if not text: return
         self.new_instr_edit.clear()
-        from app.ui.widgets.ai_control_panel import RemovableListItem
-        item = QListWidgetItem(self.instr_list)
-        widget = RemovableListItem(text, item, self, color=Palette.SUCCESS)
-        widget.removed.connect(lambda i: self.instr_list.takeItem(self.instr_list.row(i)))
-        item.setSizeHint(widget.sizeHint())
-        self.instr_list.addItem(item)
-        self.instr_list.setItemWidget(item, widget)
+        
+        # Создаем карточку
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Palette.BG_LIGHT}; 
+                border: 1px solid {Palette.BORDER_PRIMARY}; 
+                border-radius: 6px; 
+                padding: 4px;
+            }}
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 8, 8, 8)
+        
+        top_layout = QHBoxLayout()
+        
+        # Текст инструкции
+        lbl = QLabel(text)
+        lbl.setWordWrap(True) 
+        lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 13px; border: none;")
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        
+        # Кнопка удаления
+        btn_delete = QPushButton("×")
+        btn_delete.setFixedSize(20, 20)
+        btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_delete.setStyleSheet(f"""
+            QPushButton {{
+                color: {Palette.TEXT_MUTED};
+                background: transparent;
+                border: none;
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            QPushButton:hover {{
+                color: {Palette.ERROR};
+            }}
+        """)
+        # Важно: используем замыкание для передачи ссылки на card
+        btn_delete.clicked.connect(lambda _, c=card: self._remove_instr_card(c))
+        
+        top_layout.addWidget(lbl, 1)
+        top_layout.addWidget(btn_delete, 0, Qt.AlignmentFlag.AlignTop)
+        
+        card_layout.addLayout(top_layout)
+        
+        # Вставляем в конец списка, но ПЕРЕД stretch-элементом
+        # Если stretch нет (первый элемент), просто добавляем
+        count = self.instr_layout.count()
+        if count > 0:
+            # Предполагаем, что addStretch был вызван в init_ui
+            self.instr_layout.insertWidget(count - 1, card)
+        else:
+            self.instr_layout.addWidget(card)
+
+    def _remove_instr_card(self, card):
+        self.instr_layout.removeWidget(card)
+        card.deleteLater()
 
     def get_instructions(self) -> list:
         instr = []
-        for i in range(self.instr_list.count()):
-            wdg = self.instr_list.itemWidget(self.instr_list.item(i))
-            if wdg:
-                lbls = wdg.findChildren(QLabel)
-                if lbls: instr.append(lbls[0].text())
+        for i in range(self.instr_layout.count() - 1):
+            item = self.instr_layout.itemAt(i)
+            if item and item.widget():
+                widget = item.widget()
+                labels = widget.findChildren(QLabel)
+                for lbl in labels:
+                    text = lbl.text()
+                    if text and len(text) > 1:
+                        instr.append(text)
+                        break
         return instr
+
+    def save_instructions_to_disk(self):
+        instrs = self.get_instructions()
+        path = os.path.join(BASE_APP_DIR, "user_instructions.json")
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(instrs, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save instructions: {e}")
+
+    def load_instructions_from_disk(self):
+        path = os.path.join(BASE_APP_DIR, "user_instructions.json")
+        if not os.path.exists(path): return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                instrs = json.load(f)
+            for text in instrs:
+                self.new_instr_edit.setText(text)
+                self.add_instruction_manual()
+        except Exception:
+            pass
 
     def eventFilter(self, obj, event):
         if obj == self.info_icon and event.type() == QEvent.Type.ToolTip:
