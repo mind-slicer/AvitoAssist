@@ -1,4 +1,3 @@
-# app/core/memory.py
 import sqlite3
 import os
 import threading
@@ -12,7 +11,6 @@ from datetime import timedelta
 
 from app.config import BASE_APP_DIR
 from app.core.ai.chunk_compression import ChunkCompressor
-from app.core.text_utils import FeatureExtractor, TextMatcher
 from app.core.log_manager import logger
 
 
@@ -189,8 +187,6 @@ class MemoryManager:
                     FOREIGN KEY(processed_in_chunk_id) REFERENCES aiknowledge_v2(id)
                 )
             """)
-
-            c.execute("ALTER TABLE aiknowledge_v2 ADD COLUMN retry_count INTEGER DEFAULT 0")
 
             self._conn.commit()
 

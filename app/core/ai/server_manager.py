@@ -130,7 +130,10 @@ class ServerManager(QObject):
             "--host", "127.0.0.1",
             "--ctx-size", str(ctx_size),
             "--batch-size", str(batch_size),
-            "--no-mmap"
+            "--no-mmap",
+            "-np", "1",
+            "-ctk", "q8_0", #
+            "-ctv", "q8_0", #
         ]
         
         if final_gpu_layers != 0:
@@ -177,7 +180,6 @@ class ServerManager(QObject):
                 logger.info("AI: Остановка llama-server...")
 
             try:
-                # 1) Акуратно пытаемся завершить всё дерево процессов
                 parent = psutil.Process(self.process.pid)
                 children = parent.children(recursive=True)
                 for p in children:
@@ -188,10 +190,8 @@ class ServerManager(QObject):
 
                 parent.terminate()
 
-                # 2) Ждем до 3 секунд
                 gone, alive = psutil.wait_procs([parent] + children, timeout=3)
                 if alive:
-                    # 3) Жестко убиваем, кто остался
                     for p in alive:
                         try:
                             p.kill()
@@ -200,7 +200,6 @@ class ServerManager(QObject):
             except psutil.NoSuchProcess:
                 pass
 
-            # На Windows можно дополнительно продублировать taskkill, если нужно:
             if sys.platform == "win32":
                 try:
                     subprocess.run(

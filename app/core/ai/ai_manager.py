@@ -4,6 +4,7 @@ import glob
 import asyncio
 import re
 import requests
+import gc
 from typing import List, Dict, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, Qt
@@ -11,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, Qt
 from app.config import AI_CTX_SIZE, AI_GPU_LAYERS, AI_SERVER_PORT, MODELS_DIR
 from app.core.ai.server_manager import ServerManager
 from app.core.ai.llama_client import LlamaClient
-from app.core.ai.prompts import PromptBuilder, AnalysisPriority
+from app.core.ai.prompts import PromptBuilder
 from app.core.text_utils import TextMatcher
 from app.core.log_manager import logger
 
@@ -34,6 +35,7 @@ class AIProcessingWorker(QThread):
 
     def stop(self):
         self._is_running = False
+        TextMatcher.clear_cache()
 
     def run(self):
         asyncio.run(self._process_async())
@@ -43,18 +45,17 @@ class AIProcessingWorker(QThread):
         try:
             total = len(self.items)
             
-            # --- НАСТРОЙКИ ГЕНЕРАЦИИ (SMART PARAMS) ---
             gen_params = {
                 "response_format": {"type": "json_object"}, 
-                "temperature": 0.2,       # Низкая температура для строгой логики
-                "top_k": 40,              # Ограничиваем выбор токенов
-                "top_p": 0.9,             # Nucleus sampling
-                "repeat_penalty": 1.1,    # Чтобы не зацикливался
+                "temperature": 0.2,
+                "top_k": 40,
+                "top_p": 0.9,
+                "repeat_penalty": 1.1,
                 "max_tokens": 1024,
-                # Mirostat делает ответы более "умными" и связными, жертвуя скоростью
                 "mirostat_mode": 2,       
                 "mirostat_tau": 5.0,
-                "mirostat_eta": 0.1
+                "mirostat_eta": 0.1,
+                "cache_prompt": False
             }
 
             for i, item in enumerate(self.items):
@@ -86,6 +87,8 @@ class AIProcessingWorker(QThread):
                 if response:
                     cleaned = self._clean_json(response)
                     self.result_signal.emit(i, cleaned, self.context)
+                    if i % 5 == 0:
+                        gc.collect()
                 else:
                     self.error_signal.emit(f"Пустой ответ AI для #{i}")
             
@@ -97,6 +100,7 @@ class AIProcessingWorker(QThread):
             self.error_signal.emit(str(e))
         finally:
             await client.close()
+            TextMatcher.clear_cache()
 
     def _clean_json(self, text: str) -> str:
         # Пытаемся найти JSON объект, если модель выдала лишний текст
@@ -121,7 +125,6 @@ class AIChatWorker(QThread):
     async def _chat_async(self):
         client = LlamaClient(self.port)
         try:
-            # Для чата параметры мягче, чтобы он был "креативнее" в общении
             chat_params = {
                 "temperature": 0.7,
                 "top_k": 50,
@@ -182,7 +185,7 @@ class AIChunkCultivationWorker(QThread):
                 "max_tokens": 1024,
                 "mirostat_mode": 2,
                 "mirostat_tau": 5.0,
-                "mirostat_eta": 0.1,
+                "mirostat_eta": 0.1
             }
 
             messages = [
@@ -317,24 +320,18 @@ class AICultivationWorker(QThread):
 
                 if response:
                     try:
-                        # ✅ УЛУЧШЕННАЯ очистка JSON
                         clean_json = response.strip()
 
-                        # Удалить markdown обертки
                         if clean_json.startswith("``````"):
                             clean_json = clean_json[7:-3].strip()
                         elif clean_json.startswith("``````"):
                             clean_json = clean_json[3:-3].strip()
 
-                        # Удалить "json" в начале если есть
                         if clean_json.lower().startswith("json"):
                             clean_json = clean_json[4:].strip()
 
-                        # ✅ ДОБАВИТЬ - попытка восстановить незакрытые кавычки
-                        # Если строка обрывается посередине - обрезать до последней закрытой скобки
                         if clean_json.count('"') % 2 != 0:
                             logger.warning(f"Незакрытые кавычки в JSON для {key}, пытаюсь восстановить...", token="ai-cult")
-                            # Найти последнюю закрытую фигурную скобку
                             last_brace = clean_json.rfind('}')
                             if last_brace > 0:
                                 clean_json = clean_json[:last_brace + 1]
@@ -368,7 +365,7 @@ class AICultivationWorker(QThread):
         finally:
             await client.close()
 
-# --- Главный менеджер (Оркестратор) ---
+
 class AIManager(QObject):
     progress_signal = pyqtSignal(str)
     ai_progress_value = pyqtSignal(int)
@@ -485,6 +482,10 @@ class AIManager(QObject):
         if not self._server_ready:
             self.server_ready_signal.connect(lambda: self.start_processing(items, prompt, debug_mode, context), Qt.ConnectionType.SingleShotConnection)
             return
+        
+        if not prompt:
+            logger.info("Подготовка поискового индекса...", token="text_match")
+            TextMatcher.precompute_corpus(items)
 
         prompts_list = []
         rag_messages_list = []
