@@ -4,7 +4,7 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit,
-    QTextEdit
+    QTextEdit, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent
 from PyQt6.QtGui import QTextOption
@@ -360,16 +360,16 @@ class AIMemoryPanel(QWidget):
         self.instr_scroll.setStyleSheet("background: transparent; border: none;")
         
         self.instr_container = QWidget()
+        self.instr_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.instr_container.setStyleSheet("background: transparent;")
         self.instr_layout = QVBoxLayout(self.instr_container)
         self.instr_layout.setSpacing(10)
-        self.instr_layout.setContentsMargins(0, 0, 5, 0) # Отступ для скроллбара
-        self.instr_layout.addStretch() # Растяжка снизу
+        self.instr_layout.setContentsMargins(0, 0, 5, 0)
+        self.instr_layout.addStretch()
         
         self.instr_scroll.setWidget(self.instr_container)
         right_vbox.addWidget(self.instr_scroll)
         
-        # Поле ввода (остается прежним, только привязку к методу проверить)
         self.new_instr_edit = QLineEdit()
         self.new_instr_edit.setPlaceholderText("Добавить инструкцию...")
         self.new_instr_edit.setStyleSheet(Components.text_input())
@@ -396,7 +396,6 @@ class AIMemoryPanel(QWidget):
         card_layout.setContentsMargins(8, 8, 8, 8)
         card_layout.setSpacing(10)
 
-        # Вместо QLabel используем QTextEdit для идеального переноса длинных слов
         text_area = QTextEdit()
         text_area.setReadOnly(True)
         text_area.setPlainText(text)
@@ -404,7 +403,6 @@ class AIMemoryPanel(QWidget):
         text_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         text_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        # Стилизация под обычный текст
         text_area.setStyleSheet(f"""
             background: transparent;
             color: {Palette.TEXT};
@@ -413,14 +411,12 @@ class AIMemoryPanel(QWidget):
             border: none;
         """)
         
-        # Магия переноса слов в любом месте (break-all)
         text_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         text_area.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
 
-        # Подгонка высоты под текст
         doc = text_area.document()
-        doc.setTextWidth(240) # Фиксируем ширину текста
-        h = doc.size().height() + 10
+        doc.setTextWidth(240)
+        h = doc.size().height() + 20
         text_area.setFixedHeight(int(h))
         text_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -433,10 +429,8 @@ class AIMemoryPanel(QWidget):
         card_layout.addWidget(text_area, 1)
         card_layout.addWidget(btn_delete, 0, Qt.AlignmentFlag.AlignTop)
 
-        # Добавляем в список ПЕРЕД стрейчем
         self.instr_layout.insertWidget(self.instr_layout.count() - 1, card)
         
-        # Выключаем горизонтальный скролл в самом контейнере
         self.instr_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def _remove_instr_card(self, card):
@@ -449,10 +443,10 @@ class AIMemoryPanel(QWidget):
             item = self.instr_layout.itemAt(i)
             if item and item.widget():
                 widget = item.widget()
-                labels = widget.findChildren(QLabel)
-                for lbl in labels:
-                    text = lbl.text()
-                    if text and len(text) > 1:
+                text_edits = widget.findChildren(QTextEdit)
+                for edit in text_edits:
+                    text = edit.toPlainText().strip()
+                    if text:
                         instr.append(text)
                         break
         return instr

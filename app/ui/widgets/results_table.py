@@ -350,19 +350,32 @@ class ResultsTable(QTableView):
             verdict = item.get("verdict", "UNKNOWN")
             ai_json_str = item.get("ai_analysis", "{}")
             
-            text_to_show = f"Вердикт: {verdict}\n\n"
-            try:
-                data = json.loads(ai_json_str)
-                pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
-                text_to_show += pretty_json
-            except:
-                text_to_show += ai_json_str
+            if isinstance(ai_json_str, str):
+                try:
+                    data = json.loads(ai_json_str)
+                except:
+                    data = {}
+            else:
+                data = ai_json_str if isinstance(ai_json_str, dict) else {}
+
+            reason = data.get("reason", "Нет объяснения")
+            m_pos = data.get("market_position", "Не определено")
+            defects = "Да" if data.get("defects") else "Нет"
+            
+            pos_map = {"below_market": "Ниже рынка", "fair": "По рынку", "overpriced": "Дорого"}
+            m_pos_ru = pos_map.get(m_pos, m_pos)
+
+            report = (
+                f"🤖 ВЕРДИКТ ИИ: {verdict}\n"
+                f"{'-'*30}\n\n"
+                f"📝 ОБЪЯСНЕНИЕ:\n{reason}\n\n"
+                f"📊 ПОЗИЦИЯ НА РЫНКЕ: {m_pos_ru}\n"
+                f"⚠️ ДЕФЕКТЫ/РИСКИ: {defects}\n"
+            )
             
             msg_box = QMessageBox(self)
-            msg_box.setWindowTitle(f"Анализ AI: {verdict}")
-            msg_box.setText(f"Детальный отчет для товара {item.get('id')}")
-            msg_box.setDetailedText(text_to_show)
-            msg_box.setText(text_to_show) 
+            msg_box.setWindowTitle(f"Анализ элемента {item.get('id')}...")
+            msg_box.setText(report)
             msg_box.setIcon(QMessageBox.Icon.Information)
             msg_box.exec()
 

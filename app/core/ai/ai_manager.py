@@ -63,18 +63,26 @@ class AIProcessingWorker(QThread):
                 if i < len(self.rag_messages) and self.rag_messages[i]:
                     logger.success(self.rag_messages[i])
 
-                logger.progress(f"Нейросеть анализирует: {i + 1}/{total}", token="ai_batch")
+                logger.progress(f"Нейросеть анализирует: {i + 1}/{total}...", token="ai_batch")
                 self.progress_value.emit(int(((i + 1) / total) * 100))
                 
                 prompt_text = self.prompts[i] if i < len(self.prompts) else self.prompts[-1]
                 
-                # Мини-дамп для экономии токенов, убираем лишнее
-                clean_item = {k: v for k, v in item.items() if k in ['title', 'price', 'description', 'city', 'condition', 'seller_id']}
+                clean_item = {
+                    k: v for k, v in item.items() 
+                    if k in ['title', 'price', 'description', 'city', 'condition', 'seller_id', 'views', 'date_text', 'link']
+                }
                 item_dump = json.dumps(clean_item, ensure_ascii=False)
                 
+                system_instruction = (
+                    "Ты - эксперт по оценке товаров на Avito. "
+                    "Твоя задача - проанализировать товар и вернуть СТРОГО валидный JSON объект. "
+                    "Не пиши никакого вводного текста."
+                )
+
                 messages = [
-                    {"role": "system", "content": "Ты — строгий эксперт-скупщик. Отвечай ТОЛЬКО валидным JSON."},
-                    {"role": "user", "content": f"{prompt_text}\n\nОБЪЯВЛЕНИЕ:\n{item_dump}"}
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"{prompt_text}\n\nВОТ ДАННЫЕ ТОВАРА:\n{item_dump}"}
                 ]
 
                 response = await client.chat_completion(
@@ -89,24 +97,30 @@ class AIProcessingWorker(QThread):
                     if i % 5 == 0:
                         gc.collect()
                 else:
-                    self.error_signal.emit(f"Пустой ответ AI для #{i}")
+                    self.error_signal.emit(f"Пустой ответ ИИ для #{i}...")
             
-            logger.success("Анализ нейросетью завершен")
+            logger.success("Анализ завершен...")
             self.finished_signal.emit()
 
         except Exception as e:
-            logger.error(f"Ошибка AI воркера: {e}")
+            logger.error(f"Ошибка ИИ воркера: {e}...")
             self.error_signal.emit(str(e))
         finally:
             await client.close()
             TextMatcher.clear_cache()
 
     def _clean_json(self, text: str) -> str:
+        if not text: return "{}"
+
+        match_code = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if match_code:
+            return match_code.group(1)
+        
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             return match.group(0)
-        return text.replace("```json", "").replace("```", "").strip()
 
+        return text.replace("```json", "").replace("```", "").strip()
 
 
 class AIChatWorker(QThread):

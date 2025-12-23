@@ -72,7 +72,7 @@ class RemovableListItem(QWidget):
         lbl.setStyleSheet(f"color: {color}; font-family: {Typography.UI}; font-size: 13px;")
         layout.addWidget(lbl, 1)
 
-        btn_del = QPushButton("×")
+        btn_del = QPushButton("X")
         btn_del.setFixedSize(24, 24)
         btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_del.setStyleSheet("QPushButton { border: none; color: #666; font-size: 18px; font-weight: bold; background: transparent; } QPushButton:hover { color: #ff5555; }")

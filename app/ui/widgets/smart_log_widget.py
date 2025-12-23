@@ -111,7 +111,7 @@ class SmartLogWidget(QListWidget):
             item = self.active_tokens[token]
             widget = self.itemWidget(item)
             if widget:
-                display_text = f"Нейросеть анализирует: {text}" if token == "ai_batch" else text
+                display_text = f"{text}" if token == "ai_batch" else text
                 widget.set_text(display_text)
                 
                 if style in ["success", "error"] and widget._style == "process":
