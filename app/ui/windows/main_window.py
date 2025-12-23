@@ -372,7 +372,6 @@ class MainWindow(QWidget):
         self.controller.ai_result_ready.connect(self.handle_ai_result)
 
     def _on_sequence_finished_ui(self):
-        logger.info("Последовательность полностью завершена...")
         self.queue_manager.clear_scanned_categories_bulk()
 
         if hasattr(self, 'search_widget'):
@@ -791,7 +790,7 @@ class MainWindow(QWidget):
         if idx < len(self.controller.queue_state.queues_config):
             config = self.controller.queue_state.queues_config[idx]
         q_name = config.get('queue_name', f"#{idx + 1}")
-        logger.success(f"Очередь #{q_name} завершена. Получено {len(results)} шт...")
+        logger.success(f"#{q_name}: поиск завершен. Получено {len(results)} шт...")
         
         next_idx = idx + 1
         if next_idx < len(self.controller.queue_state.queues_config):
@@ -819,7 +818,7 @@ class MainWindow(QWidget):
         if clamped_val > 0 and clamped_val < 100:
             logger.progress(f"Выполнение: {clamped_val}%", token="parser_global_progress")
         elif clamped_val == 100:
-            logger.success("Сбор данных завершен (100%)")
+            logger.success("Сбор данных завершен (100%)") # TODO: 1. Это вызывается три раза, если верить Журналу событий? 2. Перенести это в парсер?
              
         self.last_progress_value = clamped_val
 
