@@ -351,7 +351,7 @@ class MainWindow(QWidget):
         self.controls_widget.parameters_changed.connect(self._update_cost_calculation)
         if hasattr(self.controls_widget, 'queue_manager_widget'):
             self.controls_widget.queue_manager_widget.queue_changed.connect(self._on_queue_changed)
-            self.controls_widget.queue_manager_widget.queue_removed.connect(self.queue_manager.delete_queue)
+            self.controls_widget.queue_manager_widget.queue_removed.connect(self._on_queue_removed)
             self.controls_widget.queue_manager_widget.queue_toggled.connect(self._on_queue_toggled)
         self.results_area.file_loaded.connect(self._on_file_loaded)
         self.results_area.file_deleted.connect(self._on_file_deleted)
@@ -496,6 +496,19 @@ class MainWindow(QWidget):
 
     def _on_queue_renamed(self, index: int, new_name: str):
         self.queue_manager.update_state({"name": new_name}, index)
+
+    def _on_queue_removed(self, index: int):
+        self.queue_manager.delete_queue(index)
+        
+        new_ui_index = index
+        if hasattr(self.controls_widget, "queue_manager_widget"):
+            count = self.controls_widget.queue_manager_widget.get_all_queues_count()
+            if new_ui_index >= count:
+                new_ui_index = count - 1
+        
+        if new_ui_index >= 0:
+            self.queue_manager.set_current_index(new_ui_index)
+            self._load_queue_to_ui(new_ui_index)
 
     def _on_pause_neuronet_requested(self):
         self.progress_panel.ai_log.warning(f"Функция паузы нейросети еще не реализована в контроллере.")

@@ -61,7 +61,6 @@ class QueueStateManager(QObject):
             self.queues_data[queue_index] = self._create_default_state()
     
     def _create_default_state(self) -> Dict[str, Any]:
-        """Create default queue state"""
         return {
             "name": "",
             "search_tags": [],
@@ -70,7 +69,7 @@ class QueueStateManager(QObject):
             "max_price": 0,
             "search_mode": "full",
             "ai_criteria": "",
-            "include_ai": True,
+            "include_ai": False,
             "store_in_memory": False,
             "max_pages": 0,
             "max_items": 0,
@@ -81,7 +80,7 @@ class QueueStateManager(QObject):
             "split_ads_count": 0,
             "use_queue_manager": False,
             "use_blacklist": False,
-            "sort_type": "date",
+            "sort_type": "default",
             "queue_enabled": True, 
             "rewrite_duplicates": False,
             "skip_duplicates": False,

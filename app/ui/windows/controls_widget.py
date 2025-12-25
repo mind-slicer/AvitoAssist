@@ -306,15 +306,18 @@ class ControlsWidget(QWidget):
         return layout
 
     def _update_queue_ui_state(self):
-        """Обновляет состояние кнопок очереди"""
         if not hasattr(self, 'queue_manager_widget'): return
         queue_count = self.queue_manager_widget.list_widget.count()
+        
         self.queue_remove_btn.setEnabled(queue_count > 1)
 
+        if hasattr(self, 'split_results_sw'):
+            self.split_results_sw.setEnabled(queue_count > 1)
+            if queue_count <= 1:
+                self.split_results_sw.setChecked(False)
+
     def _update_queue_buttons(self):
-        if not hasattr(self, 'queue_manager_widget'): return
-        queue_count = self.queue_manager_widget.list_widget.count()
-        self.queue_remove_btn.setEnabled(queue_count > 1)
+        self._update_queue_ui_state()
 
     def _update_duplicates_toggle_state(self):
         has_table = self.merge_table_combo.currentData() is not None
@@ -366,6 +369,7 @@ class ControlsWidget(QWidget):
         self.split_results_sw = AnimatedToggle()
         self.split_results_sw.setFixedSize(55, 30)
         self.split_results_sw.setChecked(False)
+        self.split_results_sw.setEnabled(False)
         self.split_results_sw.stateChanged.connect(self._on_split_results_toggled)
         self.split_results_lbl = QLabel("Выкл")
         self._update_toggle_label(self.split_results_lbl, False)
@@ -415,60 +419,50 @@ class ControlsWidget(QWidget):
         grid = QGridLayout()
         grid.setSpacing(Spacing.SM)
         
-        # 1. Настройка инпута (фиксируем ширину, чтобы не растягивался)
         self.max_items_input = QSpinBox()
-        self.max_items_input.setFixedWidth(80)  # <-- ФИКС: Ограничиваем ширину
+        self.max_items_input.setFixedWidth(80)
         self.max_items_input.setRange(0, 99_999)
         self.max_items_input.setSpecialValueText("∞")
         self.max_items_input.setSingleStep(10)
         self.max_items_input.setStyleSheet(Components.text_input())
         self.max_items_input.valueChanged.connect(self._update_pages_info)
         
-        # Обертка ParamInput должна подстраиваться под контент, а не растягиваться
         input_wrapper = ParamInput("Объявлений", self.max_items_input)
         input_wrapper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         
         grid.addWidget(input_wrapper, 0, 0)
         
-        # 2. Настройка инфо-блока (делаем его больше и ровнее)
         self.pages_info_lbl = QLabel()
-        # Убираем жесткий стиль здесь, он будет задаваться через HTML в _update_pages_info
         self.pages_info_lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED};")
         self.pages_info_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         info_container = QWidget()
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
-        info_layout.setSpacing(2) # Чуть плотнее
+        info_layout.setSpacing(2)
         
         lbl_caption = QLabel("Обходим")
         lbl_caption.setStyleSheet(
             Typography.style(
                 family=Typography.UI,
-                size=Typography.SIZE_NORMAL, # Чуть крупнее заголовок
+                size=Typography.SIZE_NORMAL,
                 color=Palette.TEXT_SECONDARY,
             )
         )
         info_layout.addWidget(lbl_caption)
         info_layout.addWidget(self.pages_info_lbl)
         
-        # Добавляем во вторую колонку
         grid.addWidget(info_container, 0, 1)
 
-        # 3. Нижний ряд (Toggle buttons)
         grid.addWidget(self._create_region_toggle(), 1, 0)
         grid.addWidget(self._create_defects_toggle(), 1, 1)
 
-        # 4. ВАЖНО: Настройка растяжения колонок
-        # Колонка 0 (Инпут) занимает минимум места
-        # Колонка 1 (Инфо) занимает всё остальное место
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
         
         limits_layout.addLayout(grid)
         layout.addWidget(limits_card)
 
-        # Сортировка и нейро-опции (без изменений)
         sort_card, sort_layout = self._create_param_card("СОРТИРОВКА")
         self.sort_combo = NoScrollComboBox()
         self.sort_combo.setMinimumWidth(80)
@@ -478,10 +472,6 @@ class ControlsWidget(QWidget):
         self.sort_combo.addItem("Дороже", userData="price_desc")
         self.sort_combo.addItem("По дате", userData="date")
         self.sort_combo.addItem("По скидке", userData="discount")
-        for i in range(self.sort_combo.count()):
-            if self.sort_combo.itemData(i) == "date":
-                self.sort_combo.setCurrentIndex(i)
-                break
         sort_layout.addWidget(self.sort_combo)
         layout.addWidget(sort_card)
         
@@ -516,12 +506,9 @@ class ControlsWidget(QWidget):
         if hasattr(self, 'search_all_regions_checkbox'):
             is_all_regions = self.search_all_regions_checkbox.isChecked()
         
-        # Множитель: 2 если все регионы, 1 если только Москва
         region_mult = 2 if is_all_regions else 1
         
-        # Кол-во "задач" для парсера (Category * Mult)
         tasks_count = categories * region_mult
-        # --- UPDATED LOGIC END ---
 
         if items == 0:
             items_per_cat = "∞"
@@ -601,15 +588,16 @@ class ControlsWidget(QWidget):
         layout.addWidget(title)
         row_layout = QHBoxLayout()
         row_layout.setSpacing(Spacing.SM)
+
         self.include_ai_sw = AnimatedToggle()
         self.include_ai_sw.setFixedSize(55, 30)
-        self.include_ai_sw.setChecked(True)
-        self.include_ai_lbl = QLabel("Вкл")
-        self._update_toggle_label(self.include_ai_lbl, True)
-        
+        self.include_ai_sw.setChecked(False)
+        self.include_ai_lbl = QLabel("Выкл")
+        self._update_toggle_label(self.include_ai_lbl, False)
         self.include_ai_sw.stateChanged.connect(
             lambda s: self._update_toggle_label(self.include_ai_lbl, s)
         )
+
         row_layout.addWidget(self.include_ai_sw)
         row_layout.addWidget(self.include_ai_lbl)
         layout.addLayout(row_layout)
@@ -733,7 +721,7 @@ class ControlsWidget(QWidget):
         self._emit_parameters_changed()
 
     def get_parameters(self) -> dict:
-        sort_type = "date"
+        sort_type = "default"
         if hasattr(self, "sort_combo"):
             idx = self.sort_combo.currentIndex()
             if idx >= 0:
@@ -767,7 +755,7 @@ class ControlsWidget(QWidget):
             self.max_price_input.setValue(params.get("max_price", 0))
             self.search_mode_widget.set_mode(params.get("search_mode", "full"))
             self.ai_criteria_input.setPlainText(params.get("ai_criteria", ""))
-            self.include_ai_sw.setChecked(params.get("include_ai", True))
+            self.include_ai_sw.setChecked(params.get("include_ai", False))
             self.store_memory_sw.setChecked(params.get("store_in_memory", False))
             self.max_items_input.setValue(params.get("max_items", 0))
             self.search_all_regions_checkbox.setChecked(params.get("all_regions", False))
@@ -775,7 +763,7 @@ class ControlsWidget(QWidget):
             if hasattr(self, "rewrite_duplicates_sw"):
                 self.rewrite_duplicates_sw.setChecked(bool(params.get("rewrite_duplicates", False)))
             if hasattr(self, "sort_combo"):
-                sort_type = params.get("sort_type", "date")
+                sort_type = params.get("sort_type", "default")
                 for i in range(self.sort_combo.count()):
                     if self.sort_combo.itemData(i) == sort_type:
                         self.sort_combo.setCurrentIndex(i)
