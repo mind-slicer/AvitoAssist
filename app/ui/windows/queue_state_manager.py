@@ -18,8 +18,6 @@ class QueueStateManager(QObject):
         
         self._load_all_queues()
     
-    # ============ Queue State Management ============
-    
     def get_current_index(self) -> int:
         return self.current_queue_index
     
@@ -88,8 +86,6 @@ class QueueStateManager(QObject):
             "split_results": False
         }
     
-    # ============ Bulk Operations ============
-    
     def get_all_queue_indices(self) -> List[int]:
         return sorted(self.queues_data.keys())
     
@@ -127,8 +123,6 @@ class QueueStateManager(QObject):
             self._save_all_queues()
             if self.current_queue_index in self.queues_data:
                 pass
-
-    # ============ Persistence ============
     
     def _queues_file_path(self) -> str:
         return os.path.join(BASE_APP_DIR, "queues_state.json")
@@ -188,8 +182,6 @@ class QueueStateManager(QObject):
         state = self.get_state(queue_index)
         self.state_loaded.emit(queue_index, state)
     
-    # ============ Import/Export ============
-    
     def export_queue(self, queue_index: int) -> str:
         state = self.get_state(queue_index)
         return json.dumps(state, ensure_ascii=False, indent=2)
@@ -210,8 +202,6 @@ class QueueStateManager(QObject):
         except Exception as e:
             return False
     
-    # ============ Validation ============
-    
     def validate_state(self, state: Dict[str, Any]) -> bool:
         required_fields = [
             "search_tags", "ignore_tags", "min_price", "max_price",
@@ -230,8 +220,6 @@ class QueueStateManager(QObject):
             return False
         
         return True
-    
-    # ============ Statistics ============
     
     def get_queue_count(self) -> int:
         return len(self.queues_data)

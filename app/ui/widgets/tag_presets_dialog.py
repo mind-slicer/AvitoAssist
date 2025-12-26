@@ -22,9 +22,6 @@ from PyQt6.QtWidgets import (
 from app.ui.styles import Components, Palette, Typography, Spacing
 
 
-# -----------------------------
-# Tree node helpers
-# -----------------------------
 def _is_tag_node(n: Any) -> bool:
     return isinstance(n, dict) and n.get("type") == "tag"
 
@@ -42,16 +39,13 @@ def _canon_tag(value: str) -> str:
     s = re.sub(r"\s+", "", s)
     return s
 
-def _make_tag(value: str) -> dict:
-    return {"type": "tag", "value": value}
-
+def _make_tag(value: str, params: Optional[dict] = None) -> dict:
+    t = {"type": "tag", "value": value}
+    if params:
+        t["params"] = params
+    return t
 
 def _normalize_preset_value_to_root_folder(v: Any) -> dict:
-    """
-    Backward compatibility:
-    - old: List[str]
-    - new: {"type":"folder","name":..., "children":[...]}
-    """
     if isinstance(v, list):
         children = []
         for t in v:
@@ -68,7 +62,8 @@ def _normalize_preset_value_to_root_folder(v: Any) -> dict:
             if _is_tag_node(c):
                 value = str(c.get("value") or "").strip()
                 if value:
-                    norm_children.append(_make_tag(value))
+                    params = c.get("params")
+                    norm_children.append(_make_tag(value, params))
             elif _is_folder_node(c):
                 norm_children.append(_normalize_preset_value_to_root_folder(c))
         return _make_folder(name if name else "КОРЕНЬ НАБОРА", norm_children)
@@ -77,14 +72,8 @@ def _normalize_preset_value_to_root_folder(v: Any) -> dict:
 
 
 class TagPresetsDialog(QDialog):
-    """
-    Presets format:
-        Dict[str, FolderNode]
-    where FolderNode = {"type":"folder","name": str, "children":[TagNode|FolderNode...]}
-    """
-
-    ROLE_PATH = int(Qt.ItemDataRole.UserRole)          # tuple[int, ...] path from root children
-    ROLE_NODE_TYPE = int(Qt.ItemDataRole.UserRole) + 1 # "root"|"folder"|"tag"
+    ROLE_PATH = int(Qt.ItemDataRole.UserRole)
+    ROLE_NODE_TYPE = int(Qt.ItemDataRole.UserRole) + 1
 
     def __init__(
         self,
@@ -99,7 +88,6 @@ class TagPresetsDialog(QDialog):
         self.resize(800, 520)
         self.setStyleSheet(Components.dialog())
 
-        # Normalize
         self.presets: Dict[str, dict] = {}
         for k, v in (presets or {}).items():
             name = str(k).strip()
@@ -133,7 +121,6 @@ class TagPresetsDialog(QDialog):
         layout = QHBoxLayout(self)
         layout.setSpacing(Spacing.LG)
 
-        # LEFT
         left = QVBoxLayout()
         lbl_left = QLabel("СПИСОК НАБОРОВ")
         lbl_left.setStyleSheet(Components.section_title())
@@ -167,7 +154,6 @@ class TagPresetsDialog(QDialog):
         btn_row.addStretch(0)
         left.addLayout(btn_row)
 
-        # RIGHT
         right = QVBoxLayout()
         lbl_right = QLabel("СТРУКТУРА НАБОРА")
         lbl_right.setStyleSheet(Components.section_title())
@@ -220,9 +206,6 @@ class TagPresetsDialog(QDialog):
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
 
-    # -----------------------------
-    # UI utils
-    # -----------------------------
     def _mk_btn(self, text: str, handler):
         b = QPushButton(text)
         b.setMinimumSize(30, 25)
@@ -261,7 +244,6 @@ class TagPresetsDialog(QDialog):
         name = name.strip()
 
         if name in self.presets:
-            # select existing
             for i in range(self.list_widget.count()):
                 it = self.list_widget.item(i)
                 if it and it.data(Qt.ItemDataRole.UserRole) == name:
@@ -269,16 +251,12 @@ class TagPresetsDialog(QDialog):
                     break
             return self._get_current_root_folder()
 
-        # create new
         self.presets[name] = _make_folder("КОРЕНЬ НАБОРА", [])
         self._add_list_item(name)
         self.list_widget.setCurrentRow(self.list_widget.count() - 1)
         self.tree.setFocus()
         return self._get_current_root_folder()
 
-    # -----------------------------
-    # Preset operations (left)
-    # -----------------------------
     def _add_preset(self):
         name, ok = QInputDialog.getText(self, "Новый набор", "Имя:")
         if not (ok and name.strip()):
@@ -330,9 +308,6 @@ class TagPresetsDialog(QDialog):
         self._populate_tree(root)
         self.tree.expandAll()
 
-    # -----------------------------
-    # Path <-> Node
-    # -----------------------------
     def _node_by_path(self, root: dict, path: Tuple[int, ...]) -> dict:
         node: dict = root
         for idx in path:
@@ -346,11 +321,6 @@ class TagPresetsDialog(QDialog):
         return node
 
     def _selected_path_and_type(self) -> Tuple[Tuple[int, ...], str]:
-        """
-        Returns (path, node_type), where:
-        - root: path=()
-        - folder/tag: path=(...)
-        """
         it = self.tree.currentItem()
         if not it:
             return (), "корень набора"
@@ -374,9 +344,6 @@ class TagPresetsDialog(QDialog):
                     keys.add(k)
         return keys
 
-    # -----------------------------
-    # Tree render
-    # -----------------------------
     def _populate_tree(self, root_folder: dict):
         root_item = QTreeWidgetItem([f"📂 {root_folder.get('name', 'КОРЕНЬ НАБОРА')}"])
         root_item.setData(0, self.ROLE_PATH, ())
@@ -405,9 +372,6 @@ class TagPresetsDialog(QDialog):
         cur = self.list_widget.currentItem()
         self._on_preset_changed(cur, None)
 
-    # -----------------------------
-    # Actions
-    # -----------------------------
     def _add_folder(self):
         root = self._ensure_preset_selected()
         if not root:
@@ -415,7 +379,6 @@ class TagPresetsDialog(QDialog):
 
         sel_path, sel_type = self._selected_path_and_type()
 
-        # target folder:
         if sel_type == "folder":
             target_folder = self._folder_by_path(root, sel_path)
         elif sel_type == "tag" and sel_path:
@@ -437,7 +400,6 @@ class TagPresetsDialog(QDialog):
 
         sel_path, sel_type = self._selected_path_and_type()
 
-        # target folder:
         if sel_type == "folder":
             target_folder = self._folder_by_path(root, sel_path)
         elif sel_type == "tag" and sel_path:
@@ -549,9 +511,6 @@ class TagPresetsDialog(QDialog):
         elif act == act_delete:
             self._delete_node()
 
-    # -----------------------------
-    # Public API
-    # -----------------------------
     def get_presets(self) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
         for k, v in self.presets.items():

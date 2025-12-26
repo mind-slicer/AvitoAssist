@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWid
                             QDialog, QMessageBox, QGroupBox, QAbstractItemView,
                             QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QMouseEvent, QCursor
+from PyQt6.QtGui import QMouseEvent
 import re
 
 from app.ui.styles import Palette, Components, Spacing, Typography

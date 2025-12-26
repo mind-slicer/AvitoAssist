@@ -345,6 +345,7 @@ class MainWindow(QWidget):
         self.search_widget.categories_selected.connect(self._on_categories_selected)
         self.search_widget.categories_changed.connect(self._update_cost_calculation)
         self.search_widget.apply_tags_to_new_queue_requested.connect(self.on_apply_tags_to_new_queue_requested)
+        self.search_widget.parameters_update_requested.connect(self.controls_widget.set_parameters)
         self.controls_widget.start_requested.connect(self._on_start_search)
         self.controls_widget.stop_requested.connect(self._on_stop_search)
         self.controls_widget.parameters_changed.connect(self._on_parameters_changed)
@@ -1278,33 +1279,51 @@ class MainWindow(QWidget):
     def _on_categories_selected(self, cats):
         logger.info(f"Выбрано {len(cats)} категорий...")
 
-    def on_apply_tags_to_new_queue_requested(self, search_tags: list, ignore_tags: list):
+    def on_apply_tags_to_new_queue_requested(self, search_tags: list, ignore_tags: list, tag_params: dict = None):
         self._save_current_queue_state()
-    
-        if not hasattr(self.controls_widget, "queue_manager_widget"):
+        
+        if not hasattr(self.controls_widget, "params_panel"):
             return
-    
-        ui_mgr = self.controls_widget.queue_manager_widget
-    
+        
+        ui_mgr = self.controls_widget.params_panel.queue_manager_widget
         new_index = ui_mgr.get_all_queues_count()
         ui_mgr.add_queue()
-    
-        base_idx = self.queue_manager.get_current_index()
-        base_state = self.queue_manager.get_state(base_idx).copy()
-    
+        
+        # 1. Создаем ЧИСТОЕ состояние (заводские настройки)
+        base_state = self.queue_manager._create_default_state()
+        
+        # ВАЖНО: Мы НЕ делаем base_state.update(current_active), 
+        # чтобы не тащить настройки из предыдущей очереди
+        
+        # 2. Ищем параметры тега
+        last_p = None
+        if tag_params:
+            for t in search_tags:
+                if t in tag_params:
+                    last_p = tag_params[t]
+                    # Если нашли параметры хотя бы для одного тега - используем их
+                    break 
+                
+        # 3. Применяем параметры тега ТОЛЬКО если они есть (зеленый индикатор)
+        if last_p:
+            base_state.update(last_p)
+        
+        # 4. Устанавливаем общие поля
         base_state["search_tags"] = list(search_tags)
         base_state["ignore_tags"] = list(ignore_tags)
-        base_state["forced_categories"] = []  
-    
+        base_state["forced_categories"] = []
+        base_state["name"] = ""
+        
+        # 5. Применяем и сохраняем
         self.queue_manager.set_state(base_state, new_index)
         self.queue_manager.set_current_index(new_index)
-    
+        self.queue_manager.save_current_state()
+        
         ui_mgr.list_widget.blockSignals(True)
         ui_mgr.set_current_queue(new_index)
         ui_mgr.list_widget.blockSignals(False)
-    
+        
         self._load_queue_to_ui(new_index)
-        self.queue_manager.save_current_state()
 
     def _on_file_loaded(self, path, data):
         self.current_json_file = path 
