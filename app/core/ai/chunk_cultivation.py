@@ -123,7 +123,7 @@ class ChunkCultivationManager(QObject):
 
         self.memory.update_chunk_status(
             chunk_id=chunk_id,
-            new_status=ChunkStatus.INITIALIZING.value,
+            status=ChunkStatus.INITIALIZING.value,
             progress=0,
         )
         self.chunk_status_changed.emit(chunk_id, ChunkStatus.INITIALIZING.value)

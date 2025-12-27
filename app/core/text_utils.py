@@ -9,7 +9,6 @@ except ImportError:
     cosine_similarity = None
 
 class FeatureExtractor:
-    # Обновленные паттерны под ПК железо
     PATTERNS = {
         # Память (Видеопамять или ОЗУ)
         'capacity': r'\b(\d+)\s*(gb|гб|tb|тб)\b',
@@ -26,6 +25,49 @@ class FeatureExtractor:
         # Комплект
         'kit': r'\b(box|коробк[аи]|чек|гарантия|full\s*set|полный\s*комплект)\b'
     }
+
+    STOP_WORDS = {
+        'продам', 'куплю', 'новый', 'новая', 'новое', 'бу', 'б/у', 
+        'игровой', 'мощный', 'пк', 'компьютер', 'для', 'на', 
+        'срочно', 'торг', 'обмен', 'оригинал', 'гарантия', 'чек',
+        'состояние', 'идеал', 'полный', 'комплект', 'запечатан',
+        'видеокарта', 'процессор', 'ноутбук', 'телефон', 'смартфон'
+    }
+
+    @staticmethod
+    def generate_product_key(title: str) -> str:
+        """
+        Генерирует чистый ключ продукта из заголовка.
+        Пример: "Продам мощный игровой ПК RTX 3060" -> "rtx_3060"
+        Пример: "iPhone 15 Pro Max 256Gb" -> "iphone_15_pro_max"
+        """
+        if not title:
+            return "unknown_item"
+            
+        t_lower = title.lower()
+        
+        gpu = re.search(FeatureExtractor.PATTERNS['gpu_model'], t_lower)
+        if gpu:
+            return re.sub(r'\s+', '_', gpu.group(0).strip())
+            
+        cpu = re.search(FeatureExtractor.PATTERNS['cpu_model'], t_lower)
+        if cpu:
+            return re.sub(r'\s+', '_', cpu.group(0).strip())
+
+        cleaned = re.sub(r'[^\w\s]', '', t_lower)
+        words = cleaned.split()
+        
+        meaningful_words = [
+            w for w in words 
+            if w not in FeatureExtractor.STOP_WORDS 
+            and len(w) > 1 
+            and not w.isdigit()
+        ]
+        
+        if meaningful_words:
+            return "_".join(meaningful_words[:4])
+            
+        return "generic_item"
 
     @staticmethod
     def extract_features(text: str) -> Dict[str, str]:

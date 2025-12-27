@@ -58,14 +58,14 @@ class SmartChunkDetector:
             
             for key, count in key_counts.items():
                 if count >= 6:
-                    existing = memory_manager.knowledge.get_chunk_by_key("PRODUCT", key)
+                    existing = memory_manager.knowledge.get_chunk_by_key_and_type(key, "PRODUCT")
                     if not existing:
                         nice_title = " ".join(word.capitalize() for word in key.split())
                         to_create.append(("PRODUCT", key, f"Анализ рынка: {nice_title}"))
             
             total_items = memory_manager.get_stats().get("total", 0)
             if total_items >= 20:
-                existing_db = memory_manager.get_chunk_by_key("DATABASE", "general")
+                existing_db = memory_manager.knowledge.get_chunk_by_key_and_type("general", "DATABASE")
                 if not existing_db:
                     to_create.append(("DATABASE", "general", "Глобальная аналитика базы"))
                     

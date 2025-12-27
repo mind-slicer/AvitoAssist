@@ -612,14 +612,30 @@ class AIManager(QObject):
             rules = "\n".join([f"- {r}" for r in user_instructions])
             sys_content += f"\n\n[ТВОИ ГЛОБАЛЬНЫЕ ПРАВИЛА И ПРИОРИТЕТЫ]:\n{rules}"
 
-        db_context = ""
+        last_msg = messages[-1]['content'].lower()
+        db_search_context = ""
+        
         if self.memory_manager:
-            stats = self.memory_manager.get_rag_status()
-            db_context = (
-                f"\n[КОНТЕКСТ ТВОЕЙ БАЗЫ ДАННЫХ]:\n"
-                f"- Всего просмотрено товаров: {stats['total_items']}\n"
-                f"- Сформировано аналитических ячеек памяти: {stats['total_categories']}\n"
-            )
+            import re
+            keywords = [w for w in re.split(r'\W+', last_msg) if len(w) > 3 and w not in ['цена', 'сколько', 'стоит']]
+            
+            if keywords:
+                search_query = " ".join(keywords[:2])
+                items = self.memory_manager.get_raw_items(search_query=search_query, limit=50)
+                
+                if items:
+                    prices = [i['price'] for i in items if i['price'] > 0]
+                    if prices:
+                        avg_p = sum(prices) // len(prices)
+                        min_p = min(prices)
+                        
+                        db_search_context = (
+                            f"\n[ГЛОБАЛЬНАЯ БАЗА ЗНАНИЙ ПО ЗАПРОСУ '{search_query}']:\n"
+                            f"- Найдено лотов: {len(items)}\n"
+                            f"- Диапазон цен: {min_p} - {max(prices)} руб.\n"
+                            f"- Средняя цена: {avg_p} руб.\n"
+                            f"- Примеры: {', '.join([i['title'][:30] for i in items[:3]])}..."
+                        )
 
         table_context = ""
         if current_table_data:
@@ -665,7 +681,14 @@ class AIManager(QObject):
             if len(msg.get('content', '')) > MAX_MSG_LENGTH:
                 msg['content'] = msg['content'][:MAX_MSG_LENGTH] + "...[обрезано]"
 
-        final_messages = [{"role": "system", "content": sys_content + db_context + table_context + rag_injection}]
+        # TODO
+        final_system_content = (
+            sys_content + 
+            db_search_context +
+            table_context #+
+            #rag_injection
+        )
+        final_messages = [{"role": "system", "content": final_system_content}]
         for m in trimmed_messages:
             if m['role'] != 'system':
                 final_messages.append(m)

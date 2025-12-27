@@ -34,11 +34,6 @@ class DatabaseTab(QWidget):
         self.memory = memory_manager
         self._init_ui()
         self._load_data()
-        
-        # Auto-refresh timer
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self._refresh_data)
-        self.refresh_timer.start(5000)  # Refresh every 5 seconds
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -48,60 +43,33 @@ class DatabaseTab(QWidget):
         # === Toolbar ===
         toolbar = QToolBar()
         toolbar.setStyleSheet(f"""
-            QToolBar {{
-                background-color: {Palette.BG_DARK};
-                border-bottom: 1px solid {Palette.BORDER_SOFT};
-                padding: 8px;
-            }}
-            QToolButton {{
-                background: transparent;
-                color: {Palette.TEXT};
-                border: 1px solid {Palette.BORDER_SOFT};
-                border-radius: 4px;
-                padding: 6px 12px;
-                margin-right: 8px;
-            }}
-            QToolButton:hover {{
-                background: {Palette.BG_DARK_2};
-                border-color: {Palette.PRIMARY};
-            }}
+            QToolBar {{ background-color: {Palette.BG_DARK}; border-bottom: 1px solid {Palette.BORDER_SOFT}; padding: 8px; }}
+            QToolButton {{ background: transparent; color: {Palette.TEXT}; border: 1px solid {Palette.BORDER_SOFT}; border-radius: 4px; padding: 6px 12px; margin-right: 8px; }}
+            QToolButton:hover {{ background: {Palette.BG_DARK_2}; border-color: {Palette.PRIMARY}; }}
         """)
         
-        # Search
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Поиск по базе...")
         self.search_edit.setStyleSheet(Components.text_input())
         self.search_edit.setFixedWidth(250)
         self.search_edit.textChanged.connect(self._on_search)
         toolbar.addWidget(self.search_edit)
-        
         toolbar.addSeparator()
         
-        # Filter by type
         self.type_filter = QComboBox()
         self.type_filter.addItems(["Все", "PRODUCT", "CATEGORY", "DATABASE", "AI_BEHAVIOR"])
         self.type_filter.setStyleSheet(f"""
-            QComboBox {{
-                background: {Palette.BG_DARK_2};
-                color: {Palette.TEXT};
-                border: 1px solid {Palette.BORDER_SOFT};
-                border-radius: 4px;
-                padding: 6px 12px;
-                min-width: 120px;
-            }}
+            QComboBox {{ background: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border: 1px solid {Palette.BORDER_SOFT}; border-radius: 4px; padding: 6px 12px; min-width: 120px; }}
         """)
         self.type_filter.currentTextChanged.connect(self._on_filter_changed)
         toolbar.addWidget(self.type_filter)
-        
         toolbar.addSeparator()
         
-        # Action buttons
         refresh_action = QAction("🔄 Обновить", self)
         refresh_action.triggered.connect(self._refresh_data)
         toolbar.addAction(refresh_action)
         
         toolbar.addSeparator()
-        
         export_action = QAction("📤 Экспорт JSON", self)
         export_action.triggered.connect(self._export_data)
         toolbar.addAction(export_action)
@@ -111,154 +79,114 @@ class DatabaseTab(QWidget):
         toolbar.addAction(import_action)
         
         toolbar.addSeparator()
-        
         clear_action = QAction("🗑️ Очистить БД", self)
         clear_action.triggered.connect(self._clear_database)
         toolbar.addAction(clear_action)
-        
         layout.addWidget(toolbar)
         
-        # === Main Content ===
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(4)
-        splitter.setStyleSheet(f"""
-            QSplitter::handle {{
-                background-color: {Palette.BORDER_SOFT};
-            }}
-        """)
+        # === Splitter ===
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setHandleWidth(4)
+        self.splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {Palette.BORDER_SOFT}; }}")
         
-        # === Left Panel: Navigation Tree ===
-        left_panel = QFrame()
-        left_panel.setFixedWidth(280)
-        left_panel.setStyleSheet(Components.panel())
-        left_layout = QVBoxLayout(left_panel)
+        # === Left Panel ===
+        self.left_panel = QFrame()
+        self.left_panel.setMinimumWidth(370)
+        self.left_panel.setStyleSheet(Components.panel())
+        left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
         left_layout.setSpacing(Spacing.SM)
         
-        # Stats header
         stats_frame = QFrame()
-        stats_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Palette.BG_DARK_2};
-                border-radius: {Spacing.RADIUS_NORMAL}px;
-                padding: 12px;
-            }}
-        """)
+        stats_frame.setStyleSheet(f"QFrame {{ background-color: {Palette.BG_DARK_2}; border-radius: {Spacing.RADIUS_NORMAL}px; padding: 12px; }}")
         stats_layout = QVBoxLayout(stats_frame)
-        
         self.stats_label = QLabel("Загрузка...")
         self.stats_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px;")
         stats_layout.addWidget(self.stats_label)
-        
         left_layout.addWidget(stats_frame)
         
-        # Tree header
-        tree_header = QLabel("КАТЕГОРИИ И ПРОДУКТЫ")
-        tree_header.setStyleSheet(Components.subsection_title())
-        left_layout.addWidget(tree_header)
+        # Tabs for Tree / Graph
+        self.nav_tabs = QTabWidget()
+        self.nav_tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: none; }}
+            QTabBar::tab {{ background: {Palette.BG_DARK_3}; color: {Palette.TEXT_MUTED}; padding: 6px; }}
+            QTabBar::tab:selected {{ background: {Palette.BG_DARK_2}; color: {Palette.PRIMARY}; }}
+        """)
         
-        # Navigation tree
+        # 1. Tree
         self.nav_tree = QTreeWidget()
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setStyleSheet(f"""
-            QTreeWidget {{
-                background: transparent;
-                border: none;
-                font-size: 13px;
-            }}
-            QTreeWidget::item {{
-                padding: 6px;
-                border-radius: 4px;
-            }}
-            QTreeWidget::item:selected {{
-                background-color: {Palette.PRIMARY};
-                color: white;
-            }}
+            QTreeWidget {{ background: transparent; border: none; font-size: 13px; }}
+            QTreeWidget::item {{ padding: 6px; border-radius: 4px; }}
+            QTreeWidget::item:selected {{ background-color: {Palette.PRIMARY}; color: white; }}
         """)
+        # --- ИСПРАВЛЕНИЕ 2: Подключаем сигнал клика ---
         self.nav_tree.itemClicked.connect(self._on_tree_item_clicked)
-        left_layout.addWidget(self.nav_tree)
         
-        splitter.addWidget(left_panel)
+        self.nav_tabs.addTab(self.nav_tree, "📂 Список")
         
-        # === Center Panel: Data Table ===
+        # 2. Graph
+        from app.ui.widgets.knowledge_graph import KnowledgeGraphWidget
+        self.graph_widget = KnowledgeGraphWidget()
+        # Подключаем клик по узлу графа к открытию деталей
+        self.graph_widget.node_selected.connect(self._on_graph_node_selected)
+        
+        self.nav_tabs.addTab(self.graph_widget, "🕸 Граф")
+        self.nav_tabs.currentChanged.connect(self._on_nav_tab_changed)
+        
+        left_layout.addWidget(self.nav_tabs)
+        self.splitter.addWidget(self.left_panel)
+        
+        # === Center Panel (Tables) ===
         center_panel = QFrame()
         center_panel.setStyleSheet(Components.panel())
         center_layout = QVBoxLayout(center_panel)
         center_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
-        center_layout.setSpacing(Spacing.SM)
         
         table_header = QLabel("ДАННЫЕ В БАЗЕ")
         table_header.setStyleSheet(Components.subsection_title())
         center_layout.addWidget(table_header)
         
-        # Table tabs (Raw Items / Knowledge)
         self.table_tabs = QTabWidget()
         self.table_tabs.setStyleSheet(f"""
-            QTabWidget::pane {{
-                background: {Palette.BG_DARK_2};
-                border: none;
-            }}
-            QTabBar::tab {{
-                background: {Palette.BG_DARK};
-                color: {Palette.TEXT_MUTED};
-                padding: 8px 16px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }}
-            QTabBar::tab:selected {{
-                background: {Palette.PRIMARY};
-                color: white;
-            }}
+            QTabWidget::pane {{ background: {Palette.BG_DARK_2}; border: none; }}
+            QTabBar::tab {{ background: {Palette.BG_DARK}; color: {Palette.TEXT_MUTED}; padding: 8px 16px; border-top-left-radius: 4px; border-top-right-radius: 4px; }}
+            QTabBar::tab:selected {{ background: {Palette.PRIMARY}; color: white; }}
         """)
         
-        # Raw Items Table
         self.raw_items_table = QTableWidget()
         self.raw_items_table.setColumnCount(6)
         self.raw_items_table.setHorizontalHeaderLabels(["ID", "Заголовок", "Цена", "Город", "Дата", "Категории"])
         self.raw_items_table.horizontalHeader().setStretchLastSection(True)
         self.raw_items_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.raw_items_table.setStyleSheet(f"""
-            QTableWidget {{
-                background: transparent;
-                border: none;
-                gridline-color: {Palette.BORDER_SOFT};
-            }}
-            QHeaderView::section {{
-                background: {Palette.BG_DARK};
-                color: {Palette.TEXT_MUTED};
-                padding: 8px;
-                border: none;
-            }}
-        """)
+        self.raw_items_table.setStyleSheet(self._get_table_style())
         self.raw_items_table.itemClicked.connect(self._on_raw_item_clicked)
         self.table_tabs.addTab(self.raw_items_table, "📦 Сырые данные")
         
-        # Knowledge Table
         self.knowledge_table = QTableWidget()
         self.knowledge_table.setColumnCount(5)
         self.knowledge_table.setHorizontalHeaderLabels(["ID", "Тип", "Ключ", "Статус", "Обновлено"])
         self.knowledge_table.horizontalHeader().setStretchLastSection(True)
         self.knowledge_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.knowledge_table.setStyleSheet(self.raw_items_table.styleSheet())
+        self.knowledge_table.setStyleSheet(self._get_table_style())
         self.knowledge_table.itemClicked.connect(self._on_knowledge_clicked)
         self.table_tabs.addTab(self.knowledge_table, "🧠 Знания ИИ")
         
         center_layout.addWidget(self.table_tabs)
-        splitter.addWidget(center_panel)
+        self.splitter.addWidget(center_panel)
         
-        # === Right Panel: Details ===
+        # === Right Panel (Details) ===
         right_panel = QFrame()
         right_panel.setFixedWidth(350)
         right_panel.setStyleSheet(Components.panel())
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
-        right_layout.setSpacing(Spacing.SM)
         
         details_header = QLabel("ДЕТАЛИ")
         details_header.setStyleSheet(Components.subsection_title())
         right_layout.addWidget(details_header)
         
-        # Details content
         self.details_scroll = QScrollArea()
         self.details_scroll.setWidgetResizable(True)
         self.details_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -267,11 +195,9 @@ class DatabaseTab(QWidget):
         self.details_container = QWidget()
         self.details_layout = QVBoxLayout(self.details_container)
         self.details_layout.setSpacing(Spacing.SM)
-        
         self.details_scroll.setWidget(self.details_container)
         right_layout.addWidget(self.details_scroll)
         
-        # Action buttons in details
         self.delete_btn = QPushButton("🗑️ Удалить")
         self.delete_btn.setStyleSheet(Components.stop_button())
         self.delete_btn.setEnabled(False)
@@ -284,10 +210,24 @@ class DatabaseTab(QWidget):
         self.cultivate_btn.clicked.connect(self._recultivate)
         right_layout.addWidget(self.cultivate_btn)
         
-        splitter.addWidget(right_panel)
-        
-        layout.addWidget(splitter)
+        self.splitter.addWidget(right_panel)
+        layout.addWidget(self.splitter)
+
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(2, False)
+
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+
+        self.splitter.setSizes([400, 800, 350])
     
+    def _get_table_style(self):
+        return f"""
+            QTableWidget {{ background: transparent; border: none; gridline-color: {Palette.BORDER_SOFT}; }}
+            QHeaderView::section {{ background: {Palette.BG_DARK}; color: {Palette.TEXT_MUTED}; padding: 8px; border: none; }}
+        """
+
     def _load_data(self):
         """Load all data from the database."""
         if not self.memory:
@@ -350,6 +290,9 @@ class DatabaseTab(QWidget):
         knowledge = self.memory.get_knowledge(limit=1000)
         self._populate_knowledge_table(knowledge)
         
+        # Graph Data
+        self.graph_widget.load_data(knowledge)
+        
         # Update stats
         self._update_stats()
     
@@ -387,6 +330,8 @@ class DatabaseTab(QWidget):
     
     def _populate_knowledge_table(self, chunks: list):
         """Populate the knowledge table."""
+        from PyQt6.QtGui import QColor
+        
         self.knowledge_table.setRowCount(0)
         
         for chunk in chunks:
@@ -420,7 +365,7 @@ class DatabaseTab(QWidget):
                 'COMPRESSED': '#808080'
             }
             item = QTableWidgetItem(status)
-            item.setForeground(Palette.from_hex(status_colors.get(status, Palette.TEXT)))
+            item.setForeground(QColor(status_colors.get(status, Palette.TEXT)))
             self.knowledge_table.setItem(row, 3, item)
             
             # Updated
@@ -461,17 +406,14 @@ class DatabaseTab(QWidget):
             items = self.memory.get_raw_items(limit=1000)
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
-            
         elif item_type == 'all_knowledge':
             chunks = self.memory.get_knowledge(limit=1000)
             self._populate_knowledge_table(chunks)
             self.table_tabs.setCurrentIndex(1)
-            
         elif item_type == 'category':
             items = self.memory.get_raw_items(category=data.get('name'), limit=1000)
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
-            
         elif item_type == 'product_key':
             items = self.memory.get_items_for_product_key(data.get('key'))
             self._populate_raw_items_table(items)
@@ -643,22 +585,57 @@ class DatabaseTab(QWidget):
                     stats_label.setStyleSheet(f"color: {Palette.PRIMARY}; font-size: 12px;")
                     self.details_layout.addWidget(stats_label)
     
-    def _on_search(self, text: str):
-        """Handle search text change."""
-        if not text:
-            # Reset to show all
+    def _on_nav_tab_changed(self, index):
+        """
+        0 = Список (фиксированный, узкий)
+        1 = Граф (растягиваемый, широкий)
+        """
+        sizes = self.splitter.sizes()
+        if not sizes: return
+        
+        total_width = sum(sizes)
+        right_width = sizes[2] if len(sizes) > 2 else 350
+        
+        if index == 1: # Граф
+            # Разрешаем левой панели тянуться
+            self.splitter.setStretchFactor(0, 1)
+            self.left_panel.setMaximumWidth(16777215) 
+            
+            # 45% ширины
+            new_left = int(total_width * 0.45)
+            remain = total_width - new_left - right_width
+            
+            self.splitter.setSizes([new_left, remain, right_width])
+            
+            if hasattr(self, 'graph_widget'):
+                self.graph_widget.wake_up_physics()
+                
+        else: # Список
+            # Запрещаем левой панели тянуться (она станет фиксированной)
+            self.splitter.setStretchFactor(0, 0)
+            
+            # Фиксированная ширина (чуть больше, 400px)
+            target_left = 400
+            remain = total_width - target_left - right_width
+            
+            self.splitter.setSizes([target_left, remain, right_width])
+
+    def _on_graph_node_selected(self, chunk_id):
+        # Находим чанк и открываем его детали
+        chunk = self.memory.knowledge.get_chunk_by_id(chunk_id)
+        if chunk:
+            self.table_tabs.setCurrentIndex(1) # Переключаем на таб знаний
+            self._show_details(chunk, 'knowledge')
+
+    def _on_search(self, txt):
+        if not txt: 
             self._load_data()
             return
-        
-        # Search in raw items
-        raw_items = self.memory.get_raw_items(search_query=text, limit=100)
-        self._populate_raw_items_table(raw_items)
-        
-        # Also search in knowledge
-        chunks = self.memory.get_knowledge(limit=100)
-        filtered_chunks = [c for c in chunks if text.lower() in c.get('title', '').lower() 
-                         or text.lower() in c.get('chunk_key', '').lower()]
-        self._populate_knowledge_table(filtered_chunks)
+        self._populate_raw_items_table(self.memory.get_raw_items(search_query=txt, limit=100))
+        # Filter knowledge locally
+        all_k = self.memory.get_knowledge(limit=1000)
+        filt = [c for c in all_k if txt.lower() in str(c).lower()]
+        self._populate_knowledge_table(filt)
     
     def _on_filter_changed(self, text: str):
         """Handle filter by type."""
@@ -701,35 +678,19 @@ class DatabaseTab(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось удалить: {e}")
     
     def _recultivate(self):
-        """Recultivate selected knowledge chunk."""
-        if not hasattr(self, 'current_selection') or not self.current_selection:
-            return
-        
+        if not hasattr(self, 'current_selection') or self.current_selection['type'] != 'knowledge': return
         data = self.current_selection['data']
         
-        if self.current_selection['type'] != 'knowledge':
-            return
-        
-        # Emit signal to trigger cultivation
-        from app.core.ai.chunk_cultivation import ChunkCultivationManager, ChunkType
-        
-        try:
-            chunk_type = ChunkType(data.get('chunk_type', 'PRODUCT'))
-            self.memory.knowledge.update_chunk_status(data.get('id'), 'PENDING')
-            
-            # Request cultivation through the manager
-            # This will be connected in the parent
-            self.item_selected.emit({
-                'action': 'recultivate',
-                'chunk_id': data.get('id'),
-                'chunk_type': chunk_type,
-                'chunk_key': data.get('chunk_key')
-            })
-            
-            logger.info(f"Recultivation requested for chunk {data.get('id')}")
-            
-        except Exception as e:
-            logger.error(f"Failed to request recultivation: {e}")
+        # Сигнал в MainWindow для запуска
+        self.item_selected.emit({
+            'action': 'recultivate',
+            'chunk_id': data.get('id'),
+            'chunk_type': data.get('chunk_type'),
+            'chunk_key': data.get('chunk_key')
+        })
+        # Сразу ставим статус
+        self.memory.knowledge.update_chunk_status(data.get('id'), 'PENDING')
+        self._refresh_data()
     
     def _clear_details(self):
         """Clear the details panel."""

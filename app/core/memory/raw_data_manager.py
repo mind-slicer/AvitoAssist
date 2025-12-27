@@ -2,6 +2,7 @@ import sqlite3
 import json
 import os
 import sys
+import hashlib
 from typing import List, Dict, Optional
 from datetime import datetime
 
@@ -308,28 +309,54 @@ class RawDataManager:
     # === Raw Items ===
 
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
-                     product_keys: Optional[List[str]] = None) -> int:
+                     product_keys: Optional[List[str]] = None) -> str:
         """
-        Add a raw item to the database with categories and product keys.
-        Returns the item id.
+        Возвращает статус операции: 'created', 'updated', 'skipped'
         """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
 
-            # Check if item with this ad_id already exists
-            ad_id = item.get('ad_id') or self._extract_ad_id(item.get('link', ''))
+            # 1. Мягкая генерация ID (Hash fallback)
+            ad_id = str(item.get('id') or item.get('ad_id') or self._extract_ad_id(item.get('link', '')) or "")
+            
             if not ad_id:
-                raise ValueError("Item must have 'ad_id' or 'link' with valid URL")
+                # Генерируем ID из заголовка и продавца, если нет явного ID
+                unique_str = f"{item.get('title')}_{item.get('seller_id')}_{item.get('city')}"
+                ad_id = hashlib.md5(unique_str.encode('utf-8')).hexdigest()
 
-            cursor.execute("SELECT id FROM raw_items WHERE ad_id = ?", (ad_id,))
+            # 2. Проверка существования
+            cursor.execute("SELECT id, price, views FROM raw_items WHERE ad_id = ?", (ad_id,))
             existing = cursor.fetchone()
+            
+            current_price = item.get('price', 0)
+            current_views = item.get('views', 0)
+            
+            raw_item_id = None
+            status = "skipped"
+
             if existing:
-                # Update existing item
-                item_id = existing[0]
-                self._update_raw_item(cursor, item_id, item)
+                # LOGIC: Обновляем только если изменилась цена или просмотры, или прошло время
+                raw_item_id = existing[0]
+                old_price = existing[1]
+                
+                # Обновляем, если есть новые данные
+                if (current_price > 0 and current_price != old_price) or (current_views > 0):
+                    raw_data_json = json.dumps(item, ensure_ascii=False)
+                    cursor.execute("""
+                        UPDATE raw_items SET
+                            price = ?, views = ?, raw_data = ?, analyzed_at = ?
+                        WHERE id = ?
+                    """, (
+                        current_price,
+                        current_views,
+                        raw_data_json,
+                        datetime.now().isoformat(),
+                        raw_item_id
+                    ))
+                    status = "updated"
             else:
-                # Insert new item
+                # INSERT
                 raw_data_json = json.dumps(item, ensure_ascii=False)
                 cursor.execute("""
                     INSERT INTO raw_items (
@@ -350,32 +377,28 @@ class RawDataManager:
                     raw_data_json,
                     datetime.now().isoformat()
                 ))
-                item_id = cursor.lastrowid
+                raw_item_id = cursor.lastrowid
+                status = "created"
 
-            # Handle categories
-            if categories:
-                for cat_name in categories:
-                    cat_id = self.get_or_create_category(cat_name, cursor)
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO raw_items_categories (raw_item_id, category_id)
-                        VALUES (?, ?)
-                    """, (item_id, cat_id))
+            # 3. Обновление связей (Categories / Product Keys)
+            if raw_item_id:
+                if categories:
+                    for cat_name in categories:
+                        cat_id = self.get_or_create_category(cat_name, cursor)
+                        cursor.execute("INSERT OR IGNORE INTO raw_items_categories (raw_item_id, category_id) VALUES (?, ?)", (raw_item_id, cat_id))
 
-            # Handle product keys
-            if product_keys:
-                for pk in product_keys:
-                    pk_id = self.get_or_create_product_key(pk, cursor=cursor)
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO raw_items_products (raw_item_id, product_key_id)
-                        VALUES (?, ?)
-                    """, (item_id, pk_id))
+                if product_keys:
+                    for pk in product_keys:
+                        pk_id = self.get_or_create_product_key(pk, cursor=cursor)
+                        cursor.execute("INSERT OR IGNORE INTO raw_items_products (raw_item_id, product_key_id) VALUES (?, ?)", (raw_item_id, pk_id))
 
             conn.commit()
-            return item_id
+            return status # Возвращаем статус вместо ID, чтобы понимать результат
+        except Exception as e:
+            logger.error(f"DB Error in add_raw_item: {e}")
+            return "error"
         finally:
             conn.close()
-
-
 
     def _extract_ad_id(self, link: str) -> Optional[str]:
         """Extract ad_id from Avito URL."""

@@ -14,6 +14,7 @@ if _workspace_root not in sys.path:
 
 from app.config import BASE_APP_DIR
 
+from app.core.text_utils import FeatureExtractor
 from app.core.memory.raw_data_manager import RawDataManager
 from app.core.memory.knowledge_manager import KnowledgeManager
 from app.core.log_manager import logger
@@ -157,18 +158,25 @@ class MemoryManager:
 
     # === Legacy/statistics methods (for backward compatibility) ===
 
-    def add_item(self, item: Dict) -> int:
+    def add_item(self, item: Dict) -> bool:
         """
-        Add item to raw data storage for RAG purposes.
-        This is a legacy method that maintains backward compatibility.
-        Returns item id if new item was added, 0 if item already exists or failed.
+        Возвращает True, если элемент был добавлен или обновлен.
         """
-        # Extract product key from title for categorization
         title = item.get('title', '')
-        product_key = title.split()[0] if title else 'unknown'
+        
+        # Умная генерация ключа
+        product_key = FeatureExtractor.generate_product_key(title)
+        
+        # В качестве категории берем первое слово из ключа или 'unknown'
+        category = product_key.split('_')[0] if '_' in product_key else 'misc'
 
-        item_id = self.raw_data.add_raw_item(item, product_keys=[product_key])
-        return item_id if item_id else 0
+        status = self.raw_data.add_raw_item(
+            item, 
+            categories=[category], 
+            product_keys=[product_key]
+        )
+        
+        return status in ['created', 'updated']
 
     def get_stats(self) -> Dict:
         """Get combined stats."""
