@@ -43,10 +43,6 @@ class ChunkCultivationManager(QObject):
         self.default_data_threshold = 30
 
     def check_and_cultivate(self):
-        # 1. Сначала проверим, не нужно ли создать новые чанки
-        # (вызываем редко или по таймеру, но здесь для надежности можно проверить)
-        # self._create_new_chunks_from_data() # Можно включить авто-создание здесь
-
         pending_chunks = self.memory.get_pending_chunks()
         if not pending_chunks:
             return
@@ -57,7 +53,7 @@ class ChunkCultivationManager(QObject):
                 self._initiate_cultivation(chunk, trigger)
 
     def create_pending_chunk(self, chunk_type: ChunkType, chunk_key: str, title: str) -> int:
-        chunk_id = self.memory.add_knowledge_v2(
+        chunk_id = self.memory.add_knowledge(
             chunk_type=chunk_type.value,
             chunk_key=chunk_key,
             title=title,

@@ -59,7 +59,7 @@ class SmartChunkDetector:
             for key, count in key_counts.items():
                 if count >= 6:
                     existing = memory_manager._execute(
-                        "SELECT 1 FROM aiknowledge_v2 WHERE chunk_type = 'PRODUCT' AND chunk_key = ?",
+                        "SELECT 1 FROM ai_knowledge WHERE chunk_type = 'PRODUCT' AND chunk_key = ?",
                         (key,), fetch_one=True
                     )
                     if not existing:

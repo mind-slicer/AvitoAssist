@@ -103,7 +103,7 @@ class MemoryManager:
 
             # --- ТИПИЗИРОВАННЫЕ ЧАНКИ ПАМЯТИ ---
             c.execute("""
-                CREATE TABLE IF NOT EXISTS aiknowledge_v2 (
+                CREATE TABLE IF NOT EXISTS ai_knowledge (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
                     chunk_type TEXT NOT NULL,
@@ -141,13 +141,13 @@ class MemoryManager:
 
             # --- История версий чанков ---
             c.execute("""
-                CREATE TABLE IF NOT EXISTS aiknowledge_history (
+                CREATE TABLE IF NOT EXISTS ai_knowledge_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chunk_id INTEGER NOT NULL,
                     version INTEGER,
                     content TEXT,
                     created_at TEXT NOT NULL,
-                    FOREIGN KEY(chunk_id) REFERENCES aiknowledge_v2(id)
+                    FOREIGN KEY(chunk_id) REFERENCES ai_knowledge(id)
                 )
             """)
 
@@ -162,7 +162,7 @@ class MemoryManager:
                     data_points_analyzed INTEGER,
                     llm_time_ms INTEGER,
                     error_msg TEXT,
-                    FOREIGN KEY(chunk_id) REFERENCES aiknowledge_v2(id)
+                    FOREIGN KEY(chunk_id) REFERENCES ai_knowledge(id)
                 )
             """)
 
@@ -175,7 +175,7 @@ class MemoryManager:
                     change_type TEXT,
                     changed_at TEXT NOT NULL,
                     processed_in_chunk_id INTEGER,
-                    FOREIGN KEY(processed_in_chunk_id) REFERENCES aiknowledge_v2(id)
+                    FOREIGN KEY(processed_in_chunk_id) REFERENCES ai_knowledge(id)
                 )
             """)
 
@@ -190,7 +190,7 @@ class MemoryManager:
 
     # --- v2 Methods ---
 
-    def add_knowledge_v2(
+    def add_knowledge(
         self,
         chunk_type: str,
         chunk_key: str,
@@ -210,7 +210,7 @@ class MemoryManager:
 
         chunk_id = self._execute(
             """
-            INSERT INTO aiknowledge_v2
+            INSERT INTO ai_knowledge
                 (chunk_type, chunk_key, title, status,
                  content, content_hash, original_size,
                  created_at, last_updated)
@@ -226,7 +226,7 @@ class MemoryManager:
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict]:
         row = self._execute(
-            "SELECT * FROM aiknowledge_v2 WHERE id = ?",
+            "SELECT * FROM ai_knowledge WHERE id = ?",
             (chunk_id,),
             fetch_one=True,
         )
@@ -234,7 +234,7 @@ class MemoryManager:
 
     def get_chunk_by_key(self, chunk_type: str, chunk_key: str) -> Optional[Dict]:
         row = self._execute(
-            "SELECT * FROM aiknowledge_v2 WHERE chunk_type = ? AND chunk_key = ?",
+            "SELECT * FROM ai_knowledge WHERE chunk_type = ? AND chunk_key = ?",
             (chunk_type, chunk_key),
             fetch_one=True,
         )
@@ -242,7 +242,7 @@ class MemoryManager:
 
     def get_all_chunks(self) -> List[Dict]:
         rows = self._execute(
-            "SELECT * FROM aiknowledge_v2 ORDER BY created_at DESC",
+            "SELECT * FROM ai_knowledge ORDER BY created_at DESC",
             fetch_all=True,
         )
         return [dict(r) for r in rows] if rows else []
@@ -250,7 +250,7 @@ class MemoryManager:
     def get_pending_chunks(self) -> List[Dict]:
         rows = self._execute(
             """
-            SELECT * FROM aiknowledge_v2
+            SELECT * FROM ai_knowledge
             WHERE status = 'PENDING'
             ORDER BY created_at ASC
             """,
@@ -263,7 +263,7 @@ class MemoryManager:
         if progress is not None:
             self._execute(
                 """
-                UPDATE aiknowledge_v2
+                UPDATE ai_knowledge
                 SET status = ?, progress_percent = ?, last_updated = ?
                 WHERE id = ?
                 """,
@@ -273,7 +273,7 @@ class MemoryManager:
         else:
             self._execute(
                 """
-                UPDATE aiknowledge_v2
+                UPDATE ai_knowledge
                 SET status = ?, last_updated = ?
                 WHERE id = ?
                 """,
@@ -289,7 +289,7 @@ class MemoryManager:
 
         self._execute(
             """
-            UPDATE aiknowledge_v2
+            UPDATE ai_knowledge
             SET content = ?, content_hash = ?, original_size = ?,
                 summary = COALESCE(?, summary),
                 last_updated = ?, status = 'READY', progress_percent = 100
@@ -302,12 +302,12 @@ class MemoryManager:
 
     def delete_chunk(self, chunk_id: int):
         self._execute(
-            "DELETE FROM aiknowledge_v2 WHERE id = ?",
+            "DELETE FROM ai_knowledge WHERE id = ?",
             (chunk_id,),
             commit=True,
         )
         self._execute(
-            "DELETE FROM aiknowledge_history WHERE chunk_id = ?",
+            "DELETE FROM ai_knowledge_history WHERE chunk_id = ?",
             (chunk_id,),
             commit=True,
         )
@@ -625,8 +625,8 @@ class MemoryManager:
 
     def get_rag_status(self):
         i = self._execute("SELECT COUNT(*) FROM items", fetch_one=True)
-        k = self._execute("SELECT COUNT(*) FROM aiknowledge_v2 WHERE status='READY'", fetch_one=True)
-        last = self._execute("SELECT last_updated FROM aiknowledge_v2 ORDER BY last_updated DESC LIMIT 1", fetch_one=True)
+        k = self._execute("SELECT COUNT(*) FROM ai_knowledge WHERE status='READY'", fetch_one=True)
+        last = self._execute("SELECT last_updated FROM ai_knowledge ORDER BY last_updated DESC LIMIT 1", fetch_one=True)
 
         return {
             'total_items': i[0] if i else 0,
@@ -658,7 +658,7 @@ class MemoryManager:
 
     def compress_chunk(self, chunk_id: int) -> bool:
         chunk = self._execute(
-            "SELECT id, chunk_type, content, status, original_size FROM aiknowledge_v2 WHERE id = ?",
+            "SELECT id, chunk_type, content, status, original_size FROM ai_knowledge WHERE id = ?",
             (chunk_id,),
             fetch_one=True
         )
@@ -688,7 +688,7 @@ class MemoryManager:
 
             self._execute(
                 """
-                UPDATE aiknowledge_v2 
+                UPDATE ai_knowledge 
                 SET compressed_content = ?, compressed_size = ?, status = 'COMPRESSED'
                 WHERE id = ?
                 """,
@@ -708,7 +708,7 @@ class MemoryManager:
         cutoff_date = (datetime.now() - timedelta(days=days_old)).isoformat()
         old_chunks = self._execute(
             """
-            SELECT id FROM aiknowledge_v2 
+            SELECT id FROM ai_knowledge 
             WHERE status = 'READY' AND last_updated < ?
             """,
             (cutoff_date,),
