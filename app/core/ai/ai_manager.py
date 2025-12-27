@@ -73,12 +73,6 @@ class AIProcessingWorker(QThread):
                     if k in ['title', 'price', 'description', 'city', 'condition', 'seller_id', 'views', 'date_text', 'link']
                 }
                 item_dump = json.dumps(clean_item, ensure_ascii=False)
-                
-                #system_instruction = (
-                #    "Ты - эксперт по оценке товаров на Avito. "
-                #    "Твоя задача - проанализировать товар и вернуть СТРОГО валидный JSON объект. "
-                #    "Не пиши никакого вводного текста."
-                #)
 
                 system_instruction = PromptBuilder.SYSTEM_BASE
 
@@ -426,7 +420,32 @@ class AIManager(QObject):
         except Exception as e:
             logger.error(f"AI Health ошибка: {e}")
 
+    def _save_items_to_database(self, items: List[Dict], context: Dict):
+        """Сохраняет все проанализированные items в raw_items для культивации."""
+        if not self.memory_manager:
+            return
+
+        product_key = context.get('product_key')
+        category = context.get('category')
+
+        saved_count = 0
+        for item in items:
+            try:
+                self.memory_manager.add_raw_item(
+                    item=item,
+                    categories=[category] if category else None,
+                    product_keys=[product_key] if product_key else None
+                )
+                saved_count += 1
+            except Exception as e:
+                logger.dev(f"Failed to save item to raw_data: {e}", level="DEBUG")
+
+        if saved_count > 0:
+            logger.info(f"Сохранено {saved_count} items в базу для культивации", token="ai-mem")
+
     def start_processing(self, items: List[Dict], prompt: Optional[str], debug_mode: bool, context: Dict):
+        self._save_items_to_database(items, context)
+
         self.ensure_server()
         if not self._server_ready:
             self.server_ready_signal.connect(lambda: self.start_processing(items, prompt, debug_mode, context), Qt.ConnectionType.SingleShotConnection)
@@ -646,7 +665,6 @@ class AIManager(QObject):
             if len(msg.get('content', '')) > MAX_MSG_LENGTH:
                 msg['content'] = msg['content'][:MAX_MSG_LENGTH] + "...[обрезано]"
 
-        #final_messages = [{"role": "system", "content": sys_content + rag_injection}]
         final_messages = [{"role": "system", "content": sys_content + db_context + table_context + rag_injection}]
         for m in trimmed_messages:
             if m['role'] != 'system':

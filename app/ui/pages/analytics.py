@@ -1,11 +1,10 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget)
 from PyQt6.QtCore import pyqtSignal
-import threading
 
 from app.ui.styles import Palette, Spacing
 from app.core.memory import MemoryManager
-from app.ui.widgets.rag_status_widget import RAGStatusWidget
 from app.ui.widgets.ai_control_panel import AIControlPanel
+from app.ui.pages.database_tab import DatabaseTab
 from app.core.log_manager import logger
 
 class AnalyticsWidget(QWidget):
@@ -48,16 +47,15 @@ class AnalyticsWidget(QWidget):
 
         self.ai_control = AIControlPanel()
         self.ai_control.send_message_signal.connect(self.send_message_signal.emit)
-        self.tabs.addTab(self.ai_control, "Управление ИИ")
+        self.tabs.addTab(self.ai_control, "Чат")
 
         self.ai_control.set_memory_manager(self.memory)
         
         if self.controller:
             self.controller.cultivation_finished.connect(self.ai_control.cultivation_finished.emit)
 
-        self.rag_status_widget = RAGStatusWidget(self.memory)
-        self.rag_status_widget.rebuild_requested.connect(self.on_rebuild_requested)
-        self.tabs.addTab(self.rag_status_widget, "Тренды")
+        self.database_tab = DatabaseTab(self.memory)
+        self.tabs.addTab(self.database_tab, "База Данных")
 
         wip2_widget = QWidget()
         idx_wip2 = self.tabs.addTab(wip2_widget, "WIP")
@@ -69,12 +67,6 @@ class AnalyticsWidget(QWidget):
     def on_ai_reply(self, text: str):
         if hasattr(self, 'ai_control'):
             self.ai_control.on_ai_reply(text)
-
-    def refresh_data(self):
-        self.rag_status_widget.refresh_data()
-
-    def on_rebuild_requested(self):
-        threading.Thread(target=self._rebuild_bg, daemon=True).start()
 
     def _rebuild_bg(self):
         try:

@@ -20,7 +20,7 @@ class SmartChunkDetector:
     @staticmethod
     def _normalize_title(title: str) -> str:
         t = title.lower()
-        t = re.sub(r'[^\w\s]', ' ', t)  # Убираем знаки
+        t = re.sub(r'[^\w\s]', ' ', t)
         t = re.sub(r'\s+', ' ', t).strip()
         
         for variant, norm in SmartChunkDetector.CATEGORY_NORMALIZATION.items():
@@ -38,7 +38,7 @@ class SmartChunkDetector:
         to_create = []
         
         try:
-            rows = memory_manager._execute("SELECT title FROM items", fetch_all=True)
+            rows = memory_manager.raw_data.get_items()
             if not rows:
                 return []
                 
@@ -58,10 +58,7 @@ class SmartChunkDetector:
             
             for key, count in key_counts.items():
                 if count >= 6:
-                    existing = memory_manager._execute(
-                        "SELECT 1 FROM ai_knowledge WHERE chunk_type = 'PRODUCT' AND chunk_key = ?",
-                        (key,), fetch_one=True
-                    )
+                    existing = memory_manager.knowledge.get_chunk_by_key("PRODUCT", key)
                     if not existing:
                         nice_title = " ".join(word.capitalize() for word in key.split())
                         to_create.append(("PRODUCT", key, f"Анализ рынка: {nice_title}"))
@@ -91,4 +88,4 @@ class SmartChunkDetector:
                 pass
         
         if created:
-            logger.info(f"SmartDetector: Создано {created} новых чанков", token="ai-det")
+            logger.info(f"Создано {created} новых чанков...", token="ai-det")

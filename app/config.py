@@ -4,12 +4,7 @@ import sys
 # --- УПРАВЛЕНИЕ ПУТЯМИ ---
 
 def get_internal_path(relative_path):
-    """
-    Путь к ВНУТРЕННИМ ресурсам (картинки, дефолтные конфиги).
-    Работает и в IDE, и внутри EXE (_MEIPASS).
-    """
     try:
-        # PyInstaller создает временную папку в _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
@@ -17,18 +12,11 @@ def get_internal_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def get_user_data_path(relative_path=""):
-    """
-    Путь к ВНЕШНИМ данным (результаты, настройки, логи).
-    Всегда указывает на папку, где лежит сам скрипт или EXE файл.
-    """
     if getattr(sys, 'frozen', False):
-        # Если запущено как EXE - берем папку, где лежит EXE
         base_path = os.path.dirname(sys.executable)
     else:
-        # Если запущено из Python - берем корневую папку проекта
-        # (поднимаемся на уровень выше от config.py: app/config.py -> app/ -> root)
-        _conf_dir = os.path.dirname(os.path.abspath(__file__))
-        base_path = os.path.dirname(_conf_dir)
+        conf_dir = os.path.dirname(os.path.abspath(__file__))
+        base_path = os.path.dirname(conf_dir)
         
     return os.path.join(base_path, relative_path)
 

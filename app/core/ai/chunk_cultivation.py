@@ -176,25 +176,19 @@ class ChunkCultivationManager(QObject):
             return ChunkCultivationPrompts.build_product_cultivation_prompt(chunk_key, items)
 
         if chunk_type == ChunkType.CATEGORY.value:
-            stats = self.memory.get_stats_for_product_key(chunk_key)
-            if not stats:
-                # Попробуем найти хоть какую-то статистику
-                all_s = self.memory.get_all_statistics(limit=200)
-                for s in all_s:
-                    if s.get('product_key') == chunk_key:
-                        stats = s
-                        break
-            if not stats: stats = {}
+            # Get items from raw_data for category cultivation
+            items = self.memory.get_items_for_product_key(chunk_key)[:200]
+            if items:
+                stats = self.memory.get_raw_data_statistics()
+            else:
+                stats = {}
             return ChunkCultivationPrompts.build_category_cultivation_prompt(chunk_key, stats)
 
         if chunk_type == ChunkType.DATABASE.value:
-            base_stats = self.memory.get_stats() or {}
-            all_cats = self.memory.get_all_statistics(limit=1)
-            # Нужно получить реальное кол-во категорий, сейчас хак через items count
-            # Лучше добавить метод в memory. get_stats() уже возвращает total items.
+            raw_stats = self.memory.get_raw_data_statistics()
             db_stats = {
-                "total_items": base_stats.get("total", 0),
-                "total_categories": "Много"
+                "total_items": raw_stats.get("total_items", 0),
+                "total_categories": raw_stats.get("total_categories", 0)
             }
             return ChunkCultivationPrompts.build_database_cultivation_prompt(db_stats)
 

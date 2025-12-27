@@ -325,6 +325,9 @@ class MainWindow(QWidget):
         # ИЗМЕНИ эту строку - передай controller
         self.analytics_widget = AnalyticsWidget(self.memory_manager, self.controller)
         layout.addWidget(self.analytics_widget)
+
+        #self.database_tab = DatabaseTab(self.memory_manager)
+        #self.stack.addWidget(self.database_tab)
         
         return page
 
@@ -1705,9 +1708,6 @@ class MainWindow(QWidget):
         self.btn_parser.setChecked(index == 0)
         self.btn_analytics.setChecked(index == 1)
         self.btn_memory.setChecked(index == 2)
-        
-        if index == 1:
-            self.analytics_widget.refresh_data()
 
     def _on_settings_clicked(self):
         dlg = SettingsDialog(self.app_settings, self)

@@ -496,7 +496,7 @@ class AIMemoryPanel(QWidget):
             card.deleteLater()
         self.cards.clear()
         
-        chunks = self.memory_manager.get_all_chunks()
+        chunks = self.memory_manager.get_knowledge()
         
         def sort_key(c):
             s = c.get('status')
@@ -523,7 +523,7 @@ class AIMemoryPanel(QWidget):
 
     def _on_card_deleted(self, chunk_id):
         if self.memory_manager:
-            self.memory_manager.delete_chunk(chunk_id)
+            self.memory_manager.delete_knowledge(chunk_id)
             
         if chunk_id in self.cards:
             card = self.cards.pop(chunk_id)
