@@ -8,6 +8,7 @@ import hashlib
 from datetime import datetime
 from typing import List, Dict, Optional
 from datetime import timedelta
+import numpy as np
 
 from app.config import BASE_APP_DIR
 from app.core.ai.chunk_compression import ChunkCompressor
@@ -305,6 +306,11 @@ class MemoryManager:
             (chunk_id,),
             commit=True,
         )
+        self._execute(
+            "DELETE FROM aiknowledge_history WHERE chunk_id = ?",
+            (chunk_id,),
+            commit=True,
+        )
 
     # ==================== Items & Stats ====================
 
@@ -329,49 +335,73 @@ class MemoryManager:
         rows = self._execute(f"SELECT * FROM items WHERE ({q}) ORDER BY added_at DESC LIMIT ?", tuple(p), fetch_all=True)
         return [dict(r) for r in rows] if rows else []
 
-    def get_rag_context_for_item(self, title: str, days_back: int = 30) -> Optional[Dict]:
-        # 1. Сначала ищем сырую статистику
-        stats = None
-        items = self.find_similar_items(title, 30)
-        if items:
-            prices = [i['price'] for i in items if i['price']]
-            if prices:
-                stats = {
-                    'median_price': int(statistics.median(prices)),
-                    'avg_price': int(statistics.mean(prices)),
-                    'min_price': min(prices),
-                    'max_price': max(prices),
-                    'trend': 'stable', 
-                    'sample_count': len(prices)
-                }
+    def _get_similar_prices(self, product_key: str, min_samples: int = 5) -> List[int]:
+        from app.core.text_utils import TextMatcher
         
-        if not stats: return None
+        all_items = self.get_all_items(limit=1000)
+        if not all_items:
+            return []
         
-        # 2. Теперь ищем УМНЫЙ чанк в новой таблице aiknowledge_v2
-        # Генерируем ключ так же, как SmartChunkDetector
-        key = self._generate_product_key(title) 
+        key_lower = product_key.lower().strip()
         
-        # Ищем готовый PRODUCT чанк
-        chunk = self.get_chunk_by_key('PRODUCT', key)
-        knowledge_text = ""
+        similar = TextMatcher.filter_similar_items(
+            target_title=key_lower,
+            all_items=all_items,
+            threshold=0.45
+        )
         
-        if chunk and chunk.get('status') == 'READY':
-            # Чанк найден! Извлекаем summary
-            if chunk.get('summary'):
-                knowledge_text = chunk['summary']
-            elif chunk.get('content'):
-                try:
-                    data = json.loads(chunk['content'])
-                    knowledge_text = data.get('summary') or data.get('analysis', {}).get('summary', '')
-                except: pass
-        
-        context = stats.copy()
-        if knowledge_text:
-            context['knowledge'] = knowledge_text
-        else:
-            context['knowledge'] = "Нет детального AI-анализа в памяти."
+        prices = []
+        for item in similar:
+            title = item.get('title', '').lower()
+            price = item.get('price')
             
-        return context
+            if not price or not isinstance(price, int) or price < 5000:
+                continue
+                
+            if any(gpu in key_lower for gpu in ['rtx', 'gtx', 'rx']):
+                if any(nb in title for nb in ['ноутбук', 'laptop']):
+                    if not any(card in title for card in ['видеокарта', 'видео карта', 'gpu']):
+                        continue
+                        
+            prices.append(price)
+        
+        if len(prices) < min_samples:
+            model_num = re.search(r'\d{3,4}', key_lower)
+            if model_num:
+                num = model_num.group(0)
+                rows = self._execute(
+                    """SELECT price FROM items 
+                       WHERE (title LIKE ? OR title LIKE ?) 
+                         AND title LIKE '%видеокарта%' 
+                         AND price > 5000 AND price < 100000""",
+                    (f"%{num}%", f"%rtx {num[-2:]}%",),
+                    fetch_all=True
+                )
+                if rows:
+                    prices.extend([r['price'] for r in rows if r['price']])
+        
+        return sorted(list(set(prices)))
+
+    def get_rag_context_for_item(self, query: str) -> Optional[Dict]:
+        words = re.findall(r'\w+', query.lower())
+        clean_words = [w for w in words if len(w) > 3 and w not in {'продам', 'куплю', 'новый', 'бу'}]
+        if not clean_words:
+            return None
+        
+        product_key = max(clean_words, key=len)
+        
+        stats = self.get_price_stats_for_key(product_key)
+        if not stats or stats['sample_count'] < 3:
+            return None
+        
+        return {
+            "product_key": product_key,
+            "sample_count": stats['sample_count'],
+            "median_price": stats['median_price'],
+            "q25_price": stats['q25_price'],
+            "trend": stats.get('trend', 'stable'),
+            "knowledge": f"Нижний квартиль: {stats['q25_price']} руб. (цель для покупки). Медиана: {stats['median_price']} руб."
+        }
 
     def _calculate_trend(self, items: List[Dict]) -> tuple[str, float]:
         if len(items) < 3:
@@ -489,9 +519,85 @@ class MemoryManager:
         rows = self._execute("SELECT * FROM statistics ORDER BY last_updated DESC LIMIT ?", (limit,), fetch_all=True)
         return [dict(r) for r in rows] if rows else []
 
-    def get_stats_for_product_key(self, product_key: str) -> Optional[Dict]:
-        row = self._execute("SELECT * FROM statistics WHERE product_key = ?", (product_key,), fetch_one=True)
-        return dict(row) if row else None
+    def get_stats_for_product_key(self, product_key: str) -> Dict:
+        stats = self.get_price_stats_for_key(product_key)
+        if stats:
+            return stats
+        
+        rows = self._execute(
+            "SELECT price FROM items WHERE title LIKE ? AND price > 100",
+            (f"%{product_key}%",),
+            fetch_all=True
+        )
+        prices = sorted([r['price'] for r in rows if r['price']])
+        if not prices:
+            return {"sample_count": 0}
+        
+        return {
+            "sample_count": len(prices),
+            "avg_price": int(np.mean(prices)),
+            "median_price": int(np.median(prices)),
+            "min_price": prices[0],
+            "max_price": prices[-1],
+            "q25_price": int(np.percentile(prices, 25)),
+            "trend": "stable"
+        }
+
+    def get_price_stats_for_key(self, product_key: str) -> Optional[Dict]:
+        prices = self._get_similar_prices(product_key, min_samples=5)
+        
+        if len(prices) < 3:
+            return None
+        
+        prices_array = np.array(prices)
+        
+        lower_bound = np.percentile(prices_array, 5)
+        upper_bound = np.percentile(prices_array, 95)
+        filtered_prices = prices_array[
+            (prices_array >= lower_bound) & (prices_array <= upper_bound)
+        ]
+        
+        if len(filtered_prices) < 3:
+            filtered_prices = prices_array
+        
+        q25 = int(np.percentile(filtered_prices, 25))
+        median = int(np.percentile(filtered_prices, 50))
+        q75 = int(np.percentile(filtered_prices, 75))
+        avg = int(np.mean(filtered_prices))
+        
+        trend = "stable"
+        if len(filtered_prices) >= 10:
+            recent_avg = np.mean(filtered_prices[-10:]) if len(filtered_prices) > 10 else avg
+            old_avg = np.mean(filtered_prices[:10])
+            diff_percent = (recent_avg - old_avg) / old_avg * 100 if old_avg else 0
+            if diff_percent > 10:
+                trend = "up"
+            elif diff_percent < -10:
+                trend = "down"
+        
+        verdict_counts = {}
+        if len(prices) >= 5:
+            rows = self._execute(
+                "SELECT verdict FROM items WHERE title LIKE ? AND verdict IS NOT NULL",
+                (f"%{product_key}%",),
+                fetch_all=True
+            )
+            if rows:
+                verdicts = [r['verdict'] for r in rows if r['verdict']]
+                from collections import Counter
+                verdict_counts = dict(Counter(verdicts))
+        
+        return {
+            "sample_count": len(filtered_prices),
+            "min_price": int(filtered_prices[0]),
+            "q25_price": q25,
+            "median_price": median,
+            "q75_price": q75,
+            "avg_price": avg,
+            "trend": trend,
+            "trend_percent": round((filtered_prices[-1] - filtered_prices[0]) / filtered_prices[0] * 100, 1) if filtered_prices[0] else 0,
+            "common_verdicts": verdict_counts
+        }
 
     def get_stats_for_title(self, title: str) -> Optional[Dict]:
         if not title: return None

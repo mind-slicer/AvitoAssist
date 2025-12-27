@@ -74,11 +74,13 @@ class AIProcessingWorker(QThread):
                 }
                 item_dump = json.dumps(clean_item, ensure_ascii=False)
                 
-                system_instruction = (
-                    "Ты - эксперт по оценке товаров на Avito. "
-                    "Твоя задача - проанализировать товар и вернуть СТРОГО валидный JSON объект. "
-                    "Не пиши никакого вводного текста."
-                )
+                #system_instruction = (
+                #    "Ты - эксперт по оценке товаров на Avito. "
+                #    "Твоя задача - проанализировать товар и вернуть СТРОГО валидный JSON объект. "
+                #    "Не пиши никакого вводного текста."
+                #)
+
+                system_instruction = PromptBuilder.SYSTEM_BASE
 
                 messages = [
                     {"role": "system", "content": system_instruction},
@@ -620,16 +622,21 @@ class AIManager(QObject):
             rag_data = self.memory_manager.get_rag_context_for_item(search_key)
             
             if rag_data:
+                q25 = rag_data.get('q25_price', rag_data.get('median_price', 0))
+                median = rag_data.get('median_price', 0)
+                sample = rag_data.get('sample_count', 0)
+                
                 rag_injection = (
-                    f"\n\n[ДАННЫЕ ИЗ ПАМЯТИ ПО ЗАПРОСУ]:\n"
-                    f"Найдено лотов: {rag_data['sample_count']}\n"
-                    f"Медианная цена: {rag_data['median_price']} руб.\n"
-                    f"Тренд: {rag_data.get('trend', 'N/A')}.\n"
-                    f"Знания ИИ: {rag_data.get('knowledge', 'Нет')}\n"
-                    f"ВАЖНО: ИСПОЛЬЗУЙ ЭТИ ЦИФРЫ ДЛЯ ОТВЕТА."
+                    f"\n\n[АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ПАМЯТИ ПО ТОВАРУ]\n"
+                    f"• Лотов в базе: {sample}\n"
+                    f"• Нижний квартиль (цель для выгодной покупки): {q25:,} руб.\n"
+                    f"• Медиана рынка: {median:,} руб.\n"
+                    f"ВАЖНО: Ориентируйся именно на {q25:,} руб. как на цену от частников. "
+                    f"Всё выше — часто перекупы.\n"
+                    f"Используй эти цифры в ответах обязательно!"
                 )
             else:
-                rag_injection = "\n\n[ПАМЯТЬ]: Данных по этому конкретному товару в базе пока нет. Честно скажи об этом."
+                rag_injection = "\n\n[ПАМЯТЬ]: По этому товару пока недостаточно данных в базе."
 
         MAX_HISTORY = 5
         trimmed_messages = messages[-MAX_HISTORY:] if len(messages) > MAX_HISTORY else messages
