@@ -17,6 +17,7 @@ from app.core.driver import DriverManager
 from app.config import USER_AGENTS, BASE_URL_MOSCOW, ALL_PAGES_LIMIT
 from app.core.blacklist_manager import get_blacklist_manager
 from app.core.selectors import AvitoSelectors
+from app.core.text_utils import defect_filter
 
 from app.core.log_manager import logger
 
@@ -1171,24 +1172,23 @@ class AvitoParser(QObject):
         price = item.get('price', 0)
         if min_p and price < min_p: return True
         if max_p and price > max_p: return True
-         
+
         text_lower = f"{item['title'].lower()} {item.get('description', '').lower()}"
-         
+
         for w in ignore_kws:
             if w.lower() in text_lower: return True
-        
+
         if filter_defects:
-            defect_markers = [
-                "сломан", "разбит", "запчаст", "дефект", "не рабоч", 
-                "не включ", "артефакт", "отвал", "восстановлен", 
-                "под восстановление", "донор", "глючит", "проблемн"
-            ]
-            for dm in defect_markers:
-                if dm in text_lower:
-                    if f"без {dm}" in text_lower or f"нет {dm}" in text_lower:
-                        continue
-                    return True
-        
+            cond = str(item.get('condition', '')).lower()
+            if any(x in cond for x in ['запчаст', 'сломан', 'дефект']):
+                return True
+
+            is_bad, reason = defect_filter.check(item.get('title', ''), item.get('description', ''))
+            
+            if is_bad:
+                logger.info(f"Пропущено дефектное предложение: '{item['title']}'...: {reason}")
+                return True
+
         return False
 
     def _parse_page(self) -> List[Dict[str, Any]]:

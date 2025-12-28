@@ -87,6 +87,7 @@ class ScanPromptDialog(QDialog):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
+        from app.core.text_utils import defect_filter
 
         self.memory_manager = MemoryManager()
         self.controller = ParserController(memory_manager=self.memory_manager)
@@ -105,6 +106,7 @@ class MainWindow(QWidget):
         self.parser_progress_timer = None
         self.current_search_mode = "full"
         self.app_settings = self._load_settings()
+        defect_filter.update_user_keywords(self.app_settings.get("user_defect_keywords", ""))
         tg_token = self.app_settings.get("telegram_token", "")
         tg_chat_id = self.app_settings.get("telegram_chat_id", "")
         self.notifier = TelegramNotifier(tg_token, tg_chat_id)
@@ -1718,6 +1720,9 @@ class MainWindow(QWidget):
         if dlg.exec():
             self.app_settings = dlg.get_settings()
             self._save_settings()
+
+            from app.core.text_utils import defect_filter
+            defect_filter.update_user_keywords(self.app_settings.get("user_defect_keywords", ""))
             
             self.controller.ensure_ai_manager()
             if self.controller.ai_manager:

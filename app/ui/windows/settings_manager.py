@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QSpinBox, QCheckBox, QComboBox,
     QGroupBox, QLineEdit, QProgressBar, QMessageBox, 
-    QWidget, QScrollArea, QFrame, QToolButton, QSizePolicy, QTextBrowser
+    QWidget, QScrollArea, QFrame, QToolButton, QSizePolicy,
+    QTextBrowser, QPlainTextEdit
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QParallelAnimationGroup, QTimer
-from PyQt6.QtGui import QAbstractTextDocumentLayout
+from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QTimer
 from app.ui.styles import Components, Palette, Typography, Spacing
 from app.config import AI_CTX_SIZE, MODELS_DIR, DEFAULT_MODEL_NAME, BASE_APP_DIR
 
@@ -300,6 +300,9 @@ class SettingsDialog(QDialog):
 
         # --- СЕКЦИИ НАСТРОЕК ---
         
+        self.content_layout.addWidget(self._create_search_settings_section())
+        self.content_layout.addWidget(self._create_divider())
+
         # Блок ИИ
         self.content_layout.addWidget(self._create_ai_settings())
         
@@ -611,6 +614,40 @@ class SettingsDialog(QDialog):
         
         return container
 
+    def _create_search_settings_section(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.MD)
+
+        layout.addWidget(self._create_group_header("Фильтр Дефектов"))
+
+        info = InfoBadge(
+            "Словарь слов-паразитов.\n"
+            "Если парсер найдет эти слова в описании или заголовке,\n"
+            "товар будет пропущен (даже если цена подходит).\n"
+            "Пишите слова через запятую.\n\n"
+            "Базовые слова (сломан, разбит, труп, на запчасти) уже вшиты,\n"
+            "их писать не нужно!"
+        )
+        
+        lbl_row = QHBoxLayout()
+        lbl = QLabel("Ваши стоп-слова (дополнительно к базовым):")
+        lbl.setStyleSheet(f"color: {Palette.TEXT};")
+        lbl_row.addWidget(lbl)
+        lbl_row.addWidget(info)
+        lbl_row.addStretch()
+        layout.addLayout(lbl_row)
+
+        self.defect_keywords_input = QPlainTextEdit()
+        self.defect_keywords_input.setPlaceholderText("пример: рефаб, после ремонта, шумят дросселя, без коробки")
+        self.defect_keywords_input.setMinimumHeight(80)
+        self.defect_keywords_input.setStyleSheet(Components.text_input())
+        
+        layout.addWidget(self.defect_keywords_input)
+        
+        return container
+
     # --- PATCH NOTES SECTION ---
     def _create_patch_notes_section(self) -> QWidget:
         container = QWidget()
@@ -784,6 +821,11 @@ class SettingsDialog(QDialog):
                 if m.endswith(".gguf"): self.model_combo.addItem(m)
 
     def _load_settings(self):
+        keywords = self.current_settings.get("user_defect_keywords", "")
+        if isinstance(keywords, list):
+            keywords = ", ".join(keywords)
+        self.defect_keywords_input.setPlainText(keywords)
+
         # AI
         self.ctx_size_spin.setValue(self.current_settings.get("ai_ctx_size", AI_CTX_SIZE))
         self.gpu_layers_spin.setValue(self.current_settings.get("ai_gpu_layers", -1))
@@ -811,6 +853,7 @@ class SettingsDialog(QDialog):
     def _on_apply(self):
         # Собираем новые настройки
         new_settings = {
+            "user_defect_keywords": self.defect_keywords_input.toPlainText().replace("\n", ","),
             "ai_ctx_size": self.ctx_size_spin.value(),
             "ai_gpu_layers": self.gpu_layers_spin.value(),
             "ai_gpu_device": self.gpu_device_spin.value(),

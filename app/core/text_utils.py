@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Set
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -7,6 +7,156 @@ try:
 except ImportError:
     TfidfVectorizer = None
     cosine_similarity = None
+
+
+class SmartDefectFilter:
+    _instance = None
+
+    SAFE_CONTEXT_PATTERNS = [
+        r"без\s+(?:каких.?либо\s+)?(?:скрытых\s+)?(?:дефектов|проблем|нюансов|косяков)",
+        r"не\s+(?:имеет|имеются)\s+(?:никаких\s+)?(?:дефектов|проблем)",
+        r"полностью\s+(?:рабочий|исправен)",
+        r"любые\s+проверки",
+        r"состояние\s+новых",
+        r"работает\s+без\s+нареканий",
+        r"не\s+грет",
+        r"не\s+после\s+майнинга"
+    ]
+
+    DEFAULT_PATTERNS = {
+        'critical': [
+            r"\bна\s+запчаст", r"\bна\s+разбор", r"\bдонор", r"\bтруп", r"\bкирпич",
+            r"\bне\s+включ", r"\bне\s+стартует", r"\bне\s+запускается", r"\bнет\s+изображения",
+            r"\bчерный\s+экран", r"\bциклическая\s+перезагрузка", r"\bбутлуп"
+        ],
+        'gpu_specific': [
+            r"\bартефакт", r"\bартефач", r"\bполосы\s+на", r"\bкод\s+43", 
+            r"\bотвал", r"\bпрогрев", r"\bребол", r"\bпрожар", r"\bпосле\s+майнинга"
+        ],
+        'physical': [
+            r"\bразбит", r"\bтрещин", 
+            r"\bскол(?:а|ы|ов|е|ах)?\b", 
+            r"\bпогнут", r"\bзалит", 
+            r"\bутоплен", r"\bкорроз", r"\bржавчин", 
+            r"\bбит(?:ый|ая|ое|ые|ым|ых)\b", 
+            r"\bпотек"
+        ],
+        'general_bad': [
+            r"\bдефект", r"\bнюанс", r"\bкосяк", r"\bпроблемн", r"\bглючит", 
+            r"\bзависает", 
+            r"\bлага(?:ет|ют|л|л[аи])\b",
+            r"\bне\s*рабоч", 
+            r"\bпод\s+восстановление",
+            r"\bтребует\s+ремонт", r"\bпод\s+ремонт"
+        ]
+    }
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(SmartDefectFilter, cls).__new__(cls)
+            cls._instance._init()
+        return cls._instance
+
+    def _init(self):
+        self.user_keywords: Set[str] = set()
+        self.regex_cache = {}
+        self._compile_defaults()
+
+    def _compile_defaults(self):
+        # Компилируем защиту (белый список)
+        self.safe_regex = [re.compile(p, re.IGNORECASE) for p in self.SAFE_CONTEXT_PATTERNS]
+        
+        # Компилируем базовые дефекты
+        self.defect_regex = {}
+        for cat, patterns in self.DEFAULT_PATTERNS.items():
+            self.defect_regex[cat] = re.compile("|".join(patterns), re.IGNORECASE)
+
+    def update_user_keywords(self, keywords_text: str):
+        """Обновляет пользовательский список из строки (разделитель - запятая)"""
+        if not keywords_text:
+            self.user_keywords = set()
+            self.user_regex = None
+            return
+
+        # Разбиваем, чистим, убираем пустые
+        raw_list = [w.strip() for w in keywords_text.split(',') if w.strip()]
+        self.user_keywords = set(raw_list)
+        
+        if self.user_keywords:
+            # Для пользовательских слов тоже добавляем границу слова, если это не фраза
+            # (Экранируем спецсимволы, чтобы пользователь не сломал Regex)
+            patterns = []
+            for w in self.user_keywords:
+                esc = re.escape(w)
+                # Если слово начинается с буквы/цифры, добавляем границу \b
+                if w and w[0].isalnum():
+                    patterns.append(rf"\b{esc}")
+                else:
+                    patterns.append(esc)
+            
+            self.user_regex = re.compile("|".join(patterns), re.IGNORECASE)
+        else:
+            self.user_regex = None
+
+    def check(self, title: str, description: str) -> tuple[bool, str]:
+        """
+        Главный метод проверки.
+        :return: (True, "причина") если найден дефект, иначе (False, "")
+        """
+        # Объединяем текст для контекста
+        text = (f"{title} . {description}").lower()
+
+        # 1. Проверяем "белый список" (исключения)
+        # Если нашли "без дефектов", то флаг strict_mode выключаем (игнорируем слабые слова)
+        is_declared_safe = False
+        for pattern in self.safe_regex:
+            if pattern.search(text):
+                is_declared_safe = True
+                break
+
+        found_defects = []
+
+        # 2. Проверяем пользовательские слова (наивысший приоритет)
+        if self.user_regex:
+            matches = self.user_regex.findall(text)
+            for m in matches:
+                if self._check_negative_context(text, m): continue
+                found_defects.append(f"[User] {m}")
+
+        # 3. Проверяем встроенные категории
+        for category, regex in self.defect_regex.items():
+            matches = regex.findall(text)
+            for match in matches:
+                # Если товар "безопасен", игнорируем общие слова типа "нюанс"
+                if is_declared_safe and category == 'general_bad':
+                    continue
+                
+                # Проверяем контекст ("БЕЗ царапин")
+                if self._check_negative_context(text, match):
+                    continue
+
+                found_defects.append(match)
+
+        if found_defects:
+            return True, ", ".join(set(found_defects))
+        
+        return False, ""
+
+    def _check_negative_context(self, text: str, match_word: str) -> bool:
+        """Проверяет, нет ли перед словом отрицания (не, без, кроме)"""
+        start_idx = text.find(match_word)
+        if start_idx > 0:
+            # Смотрим 15 символов до найденного слова
+            context = text[max(0, start_idx - 15):start_idx]
+            # Проверяем наличие отрицаний. 
+            # Добавлена проверка пробела после предлога, чтобы не ловить части слов
+            if any(neg in context for neg in ["без ", "нет ", "не ", "кроме ", "no "]):
+                return True
+        return False
+
+# Singleton instance
+defect_filter = SmartDefectFilter()
+
 
 class FeatureExtractor:
     PATTERNS = {
