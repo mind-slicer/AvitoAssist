@@ -140,7 +140,7 @@ class AIChatWorker(QThread):
                 "top_p": 0.95,
                 "min_p": 0.0,
                 "repeat_penalty": 1.0,
-                "max_tokens": 2048
+                "max_tokens": 2048 #TODO: Увеличить?
             }
             
             resp = await client.chat_completion(
@@ -193,7 +193,7 @@ class AIChunkCultivationWorker(QThread):
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "max_tokens": 2048,
+                "max_tokens": 2048, #TODO: Увеличить?
                 "mirostat_mode": 1,
                 "mirostat_tau": 5.0,
                 "mirostat_eta": 0.1
@@ -504,8 +504,7 @@ class AIManager(QObject):
                 )
 
                 p = PromptBuilder.build_analysis_prompt(
-                    items=similar_items,
-                    priority=prio, 
+                    items=similar_items, 
                     current_item=item, 
                     user_instructions=instr, 
                     rag_context=rag,
@@ -673,21 +672,15 @@ class AIManager(QObject):
             else:
                 rag_injection = "\n\n[ПАМЯТЬ]: По этому товару пока недостаточно данных в базе."
 
-        MAX_HISTORY = 5
+        MAX_HISTORY = 5 #TODO: Увеличить?
         trimmed_messages = messages[-MAX_HISTORY:] if len(messages) > MAX_HISTORY else messages
 
-        MAX_MSG_LENGTH = 1000
+        MAX_MSG_LENGTH = 1000 #TODO: Увеличить?
         for msg in trimmed_messages:
             if len(msg.get('content', '')) > MAX_MSG_LENGTH:
                 msg['content'] = msg['content'][:MAX_MSG_LENGTH] + "...[обрезано]"
 
-        # TODO
-        final_system_content = (
-            sys_content + 
-            db_search_context +
-            table_context #+
-            #rag_injection
-        )
+        final_system_content = (sys_content + db_search_context + table_context + rag_injection)
         final_messages = [{"role": "system", "content": final_system_content}]
         for m in trimmed_messages:
             if m['role'] != 'system':

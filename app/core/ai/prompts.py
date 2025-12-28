@@ -1,11 +1,6 @@
 import statistics
 from typing import List, Dict, Optional
-from enum import IntEnum
 
-class AnalysisPriority(IntEnum):
-    PRICE = 1
-    DEFICIT = 2
-    QUALITY = 3
 
 class PromptBuilder:
     HARDWARE_INTERESTS = """
@@ -57,7 +52,7 @@ class PromptBuilder:
 }}
 """
     
-    NEURO_FILTER_TEMPLATE = """
+    NEURO_FILTER_TEMPLATE = f"""
 Ты работаешь ЖЁСТКИМ фильтром объявлений Авито для скупщика компьютерной техники.
 Твоя задача — решить, стоит ли вообще рассматривать объявление.
 
@@ -99,13 +94,6 @@ class PromptBuilder:
 """
     
     @staticmethod
-    def select_priority(table_size: int, user_instructions: str, has_rag: bool, search_tags: List[str]) -> AnalysisPriority:
-        txt = user_instructions.lower()
-        if any(x in txt for x in ["состояние", "гарант", "чек", "комплект"]): return AnalysisPriority.QUALITY
-        if any(x in txt for x in ["редк", "дефиц"]): return AnalysisPriority.DEFICIT
-        return AnalysisPriority.PRICE
-    
-    @staticmethod
     def _build_market_stats(items: List[Dict], current_title: str) -> Dict:
         default_stats = {
             "sample_size": 0,
@@ -138,7 +126,7 @@ class PromptBuilder:
         }
     
     @classmethod
-    def build_analysis_prompt(cls, items: List[Dict], priority: AnalysisPriority, current_item: Dict, user_instructions: str = "", rag_context: Optional[Dict] = None, search_mode: str = 'full') -> str:
+    def build_analysis_prompt(cls, items: List[Dict], current_item: Dict, user_instructions: str = "", rag_context: Optional[Dict] = None, search_mode: str = 'full') -> str:
         stats = cls._build_market_stats(items, current_item.get('title'))
         
         current_market_str = "Мало данных для статистики."

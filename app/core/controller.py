@@ -383,13 +383,6 @@ class ParserController(QObject):
 
         user_instructions = prompt if prompt else ""
 
-        priority = PromptBuilder.select_priority(
-            table_size=len(items),
-            user_instructions=user_instructions,
-            has_rag=False,
-            search_tags=[]
-        )
-
         context = {
             "mode": "analysis",
             "offset": 0,
@@ -397,7 +390,6 @@ class ParserController(QObject):
             "is_split": False,
             "store_in_memory": store_in_memory,
             "include_ai": True,
-            "priority": priority,
             "user_instructions": user_instructions,
             "has_rag": False,
             "items": items,
@@ -425,7 +417,7 @@ class ParserController(QObject):
 
         self._run_ai_process(items, prompt, debug_mode=ai_debug, context=context)
 
-    
+    # TODO: not being called by anyone?
     def _start_ai_analysis(self, items: List[Dict], prompt: str, parallel: bool, queue_idx: int, is_split: bool, store_in_memory: bool = False):
         context = {
             'mode': 'analysis',
@@ -436,25 +428,21 @@ class ParserController(QObject):
             'store_in_memory': store_in_memory,
         }
 
-        ai_criteria = ""
         ai_debug = False
         if 0 <= queue_idx < len(self.queue_state.queues_config):
             cfg = self.queue_state.queues_config[queue_idx]
-            ai_criteria = cfg.get('ai_criteria', "")
             ai_debug = cfg.get('ai_debug_mode', False)
 
-        market_prompt = self._build_market_context_prompt(items, ai_criteria)
-
         if parallel:
-            self._run_ai_process(items, market_prompt, debug_mode=ai_debug, context=context)
+            self._run_ai_process(items, prompt=None, debug_mode=ai_debug, context=context)
             if self.queue_state.is_sequence_running:
                 QTimer.singleShot(100, lambda: self._execute_queue(queue_idx + 1))
             else:
                 self.queue_state.waiting_for_ai_sequence = True
-                self._run_ai_process(items, market_prompt, debug_mode=ai_debug, context=context)
+                self._run_ai_process(items, prompt=None, debug_mode=ai_debug, context=context)
         else:
             self.queue_state.waiting_for_ai_sequence = True
-            self._run_ai_process(items, market_prompt, debug_mode=ai_debug, context=context)
+            self._run_ai_process(items, prompt=None, debug_mode=ai_debug, context=context)
 
     def _run_ai_process(self, items: List[Dict], prompt: str, debug_mode: bool, context: Dict):
         if not items: return

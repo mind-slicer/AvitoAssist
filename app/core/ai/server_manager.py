@@ -97,7 +97,6 @@ class ServerManager(QObject):
             
         return "unknown", ""
 
-    # TODO КОНТЕКСТ ЗДЕСЬ!
     def start_server(self, ctx_size: int = 2048, gpu_layers: int = -1, batch_size: int = 512, gpu_device: int = 0, backend_preference: str = "auto"):
         if self.is_running() or self._is_starting:
             return
