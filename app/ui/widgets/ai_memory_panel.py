@@ -4,13 +4,15 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit,
-    QTextEdit, QSizePolicy, QTabWidget, QPlainTextEdit, QCheckBox
+    QTextEdit, QSizePolicy, QTabWidget, QPlainTextEdit, QCheckBox,
+    QComboBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent
 from PyQt6.QtGui import QTextOption
 
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.core.log_manager import logger
+from app.core.ai.prompts import prompt_manager
 from app.config import BASE_APP_DIR
 
 
@@ -259,6 +261,8 @@ class AIMemoryPanel(QWidget):
         self.chunk_manager = None
         self.cards = {}
         
+        self.current_prompt_key = "analysis_behavior"
+
         self._init_ui()
         
         self.refresh_timer = QTimer()
@@ -367,12 +371,11 @@ class AIMemoryPanel(QWidget):
         columns_layout.addLayout(left_col, stretch=3)
         
         right_col = QFrame()
-        right_col.setFixedWidth(340) # Чуть шире для удобства
+        right_col.setFixedWidth(380)
         right_col.setStyleSheet(Components.panel())
         right_vbox = QVBoxLayout(right_col)
         right_vbox.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
 
-        # Создаем табы
         self.right_tabs = QTabWidget()
         self.right_tabs.setStyleSheet(f"""
             QTabWidget::pane {{ border: none; }}
@@ -390,7 +393,6 @@ class AIMemoryPanel(QWidget):
             }}
         """)
 
-        # --- ТАБ 1: ИНСТРУКЦИИ (Старая логика) ---
         tab_instr = QWidget()
         tab_instr_layout = QVBoxLayout(tab_instr)
         tab_instr_layout.setContentsMargins(0, 5, 0, 0)
@@ -418,12 +420,10 @@ class AIMemoryPanel(QWidget):
         
         self.right_tabs.addTab(tab_instr, "Инструкции")
 
-        # --- ТАБ 2: ИНТЕРЕСЫ / ПРОМПТ (Новая логика) ---
         tab_interests = QWidget()
         tab_int_layout = QVBoxLayout(tab_interests)
         tab_int_layout.setContentsMargins(0, 5, 0, 0)
         
-        # Хедер с чекбоксом редактирования и подсказкой
         int_header = QHBoxLayout()
         self.chk_edit_interests = QCheckBox("Редактировать")
         self.chk_edit_interests.setStyleSheet(Components.styled_checkbox())
@@ -454,13 +454,110 @@ class AIMemoryPanel(QWidget):
         
         self.right_tabs.addTab(tab_interests, "Интересы")
 
+        tab_prompts = QWidget()
+        prompts_layout = QVBoxLayout(tab_prompts)
+        prompts_layout.setContentsMargins(0, 5, 0, 0)
+        prompts_layout.setSpacing(Spacing.SM)
+
+        # Header: Combo + Help
+        p_header = QHBoxLayout()
+        self.prompt_combo = QComboBox()
+        self.prompt_combo.addItems([
+            "🧠 Анализ объявлений", 
+            "🕷 Нейро-фильтр", 
+            "💬 Личность Чата"
+        ])
+        self.prompt_combo.setStyleSheet(Components.styled_combobox())
+        self.prompt_combo.currentIndexChanged.connect(self._on_prompt_changed)
+        p_header.addWidget(self.prompt_combo, 1)
+
+        p_info = QLabel("ⓘ")
+        p_info.setToolTip(
+            "Редактор системных ролей нейросети.\n\n"
+            "Вы можете менять стиль, стратегию и критерии оценки.\n"
+            "ВАЖНО: Не удаляйте {placeholders}, если они есть.\n"
+            "Формат JSON менять здесь нельзя (он фиксирован)."
+        )
+        p_info.setStyleSheet(f"color: {Palette.PRIMARY}; font-weight: bold;")
+        p_header.addWidget(p_info)
+        prompts_layout.addLayout(p_header)
+
+        # Help Label
+        self.prompt_desc_lbl = QLabel("")
+        self.prompt_desc_lbl.setWordWrap(True)
+        self.prompt_desc_lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px; margin-bottom: 4px;")
+        prompts_layout.addWidget(self.prompt_desc_lbl)
+
+        # Editor
+        self.prompt_edit = QPlainTextEdit()
+        self.prompt_edit.setStyleSheet(Components.text_input())
+        prompts_layout.addWidget(self.prompt_edit)
+
+        # Buttons
+        p_btns = QHBoxLayout()
+        self.btn_reset_prompt = QPushButton("Сброс")
+        self.btn_reset_prompt.setStyleSheet(Components.small_button())
+        self.btn_reset_prompt.clicked.connect(self._reset_current_prompt)
+        
+        self.btn_save_prompt = QPushButton("Сохранить")
+        self.btn_save_prompt.setStyleSheet(Components.start_button())
+        self.btn_save_prompt.clicked.connect(self._save_current_prompt)
+
+        p_btns.addWidget(self.btn_reset_prompt)
+        p_btns.addStretch()
+        p_btns.addWidget(self.btn_save_prompt)
+        prompts_layout.addLayout(p_btns)
+
+        self.right_tabs.addTab(tab_prompts, "Промпты")
+
         right_vbox.addWidget(self.right_tabs)
         columns_layout.addWidget(right_col)
         
         layout.addLayout(columns_layout)
         
-        # Загружаем сохраненные интересы
         self._load_interests_from_disk()
+        self._load_current_prompt()
+
+    def _get_prompt_key(self, idx):
+        if idx == 0: return "analysis_behavior"
+        if idx == 1: return "filter_behavior"
+        return "chat_behavior"
+
+    def _on_prompt_changed(self, idx):
+        self.current_prompt_key = self._get_prompt_key(idx)
+        self._load_current_prompt()
+
+    def _load_current_prompt(self):
+        text = prompt_manager.get(self.current_prompt_key)
+        self.prompt_edit.setPlainText(text)
+        
+        desc_map = {
+            "analysis_behavior": "Роль и стратегия при анализе таблицы (Full/Neuro режимы). {interests_block} будет заменен на ваши интересы.",
+            "filter_behavior": "Логика отсева объявлений в режиме 'Нейро'. {search_tags} и {ignore_tags} подставляются автоматически.",
+            "chat_behavior": "Системная инструкция для вкладки 'Чат'. Определяет личность ассистента."
+        }
+        self.prompt_desc_lbl.setText(desc_map.get(self.current_prompt_key, ""))
+
+    def _save_current_prompt(self):
+        new_text = self.prompt_edit.toPlainText()
+        prompt_manager.set(self.current_prompt_key, new_text)
+        
+        # Visual feedback
+        self.btn_save_prompt.setText("Сохранено!")
+        self.btn_save_prompt.setEnabled(False)
+        QTimer.singleShot(1500, lambda: self.btn_save_prompt.setText("Сохранить"))
+        QTimer.singleShot(1500, lambda: self.btn_save_prompt.setEnabled(True))
+
+    def _reset_current_prompt(self):
+        # Ask confirmation
+        confirm = QMessageBox.question(
+            self, "Сброс", 
+            "Сбросить ВСЕ промпты к заводским настройкам?\nЭто действие нельзя отменить.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            prompt_manager.reset_to_defaults()
+            self._load_current_prompt()
 
     def add_instruction_manual(self):
         text = self.new_instr_edit.text().strip()

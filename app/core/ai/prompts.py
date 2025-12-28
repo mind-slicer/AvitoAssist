@@ -1,84 +1,137 @@
+import os
+import json
 import statistics
 from typing import List, Dict, Optional
+from app.config import BASE_APP_DIR
+from app.core.log_manager import logger
 
+class PromptManager:
+    PROMPTS_FILE = os.path.join(BASE_APP_DIR, "prompts_config.json")
 
-class PromptBuilder:
-    # Base system prompt for analysis
-    SYSTEM_BASE = """Ты — профессиональный скупщик новой и Б/У компьютерной техники на Авито.
-Твоя цель — купить максимально дёшево у частника и быстро перепродать с маржей 20–50%.
+    # --- 1. ANALYSIS PROMPT (ANALYSIS) ---
+    DEFAULT_ANALYSIS_BEHAVIOR = """Ты — профессиональный скупщик компьютерной техники на Авито.
+Твоя цель — найти выгодные предложения для перепродажи (маржа 20–50%).
 
 [ТВОИ ИНТЕРЕСЫ И НИША]
 {interests_block}
 
-КЛЮЧЕВЫЕ ПРИОРИТЕТЫ:
-1. Максимизация маржи: ищи цены в нижнем квартиле рынка (q25_price) или ниже — это реальные цены от частников.
-2. Медиана (median_price) — это "потолок" для перепродажи, а не цена покупки.
-3. Ликвидность: товар должен продаваться быстро.
-4. Риски: майнинг, скрытые дефекты, отсутствие коробки/чека, скам-схемы.
-5. Игнорируй воду в описании ("тянет все игры", "летает"). Смотри только на сухие факты: модель, состояние, комплект, цена.
+ТВОЯ СТРАТЕГИЯ:
+1. Ищи цены в нижнем квартиле рынка (q25) или ниже. Медиана — это потолок продажи, а не покупки.
+2. Оценивай ликвидность, поскольку товар должен уйти быстро.
+3. Фильтруй риски: майнинг, нет коробки, продавец-однодневка, мутные описания.
+4. Игнорируй маркетинговый шум ("тянет все игры", "летает"). Смотри на факты.
 
-ВАЖНО: Сначала "подумай" в поле "thinking", проанализировав все плюсы и минусы, и только потом выноси вердикт.
-
-ПРАВИЛА ОЦЕНКИ:
-    - GREAT_DEAL — цена ≤ q25_price (или ниже рынка при идеальном состоянии).
-    - GOOD — цена между q25_price и median_price, минимальные риски, ликвидная модель.
-    - BAD — цена выше медианы, низкая ликвидность, подозрительное состояние, оверпрайс.
-    - SCAM — цена в 2+ раза ниже q25 без причины, подозрительное описание объявления, много "воды" вне контекста товара, отказ от проверки.
-
-ФОРМАТ ОТВЕТА (СТРОГО JSON):
-{{
-    "thinking": "Твой пошаговый ход мыслей. Здесь проанализируй цену относительно рынка, состояние и риски. Пиши подробно.",
-    "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "SCAM",
-    "reason": "Краткое объяснение на РУССКОМ языке для обычного пользователя. НЕ ИСПОЛЬЗУЙ слова 'квартиль', 'q25', 'медиана'. Пиши: 'отличная цена', 'низ рынка', 'дороговато', 'средняя цена'.",
-    "market_position": "great_deal" | "good_zone" | "overpriced" | "scam_low",
-    "risks": ["риск1", "риск2"] (если рисков нет — пустой список),
-    "defects": true (если есть явные дефекты) | false
-}}
+КАК ПРИНИМАТЬ РЕШЕНИЯ:
+- Если цена экстремально низкая -> Ищи подвох (дефекты, скам). Если чисто — это GREAT_DEAL.
+- Если данных мало или описание противоречивое -> Не выдумывай. Ставь статус HARD_TO_SAY.
+- Если цена выше рынка или товар неликвид -> BAD.
+- Если явный обман, мошенничество или цена в 2-3 раза ниже рынка без причины -> VERY_BAD.
 """
-    
-    # Search neuro-filter prompt
-    NEURO_FILTER_TEMPLATE = """
-Ты работаешь ЖЁСТКИМ фильтром объявлений Авито для скупщика компьютерной техники.
-Твоя задача — решить, стоит ли вообще рассматривать объявление.
+
+    # --- 2. FILTER PROMPT (NEURO-SEARCH) ---
+    DEFAULT_FILTER_BEHAVIOR = """Ты работаешь ЖЁСТКИМ фильтром объявлений на Авито.
+Твоя задача — отсеять объявления и оставить только то, что подходит под запрос.
 
 [ПОИСКОВЫЕ ТЕГИ]
 Основной запрос: {search_tags}
-Игнорируем (бан-слова): {ignore_tags}
+Бан-слова: {ignore_tags}
 
-[ДОП. КРИТЕРИИ ОТ ПОЛЬЗОВАТЕЛЯ]
+[КРИТЕРИИ ПОЛЬЗОВАТЕЛЯ]
 {user_criteria}
 
-ПРАВИЛА ФИЛЬТРА:
+ТВОЯ СТРАТЕГИЯ:
+1. Если товар не соответствует поисковым тегам -> BAD.
+2. Если есть хоть одно бан-слово -> BAD.
+3. Если не выполняются критерии пользователя (например, "только гарантия", а её нет) -> BAD.
+4. Если описание объявления не соответствует запросу логически и семантически -> BAD.
+5. Если информации недостаточно для уверенного GOOD -> BAD.
+"""
 
-1. Вердикт может быть ТОЛЬКО:
-   - GOOD — объявление подходит под запрос и критерии.
-   - BAD — объявление не подходит или есть сомнения.
+    # --- 3. CHAT PROMPT ---
+    DEFAULT_CHAT_BEHAVIOR = """Ты — опытный аналитик рынка электроники и ассистент пользователя.
+Ты помогаешь оценивать товары, даешь советы по перепродаже и отвечаешь на вопросы.
+Отвечай кратко, по делу, без воды. Используй форматирование Markdown.
+"""
 
-2. Всегда учитывай:
-   - Заголовок и описание объявления.
-   - Поисковые теги (search_tags) — товар должен им соответствовать.
-   - Бан-слова (ignore_tags) — если что-то из этого явно присутствует, вердикт ОБЯЗАТЕЛЬНО BAD.
+    def __init__(self):
+        self.prompts = {
+            "analysis_behavior": self.DEFAULT_ANALYSIS_BEHAVIOR,
+            "filter_behavior": self.DEFAULT_FILTER_BEHAVIOR,
+            "chat_behavior": self.DEFAULT_CHAT_BEHAVIOR
+        }
+        self.load()
 
-3. Доп. критерии (user_criteria) ВАЖНЕЕ нейросети:
-   - Если пользователь просит "только по гарантии" — объявление считается подходящим ТОЛЬКО если гарантия
-     явно указана в тексте (слова типа "гарантия", "чек", "оставшаяся гарантия" и т.п.). Это пример, поэтому
-     учитывай любые требования пользователя.
-   - Если критерий не выполнен ЯВНО — ставь BAD, даже если остальное выглядит неплохо.
-   - Если критериев нет, используй пункты 1 и 2 фильтрации.
+    def load(self):
+        if os.path.exists(self.PROMPTS_FILE):
+            try:
+                with open(self.PROMPTS_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for k, v in data.items():
+                        if k in self.prompts:
+                            self.prompts[k] = v
+            except Exception as e:
+                logger.error(f"Ошибка загрузки промптов: {e}...")
 
-4. Если информации недостаточно, чтобы уверенно сказать GOOD — ставь BAD.
+    def save(self):
+        try:
+            with open(self.PROMPTS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.prompts, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения промптов: {e}...")
 
-ФОРМАТ ОТВЕТА:
-Отвечай СТРОГО одним JSON-объектом без пояснений вокруг:
+    def get(self, key: str) -> str:
+        return self.prompts.get(key, "")
 
+    def set(self, key: str, value: str):
+        if key in self.prompts:
+            self.prompts[key] = value
+            self.save()
+
+    def reset_to_defaults(self):
+        self.prompts = {
+            "analysis_behavior": self.DEFAULT_ANALYSIS_BEHAVIOR,
+            "filter_behavior": self.DEFAULT_FILTER_BEHAVIOR,
+            "chat_behavior": self.DEFAULT_CHAT_BEHAVIOR
+        }
+        self.save()
+
+# Global instance
+prompt_manager = PromptManager()
+
+
+class PromptBuilder:
+    # --- FIXED FORMATS (NOT EDITABLE BY USER) ---
+
+    ANALYSIS_FORMAT_INSTRUCTIONS = """
+ВАЖНО: Твой ответ должен быть СТРОГО в формате JSON.
+Сначала заполни поле "thinking", где подробно опиши свой ход мыслей, анализ цены и рисков.
+
+ФОРМАТ ОТВЕТА JSON:
 {{
-  "verdict": "GOOD" или "BAD",
-  "reason": "Краткое объяснение на русском, 1–2 предложения"
+    "thinking": "Твой подробный анализ ситуации...",
+    "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "VERY_BAD" | "HARD_TO_SAY",
+    "reason": Краткое объяснение на РУССКОМ языке для обычного пользователя. НЕ ИСПОЛЬЗУЙ слова 'квартиль', 'q25', 'медиана'. Пиши: 'отличная цена', 'низ рынка', 'дороговато', 'средняя цена'.",
+    "market_position": "great_deal" | "good_zone" | "overpriced" | "unknown",
+    "risks": ["риск1", "риск2"] (если рисков нет — пустой список),
+    "defects": true (если есть явные дефекты) | false
 }}
 
-Не добавляй никакой другой текст.
+ЗНАЧЕНИЯ VERDICT:
+- GREAT_DEAL: Цена ≤ q25, состояние отличное, высокая ликвидность.
+- GOOD: Цена между q25 и median, товар ликвидный, рисков нет.
+- BAD: Дорого (выше медианы), неликвид, или есть дефекты.
+- VERY_BAD: Скам, цена подозрительно низкая (в разы), продавец-мошенник, или "труп" (хлам).
+- HARD_TO_SAY: Слишком мало данных, нет цены, противоречивое описание, или невозможно определить модель.
 """
-    
+
+    FILTER_FORMAT_INSTRUCTIONS = """
+ФОРМАТ ОТВЕТА (СТРОГО JSON):
+{{
+  "verdict": "GOOD" | "BAD",
+  "reason": "Краткая причина (1 предложение на русском)"
+}}
+"""
+
     @staticmethod
     def _build_market_stats(items: List[Dict]) -> Dict:
         default_stats = {
@@ -100,49 +153,46 @@ class PromptBuilder:
             "max": max(prices),
             "cnt": len(prices),
         }
-    
+
     @classmethod
-    def build_analysis_prompt(cls, items: List[Dict], current_item: Dict, 
+    def build_analysis_prompt(cls, items: List[Dict], current_item: Dict,
                               user_instructions: str = "", interests: str = "",
                               rag_context: Optional[Dict] = None, search_mode: str = 'full') -> str:
-        
+
         stats = cls._build_market_stats(items)
-        
+
         if stats['sample_size'] < 3:
-            current_market_str = (
-                "ВНИМАНИЕ: В текущей выдаче слишком мало данных для статистики. "
-                "Используй свои ВНУТРЕННИЕ ЗНАНИЯ о ценах на этот товар (актуальность 2025 года). "
+            market_ctx = (
+                "ВНИМАНИЕ: Мало данных для статистики. "
+                "Опирайся на свои внутренние знания цен (актуальность 2025). "
                 "В поле 'reason' обязательно укажи: 'Мало данных, оценка примерная'."
             )
         else:
-            current_market_str = (
-                f"В ТЕКУЩЕЙ ВЫДАЧЕ (похожих лотов: {stats['cnt']}):\n"
-                f"- Диапазон: {stats['min']} - {max(stats['max'], 1)} руб.\n"
+            market_ctx = (
+                f"ТВОЯ ВЫДАЧА (похожих: {stats['cnt']}):\n"
+                f"- Диапазон: {stats['min']} - {stats['max']} руб.\n"
                 f"- Медиана: {stats['med']} руб. | Средняя: {stats['avg']} руб."
             )
 
-        rag_block = "В памяти нет данных по этому товару."
+        rag_ctx = "В памяти нет данных по этому товару."
         if rag_context:
-            med = rag_context.get('median_price', 0)
-            avg = rag_context.get('avg_price', 0)
-            knowledge = rag_context.get('knowledge', '')
-            rag_block = (
+            rag_ctx = (
                 f"ИЗ ПАМЯТИ:\n"
-                f"- Ист. Медиана: {med} руб. | Средняя: {avg} руб.\n"
-                f"- Знания: {knowledge}\n"
+                f"- Ист. Медиана: {rag_context.get('median_price', 0)} руб.\n"
+                f"- Знания: {rag_context.get('knowledge', '')}\n"
             )
 
         item_price = current_item.get('price', 0)
         item_views = current_item.get('views', 0)
         item_cond = str(current_item.get('condition', '')).lower()
         item_date = str(current_item.get('date_text', '')).lower()
-
+        
         views_analysis = "Просмотры в норме."
         display_views = str(item_views)
         
         if search_mode == 'primary':
             display_views = "N/A (Данные недоступны в быстром поиске)"
-            views_analysis = "Просмотры: Нет данных. Игнорируй этот фактор."
+            views_analysis = "Просмотры: Нет данных. ИГНОРИРУЙ этот фактор, это не значит что их 0."
         else:
             if item_views == 0:
                 views_analysis = "0 просмотров: Только что выложено. Шанс забрать первым!"
@@ -150,7 +200,7 @@ class PromptBuilder:
                  views_analysis = "Мало просмотров: объявление свежее или не популярное."
             elif item_views > 750 and item_price < stats['med'] * 0.8:
                 views_analysis = f"ТРЕВОГА: {item_views} просмотров при низкой цене."
-        
+
         price_analysis = []
         if item_price > 0 and stats['med'] > 0:
             diff_table = ((item_price - stats['med']) / stats['med']) * 100
@@ -163,7 +213,7 @@ class PromptBuilder:
             else: price_analysis.append("Справедливая цена.")
 
         price_str = " ".join(price_analysis) if price_analysis else "Цена не определена или мало данных."
-        
+
         cond_bonus = ""
         if any(x in item_cond for x in ['нов', 'new', 'идеал', 'запеч']):
             cond_bonus = "БОНУС: Состояние указано как НОВОЕ/ИДЕАЛ."
@@ -180,12 +230,18 @@ class PromptBuilder:
                 date_analysis = "ДАТА: Старое (>20 дней). Вероятно, неликвид или продано."
         else:
             pass
-        
-        final_system = cls.SYSTEM_BASE.format(interests_block=interests if interests else "Интересы не заданы, анализируй любые ликвидные товары.")
 
-        # Prompt for a single element of analysis
-        return f"""
-{final_system}
+        # Сборка частей
+        base_behavior = prompt_manager.get("analysis_behavior").format(
+            interests_block=interests if interests else "Любая ликвидная электроника."
+        )
+
+        mode_instruction = ""
+        if search_mode == 'primary':
+            mode_instruction = "- Режим поиска 'Первичный': у тебя нет точных данных о просмотрах, поэтому НЕ ОПИРАЙСЯ на этот фактор."
+
+        full_prompt = f"""
+{base_behavior}
 
 [ОБЪЕКТ АНАЛИЗА]
 Товар: "{current_item.get('title')}"
@@ -195,77 +251,44 @@ class PromptBuilder:
 Дата: {item_date} | Просмотры: {display_views}
 Описание:
 \"\"\"
-{current_item.get('description', '')[:2000]}
+{current_item.get('description', '')[:2500]}
 \"\"\"
 
 [РЫНОЧНЫЙ КОНТЕКСТ]
-1. {current_market_str}
-2. {rag_block}
+1. {market_ctx}
+2. {rag_ctx}
 
-[ПОДСКАЗКИ АВТО-АНАЛИЗАТОРА]
+[ПОДСКАЗКИ АВТОМАТИКИ]
 - ЦЕНА: {price_str}
 - АКТИВНОСТЬ: {views_analysis}
 - КАЧЕСТВО: {cond_bonus}
 - АКТУАЛЬНОСТЬ: {date_analysis}
 
-[ИНСТРУКЦИИ ДЛЯ LLM]
-1. МЫСЛИ ШАГ ЗА ШАГОМ: Сначала заполни поле "thinking". Сравни цену с медианой (если есть) или своими знаниями.
-2. ЦЕНА: Опирайся на подсказки анализатора, среднее по Таблице и Памяти. Если цена "Экстремально низкая" — ищи подвох. Если "Отличная" — GREAT_DEAL.
-3. ОПИСАНИЕ: Внимательно читай описание! Ищи скрытые дефекты ("после майнинга", "без проверки"), которые отменяют низкую цену.
-4. ДАТА: Если объявление старое (>30 дней) и цена хорошая — это подозрительно. Снижай оценку.
-5. СОСТОЯНИЕ: "Новое" лучше "Б/У". "На запчасти" — это BAD (если не просили иное).
-6. РЕЖИМ ПОИСКА: Если указано "Нет данных по просмотрам", не выдумывай их влияние.
-
 [ПРИОРИТЕТНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]
 {user_instructions}
+{mode_instruction}
 
-[ФОРМАТ ОТВЕТА (JSON)]
-{{
-  "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "SCAM",
-  "reason": "Человеческий вывод (1-2 предложения). Упомяни цену, состояние и риски.",
-  "market_position": "below_market" | "fair" | "overpriced",
-  "defects": true/false
-}}
+{cls.ANALYSIS_FORMAT_INSTRUCTIONS}
 """
+        return full_prompt
 
     @classmethod
-    def build_neuro_filter_prompt(
-    cls,
-    search_tags: List[str],
-    ignore_tags: List[str],
-    user_criteria: str = ""
-    ) -> str:
-        if isinstance(search_tags, str):
-            search_list = [t.strip() for t in search_tags.split(",") if t.strip()]
-        else:
-            search_list = [t.strip() for t in search_tags or [] if t.strip()]
-    
-        if isinstance(ignore_tags, str):
-            ignore_list = [t.strip() for t in ignore_tags.split(",") if t.strip()]
-        else:
-            ignore_list = [t.strip() for t in ignore_tags or [] if t.strip()]
-    
-        search_str = ", ".join(search_list) if search_list else "Любые комплектующие из списка интересов"
-        ignore_str = ", ".join(ignore_list) if ignore_list else "Нет (бан-слов нет)"
-    
-        user_criteria = (user_criteria or "").strip()
-        if not user_criteria:
-            criteria_block = (
-                "Нет дополнительных критериев. Оцени объявление только по поисковым тегам "
-                "бан-словам и описанию объявления, строго следуя правилам фильтра выше."
-            )
-        else:
-            criteria_block = (
-                "Пользователь задал СЛЕДУЮЩИЕ ЖЁСТКИЕ критерии отбора "
-                "(они важнее любых эвристик нейросети):\n"
-                f"{user_criteria}"
-            )
-    
-        return cls.NEURO_FILTER_TEMPLATE.format(
-            search_tags=search_str,
-            ignore_tags=ignore_str,
-            user_criteria=criteria_block,
+    def build_neuro_filter_prompt(cls, search_tags: List[str], ignore_tags: List[str], user_criteria: str = "") -> str:
+        s_tags = ", ".join(search_tags) if search_tags else "Любые"
+        i_tags = ", ".join(ignore_tags) if ignore_tags else "Нет"
+        u_crit = user_criteria if user_criteria else "Нет дополнительных критериев."
+
+        base_behavior = prompt_manager.get("filter_behavior").format(
+            search_tags=s_tags,
+            ignore_tags=i_tags,
+            user_criteria=u_crit
         )
+
+        return f"{base_behavior}\n{cls.FILTER_FORMAT_INSTRUCTIONS}"
+
+    @classmethod
+    def get_chat_system_prompt(cls) -> str:
+        return prompt_manager.get("chat_behavior")
 
 
 class ChunkCultivationPrompts:

@@ -99,132 +99,6 @@ class ConditionItem(QTableWidgetItem):
             return self._sort_key < other._sort_key
         return super().__lt__(other)
 
-class VerdictItem(QTableWidgetItem):
-    SORT_ORDER = {
-        "GREAT_DEAL": 10,
-        "GOOD": 8,
-        "BAD": 3,
-        "SCAM": 1,
-        "UNKNOWN": 0
-    }
-
-    def __init__(self, raw_json: str):
-        super().__init__()
-        self.raw_data = raw_json
-        self.verdict = "UNKNOWN"
-        self.reason = ""
-        self.defects = False
-        self.market_position = ""
-        self._parse_and_set_display()
-    
-    def __lt__(self, other):
-        if isinstance(other, VerdictItem):
-            s1 = self.SORT_ORDER.get(self.verdict, 0)
-            s2 = self.SORT_ORDER.get(other.verdict, 0)
-            return s1 < s2
-        return super().__lt__(other)
-
-    def _parse_and_set_display(self):
-        try:
-            clean_json = self.raw_data.strip()
-
-            if clean_json.startswith("```json") and clean_json.endswith("```"):
-                clean_json = clean_json[7:-3].strip()
-            elif clean_json.startswith("```") and clean_json.endswith("```"):
-                clean_json = clean_json[3:-3].strip()
-            elif "```json" in clean_json and "```" in clean_json:
-                parts = clean_json.split("```json")
-                if len(parts) > 1:
-                    inner = parts[1].split("```")[0]
-                    clean_json = inner.strip()
-            elif "```" in clean_json:
-                parts = clean_json.split("```")
-                if len(parts) > 2:
-                    clean_json = parts[1].strip()
-
-            data = json.loads(clean_json)
-
-            self.verdict = str(data.get("verdict", "UNKNOWN")).upper().strip()
-            self.reason = str(data.get("reason", ""))
-            self.defects = bool(data.get("defects", False))
-            self.market_position = str(data.get("market_position", "")).lower()
-            self.thinking = str(data.get("thinking", ""))
-
-        except Exception:
-            self.verdict = "UNKNOWN"
-            self.reason = "Ошибка чтения ответа AI"
-        
-        v_map = {
-            "GREAT_DEAL": "💎 ОТЛИЧНО",
-            "GOOD": "✅ ХОРОШО",
-            "BAD": "❌ ПЛОХО",
-            "SCAM": "🚫 СКАМ",
-            "UNKNOWN": "❓"
-        }
-        v_str = v_map.get(self.verdict, self.verdict)
-
-        cell_text = v_str
-        if self.defects: cell_text += " ⚠️"
-        
-        # Рынок стрелочками
-        if self.market_position == "below_market": cell_text += " 📉"
-        elif self.market_position == "overpriced": cell_text += " 📈"
-
-        self.setText(cell_text)
-
-        tooltip = f"""
-        <b>ВЕРДИКТ: {v_str}</b>
-        <hr>
-        """
-        if self.thinking:
-             tooltip += f"<i>💭 Мысли: {self.thinking[:200]}...</i><br><hr>"
-
-        tooltip += f"<b>📝 Анализ:</b><br>{self.reason}<br><br>"
-
-        if self.market_position:
-            m_text = "В рынке"
-            if self.market_position == "below_market": m_text = "Ниже рынка (Выгодно)"
-            elif self.market_position == "overpriced": m_text = "Выше рынка (Дорого)"
-            tooltip += f"<b>📊 Позиция:</b> {m_text}<br>"
-            
-        if self.defects:
-            tooltip += "<b>⚠️ Обнаружены дефекты!</b>"
-        
-        self.setToolTip(tooltip.strip())
-        self.setData(Qt.ItemDataRole.UserRole, self.raw_data)
-        self.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
-
-        font = QFont()
-        font.setBold(True)
-        self.setFont(font)
-
-    def data(self, role):
-        if role == Qt.ItemDataRole.ForegroundRole:
-            if self.verdict == "GREAT_DEAL":
-                return QColor(Palette.INFO)
-            elif self.verdict == "GOOD":
-                return QColor(Palette.SUCCESS)
-            elif self.verdict == "BAD":
-                return QColor(Palette.WARNING)
-            elif self.verdict == "SCAM":
-                return QColor(Palette.ERROR)
-            else:
-                return QColor(Palette.TEXT_MUTED)
-
-        elif role == Qt.ItemDataRole.BackgroundRole:
-            if self.verdict == "GREAT_DEAL":
-                return QColor(Palette.with_alpha(Palette.INFO, 0.4))
-            elif self.verdict == "GOOD":
-                return QColor(Palette.with_alpha(Palette.SUCCESS, 0.4))
-            elif self.verdict == "BAD":
-                return QColor(Palette.with_alpha(Palette.WARNING, 0.4))
-            elif self.verdict == "SCAM":
-                return QColor(Palette.with_alpha(Palette.ERROR, 0.4))
-            else:
-                return QColor(Palette.BG_DARK_3)
-
-        return super().data(role)
-
 class ResultsTable(QTableView):
     item_favorited = pyqtSignal(str, bool)
     item_deleted = pyqtSignal(str)
@@ -334,9 +208,12 @@ class ResultsTable(QTableView):
 
     def on_double_click(self, index):
         col = index.column()
-        source_index = self.proxy_model.mapToSource(index)
+        # Получаем данные через прокси
+        proxy_index = self.proxy_model.index(index.row(), 0)
+        source_index = self.proxy_model.mapToSource(proxy_index)
         source_row = source_index.row()
         item = self.source_model.get_item(source_row)
+        
         if not item: return
 
         if col == 3:
@@ -348,36 +225,69 @@ class ResultsTable(QTableView):
             QMessageBox.information(self, "Описание", desc)
         
         elif col == 9:
-            verdict = item.get("verdict", "UNKNOWN")
-            ai_json_str = item.get("ai_analysis", "{}")
+            # Пытаемся найти данные анализа в разных полях
+            ai_data = {}
             
-            if isinstance(ai_json_str, str):
-                try:
-                    data = json.loads(ai_json_str)
-                except:
-                    data = {}
-            else:
-                data = ai_json_str if isinstance(ai_json_str, dict) else {}
+            # Вариант 1: Поле 'ai' (словарь)
+            if isinstance(item.get('ai'), dict):
+                ai_data = item['ai']
+            # Вариант 2: Поле 'ai_analysis' (строка или словарь)
+            elif item.get('ai_analysis'):
+                raw = item['ai_analysis']
+                if isinstance(raw, dict):
+                    ai_data = raw
+                elif isinstance(raw, str):
+                    try:
+                        import re
+                        # Ищем JSON блок
+                        match = re.search(r'\{.*\}', raw, re.DOTALL)
+                        if match:
+                            ai_data = json.loads(match.group(0))
+                    except:
+                        pass
+            
+            # Если данных нет, но есть сырой вердикт в ячейке
+            if not ai_data:
+                # Пытаемся вытащить хотя бы вердикт из самого айтема
+                ai_data = {
+                    "verdict": item.get("verdict", "UNKNOWN"),
+                    "reason": item.get("ai_reason") or item.get("reason", "Нет данных"),
+                    "thinking": item.get("ai_thinking") or item.get("thinking", "")
+                }
 
-            reason = data.get("reason", "Нет объяснения")
-            m_pos = data.get("market_position", "Не определено")
-            defects = "Да" if data.get("defects") else "Нет"
+            verdict = str(ai_data.get("verdict", "UNKNOWN")).upper()
+            reason = ai_data.get("reason", "Нет объяснения")
+            thinking = ai_data.get("thinking", "")
+            defects = ai_data.get("defects", False)
             
-            pos_map = {"below_market": "Ниже рынка", "fair": "По рынку", "overpriced": "Дорого"}
-            m_pos_ru = pos_map.get(m_pos, m_pos)
+            # Перевод для отчета
+            v_map = {
+                "GREAT_DEAL": "💎 ОТЛИЧНО",
+                "GOOD": "✅ ХОРОШО",
+                "BAD": "❌ ПЛОХО",
+                "VERY_BAD": "🚫 ОЧЕНЬ ПЛОХО",
+                "SCAM": "🚫 СКАМ",
+                "HARD_TO_SAY": "🤔 ЗАТРУДНЯЮСЬ"
+            }
+            v_ru = v_map.get(verdict, verdict)
 
-            report = (
-                f"🤖 ВЕРДИКТ ИИ: {verdict}\n"
-                f"{'-'*30}\n\n"
-                f"📝 ОБЪЯСНЕНИЕ:\n{reason}\n\n"
-                f"📊 ПОЗИЦИЯ НА РЫНКЕ: {m_pos_ru}\n"
-                f"⚠️ ДЕФЕКТЫ/РИСКИ: {defects}\n"
-            )
+            report = f"<h2 style='color:#4a90e2; margin-bottom:5px'>🤖 ВЕРДИКТ: {v_ru}</h2>"
             
+            if defects:
+                report += "<div style='background-color:#3a1e1e; color:#ff4d4f; padding:8px; border-radius:4px; margin:10px 0;'><b>⚠️ ВНИМАНИЕ: Обнаружены дефекты или риски!</b></div>"
+
+            report += f"<h3 style='color:#ccc'>📝 Заключение:</h3><p style='font-size:14px; line-height:1.4'>{reason}</p>"
+            
+            if thinking:
+                # Экранируем переносы строк для HTML
+                thinking_html = thinking.replace("\n", "<br>")
+                report += "<hr style='border-color:#444'><h3 style='color:#aaa'>💭 Ход мыслей:</h3>"
+                report += f"<div style='color:#888; font-style:italic; font-size:13px; background-color:#222; padding:10px; border-radius:5px'>{thinking_html}</div>"
+
             msg_box = QMessageBox(self)
-            msg_box.setWindowTitle(f"Анализ элемента {item.get('id')}...")
+            msg_box.setWindowTitle(f"Анализ ID: {item.get('id')}")
+            msg_box.setTextFormat(Qt.TextFormat.RichText)
             msg_box.setText(report)
-            msg_box.setIcon(QMessageBox.Icon.Information)
             msg_box.exec()
 
     def mouseMoveEvent(self, event):

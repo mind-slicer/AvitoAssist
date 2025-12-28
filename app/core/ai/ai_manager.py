@@ -48,12 +48,12 @@ class AIProcessingWorker(QThread):
             
             gen_params = {
                 "response_format": {"type": "json_object"}, 
-                "temperature": 0.3,
+                "temperature": 0.2,
                 "top_k": 64,
                 "top_p": 0.95,
                 "min_p": 0.05,
                 "repeat_penalty": 1.05,
-                "max_tokens": 1024,
+                "max_tokens": 2048,
                 "mirostat_mode": 0
             }
 
@@ -70,15 +70,13 @@ class AIProcessingWorker(QThread):
                 
                 clean_item = {
                     k: v for k, v in item.items() 
-                    if k in ['title', 'price', 'description', 'city', 'condition', 'seller_id', 'views', 'date_text', 'link']
+                    if k in ['title', 'price', 'description', 'city', 'condition', 'seller_id', 'views', 'date_text']
                 }
                 item_dump = json.dumps(clean_item, ensure_ascii=False)
 
-                system_instruction = PromptBuilder.SYSTEM_BASE
-
                 messages = [
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": f"{prompt_text}\n\nВОТ ДАННЫЕ ТОВАРА:\n{item_dump}"}
+                    {"role": "system", "content": "Ты — аналитик, работающий с данными в формате JSON."},
+                    {"role": "user", "content": f"{prompt_text}\n\nДАННЫЕ:\n{item_dump}"}
                 ]
 
                 response = await client.chat_completion(
@@ -107,14 +105,16 @@ class AIProcessingWorker(QThread):
 
     def _clean_json(self, text: str) -> str:
         if not text: return "{}"
-
+        
         match_code = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
         if match_code:
             return match_code.group(1)
+
+        start = text.find('{')
+        end = text.rfind('}')
         
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            return match.group(0)
+        if start != -1 and end != -1 and end > start:
+            return text[start:end+1]
 
         return text.replace("```json", "").replace("```", "").strip()
 
@@ -139,7 +139,6 @@ class AIChatWorker(QThread):
                 "top_k": 64,
                 "top_p": 0.95,
                 "min_p": 0.0,
-                "repeat_penalty": 1.0,
                 "max_tokens": 2048 #TODO: Увеличить?
             }
             
@@ -199,9 +198,9 @@ class AIChunkCultivationWorker(QThread):
                 "mirostat_eta": 0.1
             }
 
-            system_content = "Ты аналитик рынка объявлений Avito. Твоя задача — свести данные в единый JSON."
+            system_content = "Ты аналитик рынка объявлений Авито. Твоя задача — свести данные в единый JSON."
             if self.user_instructions:
-                system_content += f"\n\nВАЖНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ:\n{self.user_instructions}\nОБЯЗАТЕЛЬНО СЛЕДУЙ ИМ."
+                system_content += f"\n\nВАЖНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ:\n{self.user_instructions}"
 
             messages = [
                 {"role": "system", "content": system_content},
@@ -228,7 +227,6 @@ class AIChunkCultivationWorker(QThread):
                 return
 
             text = response.strip()
-            
             if '```' in text:
                 match_json = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
                 if match_json:
@@ -421,7 +419,6 @@ class AIManager(QObject):
             logger.error(f"AI Health ошибка: {e}")
 
     def _save_items_to_database(self, items: List[Dict], context: Dict):
-        """Сохраняет все проанализированные items в raw_items для культивации."""
         if not self.memory_manager:
             return
 
@@ -638,14 +635,13 @@ class AIManager(QObject):
         if self.chat_worker and self.chat_worker.isRunning():
             self.chat_worker.wait()
 
-        sys_content = PromptBuilder.SYSTEM_BASE
+        sys_content = PromptBuilder.get_chat_system_prompt()
 
         if user_instructions:
             rules = "\n".join([f"- {r}" for r in user_instructions])
-            sys_content += f"\n\n[ТВОИ ГЛОБАЛЬНЫЕ ПРАВИЛА И ПРИОРИТЕТЫ]:\n{rules}"
+            sys_content += f"\n\n[ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]:\n{rules}"
 
-        # УЛУЧШЕНИЕ RAG: Ищем по истории, а не только по последнему сообщению
-        last_user_msgs = [m['content'] for m in messages if m['role'] == 'user'][-2:] # Берем 2 последних запроса
+        last_user_msgs = [m['content'] for m in messages if m['role'] == 'user'][-2:]
         search_context_query = " ".join(last_user_msgs).lower()
         
         db_search_context = ""
@@ -653,13 +649,11 @@ class AIManager(QObject):
 
         if self.memory_manager:
             import re
-            # Ключевые слова из последних 2 сообщений
             keywords = [w for w in re.split(r'\W+', search_context_query) if len(w) > 3 and w not in ['цена', 'сколько', 'стоит', 'привет']]
 
             if keywords:
-                search_query = " ".join(keywords[:3]) # Берем первые 3 уникальных слова
+                search_query = " ".join(keywords[:3])
                 
-                # 1. Поиск сырых данных
                 items = self.memory_manager.get_raw_items(search_query=search_query, limit=30)
                 if items:
                     prices = [i['price'] for i in items if i['price'] > 0]
@@ -671,7 +665,6 @@ class AIManager(QObject):
                             f"- Средняя цена: {avg_p} руб. (Мин: {min(prices)})\n"
                         )
 
-                # 2. Поиск в RAG (Knowledge)
                 rag_data = self.memory_manager.get_rag_context_for_item(search_query)
                 if rag_data:
                     q25 = rag_data.get('q25_price', 0)
@@ -684,14 +677,12 @@ class AIManager(QObject):
                         f"• Анализ: {rag_data.get('knowledge', '')[:200]}...\n"
                     )
 
-        # УЛУЧШЕНИЕ: Контекст таблицы через сводку
         table_context = ""
         if current_table_data:
             table_context = self._build_table_summary(current_table_data)
 
         final_system_content = (sys_content + "\n" + db_search_context + "\n" + table_context + rag_injection)
         
-        # Обрезка истории для экономии контекста
         MAX_HISTORY = 6
         trimmed_messages = messages[-MAX_HISTORY:]
         
