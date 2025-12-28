@@ -457,6 +457,7 @@ class AIManager(QObject):
 
         prompts_list = []
         rag_messages_list = []
+        interests = context.get('interests', "")
         search_mode = context.get('search_mode', 'full')
 
         self.start_ts = time.time()
@@ -466,7 +467,6 @@ class AIManager(QObject):
             prompts_list = [prompt] * len(items)
             rag_messages_list = [None] * len(items)
         else:
-            prio = context.get('priority', 1)
             instr = context.get('user_instructions', "")
             
             for item in items:
@@ -504,9 +504,10 @@ class AIManager(QObject):
                 )
 
                 p = PromptBuilder.build_analysis_prompt(
-                    items=similar_items, 
-                    current_item=item, 
-                    user_instructions=instr, 
+                    items=similar_items,
+                    current_item=item,
+                    user_instructions=instr,
+                    interests=interests,
                     rag_context=rag,
                     search_mode=search_mode
                 )

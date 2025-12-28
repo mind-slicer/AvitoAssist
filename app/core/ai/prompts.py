@@ -3,29 +3,12 @@ from typing import List, Dict, Optional
 
 
 class PromptBuilder:
-    HARDWARE_INTERESTS = """
-=== СПИСОК ИНТЕРЕСУЮЩЕГО ЖЕЛЕЗА ===
-1. ВИДЕОКАРТЫ:
-   - Nvidia: RTX 50/40/30/20 series, GTX 16xx/10xx.
-   - AMD: RX 9000/7000/6000/5000/500/400 series.
-2. ПРОЦЕССОРЫ:
-   - Intel: LGA 1851/1700/1200/1151(v1/v2)/1150/1155. Поколения: с 2-го по 15-е.
-   - AMD: AM5, AM4. Ryzen 1000-9000 series.
-3. МАТЕРИНСКИЕ ПЛАТЫ: Z/B/H чипсеты под указанные выше сокеты.
-4. ОПЕРАТИВНАЯ ПАМЯТЬ:
-   - DDR5.
-   - DDR4 (частоты 2133-4000+).
-5. НАКОПИТЕЛИ: NVMe M.2, SATA SSD (от 60gb до 1tb+), HDD (от 1tb).
-6. БЛОКИ ПИТАНИЯ: От 500W до 1000W+.
-7. ОХЛАЖДЕНИЕ: Башенные кулеры, СВО (водянка).
-8. ГОТОВЫЕ СБОРКИ, НОУТБУКИ, МОНИТОРЫ, КОРПУСА.
-===================================
-"""
+    # Base system prompt for analysis
+    SYSTEM_BASE = """Ты — профессиональный скупщик новой и Б/У компьютерной техники на Авито.
+Твоя цель — купить максимально дёшево у частника и быстро перепродать с маржей 20–50%.
 
-    SYSTEM_BASE = f"""Ты — профессиональный скупщик новой и Б/У компьютерной техники на Avito.
-Твоя цель — купить максимально дёшево у частника и быстро перепродать с маржей 20–50% .
-
-{HARDWARE_INTERESTS}
+[ТВОИ ИНТЕРЕСЫ И НИША]
+{interests_block}
 
 КЛЮЧЕВЫЕ ПРИОРИТЕТЫ:
 1. Максимизация маржи: ищи цены в нижнем квартиле рынка (q25_price) или ниже — это реальные цены от частников.
@@ -41,18 +24,19 @@ class PromptBuilder:
     - BAD — цена выше медианы, низкая ликвидность, подозрительное состояние, оверпрайс.
     - SCAM — цена в 2+ раза ниже q25 без причины, подозрительное описание объявления, много "воды" вне контекста товара, отказ от проверки.
 
-ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА — ТОЛЬКО ВАЛИДНЫЙ JSON БЕЗ ЛИШНЕГО ТЕКСТА:
+ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА — ТОЛЬКО JSON-ОБЪЕКТОМ БЕЗ ЛИШНЕГО ТЕКСТА:
 {{
   "verdict": "GREAT_DEAL" | "GOOD" | "BAD" | "SCAM",
-  "reason": "Краткое жёсткое объяснение на русском (6–12 слов)",
+  "reason": "Краткое объяснение на РУССКОМ языке для обычного пользователя. НЕ ИСПОЛЬЗУЙ слова 'квартиль', 'q25', 'медиана'. Пиши: 'отличная цена', 'низ рынка', 'дороговато', 'средняя цена'.",
   "market_position": "great_deal" | "good_zone" | "overpriced" | "scam_low",
-  "expected_margin_percent": 15–50,
-  "risks": ["риск1", "риск2"],
+  "risks": ["риск1", "риск2"] (если рисков нет — пустой список),
+  "defects": true (если есть явные дефекты) | false
   "recommendation": "Брать срочно" | "Можно взять" | "Пропустить" | "Избегать"
 }}
 """
     
-    NEURO_FILTER_TEMPLATE = f"""
+    # Search neuro-filter prompt
+    NEURO_FILTER_TEMPLATE = """
 Ты работаешь ЖЁСТКИМ фильтром объявлений Авито для скупщика компьютерной техники.
 Твоя задача — решить, стоит ли вообще рассматривать объявление.
 
@@ -66,8 +50,8 @@ class PromptBuilder:
 ПРАВИЛА ФИЛЬТРА:
 
 1. Вердикт может быть ТОЛЬКО:
-   - GOOD  — объявление подходит под запрос и критерии.
-   - BAD   — объявление не подходит или есть сомнения.
+   - GOOD — объявление подходит под запрос и критерии.
+   - BAD — объявление не подходит или есть сомнения.
 
 2. Всегда учитывай:
    - Заголовок и описание объявления.
@@ -76,7 +60,8 @@ class PromptBuilder:
 
 3. Доп. критерии (user_criteria) ВАЖНЕЕ нейросети:
    - Если пользователь просит "только по гарантии" — объявление считается подходящим ТОЛЬКО если гарантия
-     явно указана в тексте (слова типа "гарантия", "чек", "оставшаяся гарантия" и т.п.).
+     явно указана в тексте (слова типа "гарантия", "чек", "оставшаяся гарантия" и т.п.). Это пример, поэтому
+     учитывай любые требования пользователя.
    - Если критерий не выполнен ЯВНО — ставь BAD, даже если остальное выглядит неплохо.
    - Если критериев нет, используй пункты 1 и 2 фильтрации.
 
@@ -90,31 +75,21 @@ class PromptBuilder:
   "reason": "Краткое объяснение на русском, 1–2 предложения"
 }}
 
-НЕ добавляй никакой другой текст.
+Не добавляй никакой другой текст.
 """
     
     @staticmethod
-    def _build_market_stats(items: List[Dict], current_title: str) -> Dict:
+    def _build_market_stats(items: List[Dict]) -> Dict:
         default_stats = {
-            "sample_size": 0,
-            "avg": 0,
-            "med": 0,
-            "min": 0,
-            "max": 0,
-            "cnt": 0,
+            "sample_size": 0, "avg": 0, "med": 0, "min": 0, "max": 0, "cnt": 0,
         }
-
-        if not items or not current_title:
-            return default_stats
+        if not items: return default_stats
 
         prices = [
-            i.get("price", 0)
-            for i in items
-            if isinstance(i.get("price"), int) and i.get("price") > 500
+            i.get("price", 0) for i in items
+            if isinstance(i.get("price"), (int, float)) and i.get("price") > 50
         ]
-
-        if not prices:
-            return default_stats
+        if not prices: return default_stats
 
         return {
             "sample_size": len(prices),
@@ -126,103 +101,93 @@ class PromptBuilder:
         }
     
     @classmethod
-    def build_analysis_prompt(cls, items: List[Dict], current_item: Dict, user_instructions: str = "", rag_context: Optional[Dict] = None, search_mode: str = 'full') -> str:
-        stats = cls._build_market_stats(items, current_item.get('title'))
+    def build_analysis_prompt(cls, items: List[Dict], current_item: Dict, 
+                              user_instructions: str = "", interests: str = "",
+                              rag_context: Optional[Dict] = None, search_mode: str = 'full') -> str:
         
-        current_market_str = "Мало данных для статистики."
-        if stats['sample_size'] > 2:
+        stats = cls._build_market_stats(items)
+        
+        if stats['sample_size'] < 3:
+            current_market_str = "НЕТ ДОСТОВЕРНОЙ РЫНОЧНОЙ СТАТИСТИКИ в текущей выдаче. Не выдумывай цены. Опирайся на свои внутренние знания и RAG."
+        else:
             current_market_str = (
                 f"В ТЕКУЩЕЙ ВЫДАЧЕ (похожих лотов: {stats['cnt']}):\n"
                 f"- Диапазон: {stats['min']} - {max(stats['max'], 1)} руб.\n"
                 f"- Медиана: {stats['med']} руб. | Средняя: {stats['avg']} руб."
             )
 
-        rag_block = ""
-        rag_avg_price = 0
+        rag_block = "В памяти нет данных по этому товару."
         if rag_context:
             med = rag_context.get('median_price', 0)
             avg = rag_context.get('avg_price', 0)
-            rag_avg_price = avg
             knowledge = rag_context.get('knowledge', '')
             rag_block = (
-                f"ИЗ ПАМЯТИ (Исторический опыт):\n"
-                f"- Ист. Медиана: {med} руб.\n"
-                f"- Ист. Средняя: {avg} руб.\n"
+                f"ИЗ ПАМЯТИ:\n"
+                f"- Ист. Медиана: {med} руб. | Средняя: {avg} руб.\n"
                 f"- Знания: {knowledge}\n"
             )
-        else:
-            rag_block = "В памяти нет данных по этому товару."
 
         item_price = current_item.get('price', 0)
         item_views = current_item.get('views', 0)
         item_cond = str(current_item.get('condition', '')).lower()
         item_date = str(current_item.get('date_text', '')).lower()
-        
-        price_analysis = []
-        if item_price > 0 and stats['med'] > 0:
-            diff_table = ((item_price - stats['med']) / stats['med']) * 100
-            
-            if diff_table < -30:
-                price_analysis.append(f"ЭКСТРЕМАЛЬНО НИЗКАЯ ЦЕНА (на {abs(int(diff_table))}% ниже рынка). Внимание: высокий риск скама или дефекта!")
-            elif diff_table < -15:
-                price_analysis.append(f"Отличная цена (на {abs(int(diff_table))}% ниже рынка). Potentially GREAT_DEAL.")
-            elif diff_table < -5:
-                price_analysis.append(f"Цена немного ниже рынка (на {abs(int(diff_table))}%). Выгодно.")
-            elif diff_table > 30:
-                price_analysis.append(f"Оверпрайс (+{int(diff_table)}%). Игнорировать.")
-            elif diff_table > 10:
-                price_analysis.append(f"Дороже рынка (+{int(diff_table)}%). Торг обязателен.")
-            else:
-                price_analysis.append("Справедливая рыночная цена (Fair Price).")
-            
-            if rag_avg_price > 0:
-                diff_rag = ((item_price - rag_avg_price) / rag_avg_price) * 100
-                if diff_rag < -20: 
-                    price_analysis.append(f"(Также дешевле исторических данных на {abs(int(diff_rag))}%).")
 
-        price_str = " ".join(price_analysis) if price_analysis else "Цена не определена или мало данных."
-
-        # --- Логика ПРОСМОТРОВ ---
         views_analysis = "Просмотры в норме."
+        display_views = str(item_views)
+        
         if search_mode == 'primary':
-            views_analysis = "Просмотры: Нет данных (быстрый поиск). Не используй это как фактор."
+            display_views = "N/A (Данные недоступны в быстром поиске)"
+            views_analysis = "Просмотры: Нет данных. Игнорируй этот фактор."
         else:
             if item_views == 0:
                 views_analysis = "0 просмотров: Только что выложено. Шанс забрать первым!"
             elif item_views < 50:
                  views_analysis = "Мало просмотров: объявление свежее или не популярное."
             elif item_views > 750 and item_price < stats['med'] * 0.8:
-                views_analysis = f"ТРЕВОГА: {item_views} просмотров при низкой цене. Почему еще не купили? Проверь на скам/дефекты."
+                views_analysis = f"ТРЕВОГА: {item_views} просмотров при низкой цене."
         
-        # --- Логика СОСТОЯНИЯ ---
+        price_analysis = []
+        if item_price > 0 and stats['med'] > 0:
+            diff_table = ((item_price - stats['med']) / stats['med']) * 100
+
+            if diff_table < -30: price_analysis.append("Экстремально низкая цена.")
+            elif diff_table < -15: price_analysis.append("Отличная цена (низ рынка).")
+            elif diff_table < -5: price_analysis.append("Цена немного ниже рынка.")
+            elif diff_table > 30: price_analysis.append("Оверпрайс.")
+            elif diff_table > 10: price_analysis.append("Дороже рынка.")
+            else: price_analysis.append("Справедливая цена.")
+
+        price_str = " ".join(price_analysis) if price_analysis else "Цена не определена или мало данных."
+        
         cond_bonus = ""
         if any(x in item_cond for x in ['нов', 'new', 'идеал', 'запеч']):
             cond_bonus = "БОНУС: Состояние указано как НОВОЕ/ИДЕАЛ."
         elif any(x in item_cond for x in ['запчаст', 'сломан', 'дефект', 'не рабоч', 'разбит']):
             cond_bonus = "МИНУС: Товар сломан или на запчасти. Понижай оценку (если не ищем лом)."
 
-        # --- Логика ДАТЫ ---
         date_analysis = ""
         if any(x in item_date for x in ['сегодня', 'час', 'мин', 'сек']):
-            date_analysis = "ДАТА: Только что (Очень актуально)."
+            date_analysis = "ДАТА: Только что."
         elif any(x in item_date for x in ['вчера']):
-            date_analysis = "ДАТА: Свежее (Вчера)."
+            date_analysis = "ДАТА: Свежее."
         elif any(x in item_date for x in ['недел', 'месяц']):
             if '3 недел' in item_date or '4 недел' in item_date or 'месяц' in item_date:
-                date_analysis = "ДАТА: СТАРОЕ (>20 дней). Вероятно, неликвид или продано."
+                date_analysis = "ДАТА: Старое (>20 дней). Вероятно, неликвид или продано."
         else:
             pass
+        
+        final_system = cls.SYSTEM_BASE.format(interests_block=interests if interests else "Интересы не заданы, анализируй любые ликвидные товары.")
 
-        # СБОРКА ПРОМПТА
+        # Prompt for a single element of analysis
         return f"""
-{cls.SYSTEM_BASE}
+{final_system}
 
 [ОБЪЕКТ АНАЛИЗА]
 Товар: "{current_item.get('title')}"
 Цена: {item_price} руб.
 Город: {current_item.get('city', 'N/A')}
 Состояние: {current_item.get('condition', 'N/A')}
-Дата: {item_date} | Просмотры: {item_views}
+Дата: {item_date} | Просмотры: {display_views}
 Описание:
 \"\"\"
 {current_item.get('description', '')[:2000]}
@@ -241,11 +206,11 @@ class PromptBuilder:
 [ИНСТРУКЦИИ ДЛЯ LLM]
 1. ЦЕНА: Опирайся на подсказки анализатора, среднее по Таблице и Памяти. Если цена "Экстремально низкая" — ищи подвох. Если "Отличная" — GREAT_DEAL.
 2. ОПИСАНИЕ: Внимательно читай описание! Ищи скрытые дефекты ("после майнинга", "без проверки"), которые отменяют низкую цену.
-3. ДАТА: Если объявление старое (>30 дней) и цена хорошая — это подозрительно (почему не купили?). Снижай оценку.
+3. ДАТА: Если объявление старое (>30 дней) и цена хорошая — это подозрительно. Снижай оценку.
 4. СОСТОЯНИЕ: "Новое" лучше "Б/У". "На запчасти" — это BAD (если не просили иное).
 5. РЕЖИМ ПОИСКА: Если указано "Нет данных по просмотрам", не выдумывай их влияние.
 
-[ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ (ПРИОРИТЕТ ВЫШЕ ВСЕГО!)]
+[ПРИОРИТЕТНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]
 {user_instructions}
 
 [ФОРМАТ ОТВЕТА (JSON)]
@@ -280,8 +245,8 @@ class PromptBuilder:
         user_criteria = (user_criteria or "").strip()
         if not user_criteria:
             criteria_block = (
-                "НЕТ дополнительных критериев. Оцени объявление ТОЛЬКО по поисковым тегам "
-                "и бан-словам, строго следуя правилам фильтра выше."
+                "Нет дополнительных критериев. Оцени объявление только по поисковым тегам "
+                "бан-словам и описанию объявления, строго следуя правилам фильтра выше."
             )
         else:
             criteria_block = (
@@ -296,7 +261,8 @@ class PromptBuilder:
             user_criteria=criteria_block,
         )
 
-class ChunkCultivationPrompts: 
+
+class ChunkCultivationPrompts:
     @staticmethod
     def build_product_cultivation_prompt(product_key: str, items: list) -> str:  
         items_text = ""

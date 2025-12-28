@@ -233,9 +233,7 @@ class ParserController(QObject):
 
         return True
 
-    def maybe_start_post_ai_analysis(
-            self, results: List[Dict], config: Dict, queue_idx: int, is_split: bool
-        ) -> bool:
+    def maybe_start_post_ai_analysis(self, results: List[Dict], config: Dict, queue_idx: int, is_split: bool) -> bool:
         if not results: return False
         include_ai = config.get('include_ai', False)
         store_in_memory = config.get('store_in_memory', False)
@@ -245,22 +243,15 @@ class ParserController(QObject):
             
         if store_in_memory and not include_ai:
             if self.memory_manager:
-                logger.info(f"Сохранение {len(results)} товаров в память (без AI анализа)...")
+                logger.info(f"Сохранение {len(results)} товаров в память...")
                 for item in results:
                     self.memory_manager.add_item(item)
             return False
 
-        user_instructions = "" 
+        user_instructions = ""
+        user_interests = config.get('interests', "")
 
-        search_tags = config.get('search_tags', [])
         has_rag = config.get('store_in_memory', False)
-        
-        priority = PromptBuilder.select_priority(
-            table_size=len(results),
-            user_instructions=user_instructions,
-            has_rag=has_rag,
-            search_tags=search_tags
-        )
         
         ai_debug = config.get('ai_debug_mode', False)
         store = config.get('store_in_memory', False)
@@ -275,8 +266,8 @@ class ParserController(QObject):
             "is_split": is_split,
             "store_in_memory": store,
             "include_ai": include_ai,
-            "priority": priority,
             "user_instructions": user_instructions,
+            "interests": user_interests,
             "has_rag": has_rag,
             "search_mode": search_mode,
             "items": results,
@@ -374,7 +365,7 @@ class ParserController(QObject):
         self.ui_lock_requested.emit(False)
         self.scan_finished.emit(categories)
     
-    def start_manual_ai_analysis(self, items: List[Dict], prompt: str, debug_mode: bool = False, store_in_memory: bool = False):
+    def start_manual_ai_analysis(self, items: List[Dict], prompt: str, debug_mode: bool = False, store_in_memory: bool = False, interests: str = ""):
         if not items:
             self.error_occurred.emit("Нет элементов для анализа")
             return
@@ -391,6 +382,7 @@ class ParserController(QObject):
             "store_in_memory": store_in_memory,
             "include_ai": True,
             "user_instructions": user_instructions,
+            "interests": interests,
             "has_rag": False,
             "items": items,
         }
@@ -416,33 +408,6 @@ class ParserController(QObject):
             ai_debug = self.queue_state.queues_config[queue_idx].get('ai_debug_mode', False)
 
         self._run_ai_process(items, prompt, debug_mode=ai_debug, context=context)
-
-    # TODO: not being called by anyone?
-    def _start_ai_analysis(self, items: List[Dict], prompt: str, parallel: bool, queue_idx: int, is_split: bool, store_in_memory: bool = False):
-        context = {
-            'mode': 'analysis',
-            'offset': 0,
-            'parallel': parallel,
-            'queue_idx': queue_idx,
-            'is_split': is_split,
-            'store_in_memory': store_in_memory,
-        }
-
-        ai_debug = False
-        if 0 <= queue_idx < len(self.queue_state.queues_config):
-            cfg = self.queue_state.queues_config[queue_idx]
-            ai_debug = cfg.get('ai_debug_mode', False)
-
-        if parallel:
-            self._run_ai_process(items, prompt=None, debug_mode=ai_debug, context=context)
-            if self.queue_state.is_sequence_running:
-                QTimer.singleShot(100, lambda: self._execute_queue(queue_idx + 1))
-            else:
-                self.queue_state.waiting_for_ai_sequence = True
-                self._run_ai_process(items, prompt=None, debug_mode=ai_debug, context=context)
-        else:
-            self.queue_state.waiting_for_ai_sequence = True
-            self._run_ai_process(items, prompt=None, debug_mode=ai_debug, context=context)
 
     def _run_ai_process(self, items: List[Dict], prompt: str, debug_mode: bool, context: Dict):
         if not items: return

@@ -4,7 +4,7 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit,
-    QTextEdit, QSizePolicy
+    QTextEdit, QSizePolicy, QTabWidget, QPlainTextEdit, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent
 from PyQt6.QtGui import QTextOption
@@ -12,6 +12,27 @@ from PyQt6.QtGui import QTextOption
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.core.log_manager import logger
 from app.config import BASE_APP_DIR
+
+
+# Default main points of interest
+DEFAULT_INTERESTS_TEXT = """
+=== СПИСОК ИНТЕРЕСУЮЩЕГО ЖЕЛЕЗА ===
+1. ВИДЕОКАРТЫ:
+- Nvidia: RTX 50/40/30/20 серии, GTX 16xx/10xx серии.
+- AMD: RX 9000/7000/6000/5000/500/400 серии.
+2. ПРОЦЕССОРЫ:
+- Intel: LGA 1851/1700/1200/1151(v1/v2)/1150/1155. Поколения: с 2-го по 15-е.
+- AMD: AM5, AM4. Ryzen 1000-9000 серии.
+3. МАТЕРИНСКИЕ ПЛАТЫ: все чипсеты под указанные выше сокеты.
+4. ОПЕРАТИВНАЯ ПАМЯТЬ:
+- DDR5.
+- DDR4 (частоты 2133-4000+).
+5. НАКОПИТЕЛИ: NVMe M.2, SATA SSD (от 60gb до 1tb+), HDD (от 1tb).
+6. БЛОКИ ПИТАНИЯ: От 500W до 1000W+.
+7. ОХЛАЖДЕНИЕ: Башенные кулеры, СВО/СЖО (водяное/жидкостное охлаждение, водянка).
+8. ДРУГОЕ: Готовые сборки ПК, мониторы, ноутбуки, корпуса.
+"""
+
 
 class ChunkCard(QFrame):    
     deleted = pyqtSignal(int)
@@ -346,21 +367,40 @@ class AIMemoryPanel(QWidget):
         columns_layout.addLayout(left_col, stretch=3)
         
         right_col = QFrame()
-        right_col.setFixedWidth(320)
+        right_col.setFixedWidth(340) # Чуть шире для удобства
         right_col.setStyleSheet(Components.panel())
         right_vbox = QVBoxLayout(right_col)
-        
-        instr_lbl = QLabel("ИНСТРУКЦИИ ИИ")
-        instr_lbl.setStyleSheet(Components.subsection_title())
-        right_vbox.addWidget(instr_lbl)
+        right_vbox.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
 
+        # Создаем табы
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: none; }}
+            QTabBar::tab {{
+                background: {Palette.BG_DARK_3};
+                color: {Palette.TEXT_MUTED};
+                padding: 6px 10px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }}
+            QTabBar::tab:selected {{
+                background: {Palette.BG_DARK_2};
+                color: {Palette.PRIMARY};
+                border-bottom: 2px solid {Palette.PRIMARY};
+            }}
+        """)
+
+        # --- ТАБ 1: ИНСТРУКЦИИ (Старая логика) ---
+        tab_instr = QWidget()
+        tab_instr_layout = QVBoxLayout(tab_instr)
+        tab_instr_layout.setContentsMargins(0, 5, 0, 0)
+        
         self.instr_scroll = QScrollArea()
         self.instr_scroll.setWidgetResizable(True)
         self.instr_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.instr_scroll.setStyleSheet("background: transparent; border: none;")
+        self.instr_scroll.setStyleSheet("background: transparent;")
         
         self.instr_container = QWidget()
-        self.instr_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.instr_container.setStyleSheet("background: transparent;")
         self.instr_layout = QVBoxLayout(self.instr_container)
         self.instr_layout.setSpacing(10)
@@ -368,16 +408,59 @@ class AIMemoryPanel(QWidget):
         self.instr_layout.addStretch()
         
         self.instr_scroll.setWidget(self.instr_container)
-        right_vbox.addWidget(self.instr_scroll)
+        tab_instr_layout.addWidget(self.instr_scroll)
         
         self.new_instr_edit = QLineEdit()
         self.new_instr_edit.setPlaceholderText("Добавить инструкцию...")
         self.new_instr_edit.setStyleSheet(Components.text_input())
         self.new_instr_edit.returnPressed.connect(self.add_instruction_manual)
-        right_vbox.addWidget(self.new_instr_edit)
+        tab_instr_layout.addWidget(self.new_instr_edit)
         
+        self.right_tabs.addTab(tab_instr, "Инструкции")
+
+        # --- ТАБ 2: ИНТЕРЕСЫ / ПРОМПТ (Новая логика) ---
+        tab_interests = QWidget()
+        tab_int_layout = QVBoxLayout(tab_interests)
+        tab_int_layout.setContentsMargins(0, 5, 0, 0)
+        
+        # Хедер с чекбоксом редактирования и подсказкой
+        int_header = QHBoxLayout()
+        self.chk_edit_interests = QCheckBox("Редактировать")
+        self.chk_edit_interests.setStyleSheet(Components.styled_checkbox())
+        self.chk_edit_interests.stateChanged.connect(self._on_edit_interests_toggled)
+        
+        info_btn = QLabel("ⓘ")
+        info_btn.setToolTip("Здесь вы описываете, ЧТО именно вы ищете.\nНейросеть будет использовать этот список как 'фильтр интересов'.\n\nМожно писать что угодно: 'Ищу старые монеты', 'Гитары Fender', 'Автомобили BMW'.")
+        info_btn.setStyleSheet(f"color: {Palette.PRIMARY}; font-weight: bold;")
+        
+        int_header.addWidget(self.chk_edit_interests)
+        int_header.addStretch()
+        int_header.addWidget(info_btn)
+        tab_int_layout.addLayout(int_header)
+        
+        self.interests_edit = QPlainTextEdit()
+        self.interests_edit.setPlainText(DEFAULT_INTERESTS_TEXT)
+        self.interests_edit.setReadOnly(True)
+        self.interests_edit.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {Palette.BG_DARK_3};
+                color: {Palette.TEXT_MUTED};
+                border: 1px solid {Palette.BORDER_PRIMARY};
+                border-radius: 4px;
+                padding: 5px;
+            }}
+        """)
+        tab_int_layout.addWidget(self.interests_edit)
+        
+        self.right_tabs.addTab(tab_interests, "Интересы")
+
+        right_vbox.addWidget(self.right_tabs)
         columns_layout.addWidget(right_col)
+        
         layout.addLayout(columns_layout)
+        
+        # Загружаем сохраненные интересы
+        self._load_interests_from_disk()
 
     def add_instruction_manual(self):
         text = self.new_instr_edit.text().strip()
@@ -471,6 +554,47 @@ class AIMemoryPanel(QWidget):
                 self.add_instruction_manual()
         except Exception:
             pass
+    
+    def _on_edit_interests_toggled(self, state):
+        is_editable = (state == Qt.CheckState.Checked.value) or (state == 2)
+        self.interests_edit.setReadOnly(not is_editable)
+        
+        if is_editable:
+            self.interests_edit.setStyleSheet(Components.text_input())
+            self.interests_edit.setFocus()
+        else:
+            self.interests_edit.setStyleSheet(f"""
+                QPlainTextEdit {{
+                    background-color: {Palette.BG_DARK_3};
+                    color: {Palette.TEXT_MUTED};
+                    border: 1px solid {Palette.BORDER_PRIMARY};
+                    border-radius: 4px;
+                    padding: 5px;
+                }}
+            """)
+            self._save_interests_to_disk()
+
+    def get_interests_text(self) -> str:
+        return self.interests_edit.toPlainText().strip()
+
+    def _save_interests_to_disk(self):
+        text = self.get_interests_text()
+        path = os.path.join(BASE_APP_DIR, "user_interests.txt")
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(text)
+        except Exception as e:
+            logger.error(f"Failed to save interests: {e}")
+
+    def _load_interests_from_disk(self):
+        path = os.path.join(BASE_APP_DIR, "user_interests.txt")
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    text = f.read()
+                if text.strip():
+                    self.interests_edit.setPlainText(text)
+            except: pass
 
     def eventFilter(self, obj, event):
         if obj == self.info_icon and event.type() == QEvent.Type.ToolTip:

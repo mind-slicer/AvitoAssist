@@ -632,7 +632,6 @@ class MainWindow(QWidget):
         
         first_config = active_configs[0]
         
-        # Если разделение ВЫКЛЮЧЕНО (глобально) - готовим один общий файл
         if not global_split_mode:
             merge_file = first_config.get("merge_with_table")
             if merge_file and os.path.exists(merge_file):
@@ -647,16 +646,20 @@ class MainWindow(QWidget):
         
         base_count = len(self.current_results or [])
         
+        user_instr = self._get_current_ai_instructions()
+        user_interests = ""
+        if hasattr(self, 'memory_panel'):
+            user_interests = self.memory_panel.get_interests_text()
+
         for cfg in active_configs:
             cfg['debug_mode'] = self.app_settings.get('debug_mode', False)
             cfg['ai_debug_mode'] = self.app_settings.get('ai_debug', False)
             cfg['user_instructions'] = user_instr
+            cfg['interests'] = user_interests
             
-            # Назначаем целевую таблицу в зависимости от глобального режима
             if not global_split_mode:
                 cfg['context_table'] = self.current_json_file
             else:
-                # В режиме сплита проверяем персональную таблицу очереди
                 custom_table = cfg.get('merge_with_table')
                 if custom_table and os.path.exists(custom_table):
                     cfg['context_table'] = custom_table
@@ -1366,15 +1369,18 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Ошибка", "Таблица пуста!")
             return
 
-        user_criteria = ""
+        user_interests = ""
+        if hasattr(self, 'memory_panel'):
+            user_interests = self.memory_panel.get_interests_text()
 
         logger.info(f"Запуск анализа для {len(items)} элементов...")
         
         self.controller.start_manual_ai_analysis(
             items=items,
-            prompt=user_criteria, 
+            prompt="", 
             debug_mode=self.app_settings.get("ai_debug", False),
-            store_in_memory=self.controls_widget.get_parameters().get("store_in_memory", False)
+            store_in_memory=self.controls_widget.get_parameters().get("store_in_memory", False),
+            interests=user_interests
         )
 
     def on_add_to_memory_requested(self, items: List[Dict]):
@@ -1536,15 +1542,19 @@ class MainWindow(QWidget):
             self.on_export_table_requested(items)
 
     def on_analyze_item_requested(self, item: Dict):
-        user_criteria = ""
         
         logger.info(f"Запуск анализа для элемента {item.get('id', 'N/A')}...")
+
+        user_interests = ""
+        if hasattr(self, 'memory_panel'):
+            user_interests = self.memory_panel.get_interests_text()
         
         self.controller.start_manual_ai_analysis(
             items=[item],
-            prompt=user_criteria,
+            prompt="",
             debug_mode=self.app_settings.get("ai_debug", False),
-            store_in_memory=self.controls_widget.get_parameters().get("store_in_memory", False)
+            store_in_memory=self.controls_widget.get_parameters().get("store_in_memory", False),
+            interests=user_interests
         )
 
     def on_addmemory_item_requested(self, item: Dict):
@@ -1672,7 +1682,8 @@ class MainWindow(QWidget):
         store_in_memory = config.get("store_in_memory", False)
 
         if filtered and (include_ai or store_in_memory):
-            user_instructions = "" 
+            user_instructions = ""
+            user_interests = config.get('interests', "")
             ai_debug = config.get("ai_debug_mode", False)
 
             self.controller.start_manual_ai_analysis(
@@ -1680,6 +1691,7 @@ class MainWindow(QWidget):
                 prompt=user_instructions,
                 debug_mode=ai_debug,
                 store_in_memory=store_in_memory,
+                interests=user_interests
             )
 
     def _refresh_merge_targets(self):
@@ -1824,6 +1836,10 @@ class MainWindow(QWidget):
         if hasattr(self, 'controls_widget') and hasattr(self.controls_widget, "split_results_sw"):
             self.app_settings["global_split_results"] = self.controls_widget.split_results_sw.isChecked()
         self._save_settings()
+
+        if hasattr(self, 'memory_panel'):
+            self.memory_panel.save_instructions_to_disk()
+            self.memory_panel._save_interests_to_disk()
 
         if hasattr(self, 'tracker'):
             self.tracker.stop()
