@@ -1,7 +1,9 @@
 from __future__ import annotations
 from enum import Enum
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 from datetime import datetime
+import json
+
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 from app.core.log_manager import logger
@@ -93,8 +95,15 @@ class ChunkCultivationManager(QObject):
     def _evaluate_triggers(self, chunk: Dict) -> Optional[ChunkCultivationTrigger]:
         if self._check_time_trigger(chunk):
             return ChunkCultivationTrigger.TIME_ELAPSED
+        
         if self._check_data_volume_trigger(chunk):
             return ChunkCultivationTrigger.DATA_VOLUME
+            
+        # НОВОЕ: Проверка отклонения рынка
+        if self._check_market_deviation(chunk):
+            logger.warning(f"Чанк {chunk.get('id')} устарел из-за изменения цен!", token="ai-cult")
+            return ChunkCultivationTrigger.DATA_VOLUME # Используем тот же триггер для перезапуска
+            
         return None
 
     def _check_time_trigger(self, chunk: Dict) -> bool:
@@ -166,6 +175,38 @@ class ChunkCultivationManager(QObject):
             else:
                 self.memory.update_chunk_status(chunk_id, 'FAILED')
             logger.error(f"Chunk {chunk_id} permanently failed after {MAX_RETRIES} attempts", token="ai-cult")
+
+    def _check_market_deviation(self, chunk: Dict) -> bool:
+        """Проверяет, не ушел ли рынок далеко от сохраненных знаний."""
+        try:
+            content = chunk.get('content') or {}
+            if isinstance(content, str): content = json.loads(content)
+            
+            stored_avg = content.get('analysis', {}).get('price_analysis', {}).get('avg', 0)
+            if not stored_avg: 
+                return False
+                
+            # Получаем свежие данные по ключу чанка
+            key = chunk.get('chunk_key')
+            chunk_type = chunk.get('chunk_type')
+            
+            if chunk_type == 'PRODUCT':
+                items = self.memory.find_similar_items(key, limit=20)
+                if not items: return False
+                
+                prices = [i['price'] for i in items if i.get('price', 0) > 0]
+                if len(prices) < 5: return False
+                
+                current_avg = sum(prices) / len(prices)
+                
+                # Если отклонение > 25%, считаем чанк устаревшим
+                deviation = abs(current_avg - stored_avg) / stored_avg
+                return deviation > 0.25
+                
+        except Exception:
+            return False
+            
+        return False
 
     def _build_cultivation_prompt(self, chunk: Dict) -> str:
         chunk_type = chunk.get("chunk_type")

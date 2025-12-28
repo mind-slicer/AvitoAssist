@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import QStyledItemDelegate
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QFont
-from app.ui.styles import Palette, Typography
+from app.ui.styles import Palette
 
 class AIDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index):

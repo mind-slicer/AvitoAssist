@@ -597,91 +597,104 @@ class AIManager(QObject):
         worker.error_signal.connect(self.error_signal.emit)
         worker.start()
 
+    def _build_table_summary(self, items: List[Dict]) -> str:
+        if not items:
+            return "Таблица пуста."
+        
+        total = len(items)
+        prices = [i.get('price', 0) for i in items if i.get('price', 0) > 0]
+        
+        if not prices:
+            return f"В таблице {total} объявлений (цены не указаны)."
+            
+        avg_price = sum(prices) // len(prices)
+        min_price = min(prices)
+        max_price = max(prices)
+        
+        from collections import Counter
+        cat_counts = Counter()
+        for i in items:
+            title = i.get('title', '').split()
+            if title:
+                key = " ".join(title[:2]).lower()
+                cat_counts[key] += 1
+                
+        top_cats = ", ".join([f"{k} ({v})" for k, v in cat_counts.most_common(3)])
+        
+        return (
+            f"[СВОДКА ТЕКУЩЕЙ ТАБЛИЦЫ]\n"
+            f"Всего товаров: {total}\n"
+            f"Ценовой диапазон: {min_price} - {max_price} руб. (Средняя: {avg_price} руб.)\n"
+            f"Топ категорий: {top_cats}\n"
+            f"Примеры лотов: {items[0].get('title')} ({items[0].get('price')}р), {items[-1].get('title')}..."
+        )
+
     def start_chat_request(self, messages: list, user_instructions: list = None, current_table_data: list = None):
         self.ensure_server()
         if not self._server_ready:
-            self.server_ready_signal.connect(lambda: self.start_chat_request(messages, user_instructions), Qt.ConnectionType.SingleShotConnection)
+            self.server_ready_signal.connect(lambda: self.start_chat_request(messages, user_instructions, current_table_data), Qt.ConnectionType.SingleShotConnection)
             return
-            
+
         if self.chat_worker and self.chat_worker.isRunning():
             self.chat_worker.wait()
 
         sys_content = PromptBuilder.SYSTEM_BASE
-        
+
         if user_instructions:
             rules = "\n".join([f"- {r}" for r in user_instructions])
             sys_content += f"\n\n[ТВОИ ГЛОБАЛЬНЫЕ ПРАВИЛА И ПРИОРИТЕТЫ]:\n{rules}"
 
-        last_msg = messages[-1]['content'].lower()
-        db_search_context = ""
+        # УЛУЧШЕНИЕ RAG: Ищем по истории, а не только по последнему сообщению
+        last_user_msgs = [m['content'] for m in messages if m['role'] == 'user'][-2:] # Берем 2 последних запроса
+        search_context_query = " ".join(last_user_msgs).lower()
         
+        db_search_context = ""
+        rag_injection = ""
+
         if self.memory_manager:
             import re
-            keywords = [w for w in re.split(r'\W+', last_msg) if len(w) > 3 and w not in ['цена', 'сколько', 'стоит']]
-            
+            # Ключевые слова из последних 2 сообщений
+            keywords = [w for w in re.split(r'\W+', search_context_query) if len(w) > 3 and w not in ['цена', 'сколько', 'стоит', 'привет']]
+
             if keywords:
-                search_query = " ".join(keywords[:2])
-                items = self.memory_manager.get_raw_items(search_query=search_query, limit=50)
+                search_query = " ".join(keywords[:3]) # Берем первые 3 уникальных слова
                 
+                # 1. Поиск сырых данных
+                items = self.memory_manager.get_raw_items(search_query=search_query, limit=30)
                 if items:
                     prices = [i['price'] for i in items if i['price'] > 0]
                     if prices:
                         avg_p = sum(prices) // len(prices)
-                        min_p = min(prices)
-                        
                         db_search_context = (
-                            f"\n[ГЛОБАЛЬНАЯ БАЗА ЗНАНИЙ ПО ЗАПРОСУ '{search_query}']:\n"
+                            f"\n[ПОИСК В БАЗЕ ПО '{search_query}']:\n"
                             f"- Найдено лотов: {len(items)}\n"
-                            f"- Диапазон цен: {min_p} - {max(prices)} руб.\n"
-                            f"- Средняя цена: {avg_p} руб.\n"
-                            f"- Примеры: {', '.join([i['title'][:30] for i in items[:3]])}..."
+                            f"- Средняя цена: {avg_p} руб. (Мин: {min(prices)})\n"
                         )
 
+                # 2. Поиск в RAG (Knowledge)
+                rag_data = self.memory_manager.get_rag_context_for_item(search_query)
+                if rag_data:
+                    q25 = rag_data.get('q25_price', 0)
+                    median = rag_data.get('median_price', 0)
+                    
+                    rag_injection = (
+                        f"\n\n[ЗНАНИЯ RAG ПО '{search_query}']\n"
+                        f"• Справедливая цена (частник): ~{q25:,} руб.\n"
+                        f"• Рыночная медиана: {median:,} руб.\n"
+                        f"• Анализ: {rag_data.get('knowledge', '')[:200]}...\n"
+                    )
+
+        # УЛУЧШЕНИЕ: Контекст таблицы через сводку
         table_context = ""
         if current_table_data:
-            titles = [f"• {i.get('title')} ({i.get('price')}р)" for i in current_table_data[:15]]
-            table_context = (
-                f"\n[КОНТЕКСТ ТЕКУЩЕЙ ТАБЛИЦЫ (первые 15 лотов)]:\n"
-                + "\n".join(titles) +
-                f"\nВсего в таблице: {len(current_table_data)} объявлений."
-            )
+            table_context = self._build_table_summary(current_table_data)
 
-        last_msg = messages[-1]['content'].lower() if messages else ""
-        is_market_query = any(w in last_msg for w in ['цена', 'сколько', 'рынок', 'стоит', 'стоимость', 'почем', 'анализ', 'статистика', 'средняя', 'медиана'])
+        final_system_content = (sys_content + "\n" + db_search_context + "\n" + table_context + rag_injection)
         
-        rag_injection = ""
-        if is_market_query and self.memory_manager:
-            logger.info("Чат: Запрос данных из памяти...", token="ai_chat")
-            
-            search_key = last_msg[:60]
-            rag_data = self.memory_manager.get_rag_context_for_item(search_key)
-            
-            if rag_data:
-                q25 = rag_data.get('q25_price', rag_data.get('median_price', 0))
-                median = rag_data.get('median_price', 0)
-                sample = rag_data.get('sample_count', 0)
-                
-                rag_injection = (
-                    f"\n\n[АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ПАМЯТИ ПО ТОВАРУ]\n"
-                    f"• Лотов в базе: {sample}\n"
-                    f"• Нижний квартиль (цель для выгодной покупки): {q25:,} руб.\n"
-                    f"• Медиана рынка: {median:,} руб.\n"
-                    f"ВАЖНО: Ориентируйся именно на {q25:,} руб. как на цену от частников. "
-                    f"Всё выше — часто перекупы.\n"
-                    f"Используй эти цифры в ответах обязательно!"
-                )
-            else:
-                rag_injection = "\n\n[ПАМЯТЬ]: По этому товару пока недостаточно данных в базе."
-
-        MAX_HISTORY = 5 #TODO: Увеличить?
-        trimmed_messages = messages[-MAX_HISTORY:] if len(messages) > MAX_HISTORY else messages
-
-        MAX_MSG_LENGTH = 1000 #TODO: Увеличить?
-        for msg in trimmed_messages:
-            if len(msg.get('content', '')) > MAX_MSG_LENGTH:
-                msg['content'] = msg['content'][:MAX_MSG_LENGTH] + "...[обрезано]"
-
-        final_system_content = (sys_content + db_search_context + table_context + rag_injection)
+        # Обрезка истории для экономии контекста
+        MAX_HISTORY = 6
+        trimmed_messages = messages[-MAX_HISTORY:]
+        
         final_messages = [{"role": "system", "content": final_system_content}]
         for m in trimmed_messages:
             if m['role'] != 'system':

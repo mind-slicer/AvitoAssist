@@ -2,7 +2,6 @@ import json
 from PyQt6.QtWidgets import QTableView, QHeaderView, QTableWidgetItem, QToolTip, QApplication, QStyledItemDelegate, QMessageBox
 from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QRect
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QPainter, QCursor
-from datetime import datetime, timedelta
 from app.ui.models.results_model import ResultsModel
 from app.ui.delegates.ai_delegate import AIDelegate
 from app.ui.delegates.actions_delegate import ActionsDelegate
@@ -149,9 +148,9 @@ class VerdictItem(QTableWidgetItem):
             self.reason = str(data.get("reason", ""))
             self.defects = bool(data.get("defects", False))
             self.market_position = str(data.get("market_position", "")).lower()
+            self.thinking = str(data.get("thinking", ""))
 
         except Exception:
-            # Fallback
             self.verdict = "UNKNOWN"
             self.reason = "Ошибка чтения ответа AI"
         
@@ -176,10 +175,12 @@ class VerdictItem(QTableWidgetItem):
         tooltip = f"""
         <b>ВЕРДИКТ: {v_str}</b>
         <hr>
-        <b>📝 Анализ:</b><br>{self.reason}
-        <br><br>
         """
-        
+        if self.thinking:
+             tooltip += f"<i>💭 Мысли: {self.thinking[:200]}...</i><br><hr>"
+
+        tooltip += f"<b>📝 Анализ:</b><br>{self.reason}<br><br>"
+
         if self.market_position:
             m_text = "В рынке"
             if self.market_position == "below_market": m_text = "Ниже рынка (Выгодно)"
