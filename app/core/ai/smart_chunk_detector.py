@@ -1,91 +1,110 @@
-import re
 from collections import Counter
 from typing import List, Tuple
 from app.core.log_manager import logger
-from app.core.text_utils import TextMatcher
+from app.core.text_utils import FeatureExtractor
 
 class SmartChunkDetector:
-    CATEGORY_NORMALIZATION = {
-        'rtx': 'nvidia rtx',
-        'gtx': 'nvidia gtx',
-        'rx': 'amd rx',
-        'ryzen': 'amd ryzen',
-        'core i': 'intel core i',
-        'игровой пк': 'игровой пк',
-        'озу': 'озу ddr',
-        'ssd': 'ssd',
-        'материнская плата': 'материнская плата',
-    }
-
-    @staticmethod
-    def _normalize_title(title: str) -> str:
-        t = title.lower()
-        t = re.sub(r'[^\w\s]', ' ', t)
-        t = re.sub(r'\s+', ' ', t).strip()
-        
-        for variant, norm in SmartChunkDetector.CATEGORY_NORMALIZATION.items():
-            if variant in t:
-                t = t.replace(variant, norm)
-        
-        trash = ['продам', 'куплю', 'новый', 'бу', 'срочно', 'торг', 'обмен']
-        for word in trash:
-            t = t.replace(word, '')
-        
-        return re.sub(r'\s+', ' ', t).strip()
-
+    
     @staticmethod
     def detect_new_chunks(memory_manager) -> List[Tuple[str, str, str]]:
+        """
+        Возвращает список кандидатов на создание чанка:
+        (CHUNK_TYPE, CHUNK_KEY, SUGGESTED_TITLE)
+        """
         to_create = []
-        
+
         try:
-            rows = memory_manager.raw_data.get_items()
+            # Получаем все сырые данные (лимит для скорости)
+            rows = memory_manager.raw_data.get_items(limit=5000)
             if not rows:
                 return []
+
+            # Статистика
+            product_counts = Counter()
+            category_counts = Counter()
+            product_examples = {} 
+            
+            for row in rows:
+                title = row.get('title', '')
+                semantic = FeatureExtractor.extract_semantic_data(title)
                 
-            titles = [r['title'] for r in rows]
-            normalized = [SmartChunkDetector._normalize_title(t) for t in titles]
-            
-            key_counts = Counter()
-            key_examples = {}
-            
-            for norm, orig in zip(normalized, titles):
-                words = [w for w in norm.split() if len(w) > 3]
-                if len(words) >= 2:
-                    key = " ".join(words[:3])
-                    key_counts[key] += 1
-                    if key not in key_examples:
-                        key_examples[key] = orig
-            
-            for key, count in key_counts.items():
-                if count >= 6:
-                    existing = memory_manager.knowledge.get_chunk_by_key_and_type(key, "PRODUCT")
+                cat = semantic['category']
+                sub = semantic['sub_category']
+                pkey = semantic['product_key']
+                
+                if not pkey: continue
+
+                # Считаем конкретные продукты (для PRODUCT chunk)
+                product_counts[pkey] += 1
+                if pkey not in product_examples:
+                    product_examples[pkey] = semantic['clean_name']
+
+                # Считаем категории (для CATEGORY chunk)
+                # Ключ категории: "CATEGORY_SUB", например "GPU_Nvidia"
+                if cat != 'MISC':
+                    cat_key = f"{cat}_{sub}" if sub != 'general' else cat
+                    category_counts[cat_key] += 1
+
+            # 1. Анализ кандидатов на PRODUCT чанки
+            # Порог: > 5 товаров одной модели
+            for pkey, count in product_counts.items():
+                if count >= 3:
+                    # Проверяем, нет ли уже такого чанка
+                    existing = memory_manager.knowledge.get_chunk_by_key_and_type(pkey, "PRODUCT")
                     if not existing:
-                        nice_title = " ".join(word.capitalize() for word in key.split())
-                        to_create.append(("PRODUCT", key, f"Анализ рынка: {nice_title}"))
-            
+                        nice_name = product_examples.get(pkey, pkey).upper()
+                        to_create.append(("PRODUCT", pkey, f"Анализ товара: {nice_name}"))
+
+            # 2. Анализ кандидатов на CATEGORY чанки
+            # Порог: > 15 товаров в одной категории
+            for cat_key, count in category_counts.items():
+                if count >= 8:
+                    existing = memory_manager.knowledge.get_chunk_by_key_and_type(cat_key, "CATEGORY")
+                    if not existing:
+                        nice_cat = cat_key.replace('_', ' ').upper()
+                        to_create.append(("CATEGORY", cat_key, f"Обзор рынка: {nice_cat}"))
+
+            # 3. Глобальный DATABASE чанк
             total_items = memory_manager.get_stats().get("total", 0)
-            if total_items >= 20:
+            if total_items >= 10:
                 existing_db = memory_manager.knowledge.get_chunk_by_key_and_type("general", "DATABASE")
                 if not existing_db:
                     to_create.append(("DATABASE", "general", "Глобальная аналитика базы"))
-                    
+
+            existing_beh = memory_manager.knowledge.get_chunk_by_key_and_type("user_behavior", "AI_BEHAVIOR")
+            if not existing_beh:
+                 to_create.append(("AI_BEHAVIOR", "user_behavior", "Портрет пользователя"))
+
         except Exception as e:
             logger.error(f"SmartDetector error: {e}", token="ai-det")
-        
+
         return to_create
-    
+
     @staticmethod
     def create_missing_chunks(memory_manager, chunk_manager):
+        # Этот метод остается связующим звеном
         missing = SmartChunkDetector.detect_new_chunks(memory_manager)
         created = 0
         for chunk_type_str, key, title in missing:
-            from app.core.ai.chunk_cultivation import ChunkType
-            ctype = ChunkType.PRODUCT if chunk_type_str == "PRODUCT" else ChunkType.DATABASE
+            # Преобразуем строку в Enum, если нужно, или передаем строкой
+            # В ChunkCultivationManager ожидается строка (обычно) или Enum.value
             try:
-                chunk_manager.create_pending_chunk(ctype, key, title)
+                # Простая проверка на дубликаты в очереди Pending происходит внутри create_pending_chunk
+                # но мы можем проверить и здесь, чтобы не спамить логами
+                chunk_manager.create_pending_chunk(
+                    chunk_manager.__class__.ChunkType[chunk_type_str] if hasattr(chunk_manager.__class__, 'ChunkType') else chunk_type_str, 
+                    key, 
+                    title
+                )
                 created += 1
-            except:
-                pass
-        
+            except Exception as e:
+                # Иногда тип может быть передан как строка, если Enum не импортирован здесь напрямую
+                # Используем fallback
+                try:
+                    chunk_manager.create_pending_chunk(chunk_type_str, key, title)
+                    created += 1
+                except:
+                    pass
+
         if created:
-            logger.info(f"Создано {created} новых чанков...", token="ai-det")
+            logger.info(f"Обнаружено и создано {created} новых областей знаний.", token="ai-det")

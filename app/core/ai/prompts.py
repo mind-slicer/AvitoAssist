@@ -326,52 +326,96 @@ class ChunkCultivationPrompts:
         """
     
     @staticmethod
-    def build_category_cultivation_prompt(category_key: str, stats: dict) -> str:    
+    def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict]) -> str:
+        # UPGRADE: Теперь промпт строится на основе уже готовых PRODUCT-чанков
+        
+        products_text = ""
+        for p in sub_products:
+            # p - это содержимое PRODUCT чанка (JSON)
+            p_content = p.get('content') or {}
+            analysis = p_content.get('analysis') or {}
+            price = analysis.get('price_analysis', {})
+            
+            p_name = p.get('chunk_key', 'Unknown')
+            p_trend = price.get('trend', '?')
+            p_avg = price.get('avg_price', 0)
+            
+            products_text += f"- Модель: {p_name} | Тренд: {p_trend} | Ср.цена: {p_avg}\n"
+
         return f"""
-        АНАЛИЗ КАТЕГОРИИ ТОВАРОВ: "{category_key}"
-        
-        СТАТИСТИКА:
-        - Средняя цена: {stats.get('avg_price')}
-        - Медианная цена: {stats.get('median_price')}
-        - Минимум: {stats.get('min_price')}
-        - Максимум: {stats.get('max_price')}
-        - Количество лотов: {stats.get('sample_count')}
-        - Тренд: {stats.get('trend')} ({stats.get('trend_percent')}%)
-        
-        ЗАДАЧА: Вернуть JSON-структуру знаний о категории.
+        АНАЛИЗ КАТЕГОРИИ: "{category_key}"
+        Твоя задача — обобщить данные по конкретным моделям внутри этой категории.
+
+        ДАННЫЕ ПО МОДЕЛЯМ:
+        {products_text}
+
+        ТРЕБОВАНИЕ: Верни JSON со сводкой по всей категории.
         
         FORMAT JSON:
         {{
-            "summary": "Общее описание состояния рынка в этой категории.",
+            "summary": "Общий обзор категории (что сейчас выгодно, что нет).",
             "subcategories": {{
-                "main": {{ "trend": "{stats.get('trend')}", "avg_price": {stats.get('avg_price')} }}
+                "best_value": "название модели с лучшим соотношением цена/качество",
+                "high_end": "самые дорогие модели",
+                "budget": "бюджетные варианты"
             }},
-            "market_insights": "Ключевые инсайты (например: много перекупов, или цены падают).",
-            "seasonal_patterns": "Есть ли сезонность (предположение на основе типа товара)."
+            "market_insights": "Какие общие тренды видны (падение цен, дефицит)?",
+            "seasonal_patterns": "Есть ли сезонность?"
         }}
         """
     
     @staticmethod
-    def build_database_cultivation_prompt(db_stats: dict) -> str:  
+    def build_database_cultivation_prompt(db_stats: dict, vocabulary: list) -> str:
+        # UPGRADE: Добавлен vocabulary для защиты от галлюцинаций
+        vocab_str = ", ".join(vocabulary[:60])
+        
         return f"""
         ГЛОБАЛЬНЫЙ АНАЛИЗ БАЗЫ ДАННЫХ.
         
-        ВСЕГО ТОВАРОВ: {db_stats.get('total_items')}
-        ВСЕГО КАТЕГОРИЙ: {db_stats.get('total_categories')}
+        СТАТИСТИКА:
+        - Всего записей: {db_stats.get('total_items')}
         
-        ЗАДАЧА: Сформировать отчет о составе базы.
+        РЕАЛЬНЫЙ СЛОВАРЬ (ТОП слов из заголовков):
+        [{vocab_str}]
+        
+        ЗАДАЧА: Сформировать отчет о составе базы, опираясь ТОЛЬКО на предоставленный словарь.
+        Если в словаре нет слова "одежда" или "автомобили", НЕ ПИШИ о них.
         
         FORMAT JSON:
         {{
-            "summary": "Обзор того, какие данные преобладают в базе.",
-            "top_categories": ["название_категории_1", "название_категории_2"],
-            "key_trends": ["общий тренд 1", "общий тренд 2"],
-            "insights": "Выводы о том, что ищет пользователь."
+            "summary": "Краткий обзор того, какие группы товаров преобладают в базе.",
+            "top_categories": ["категория_1", "категория_2"],
+            "insights": "Выводы о том, что ищет пользователь (судя по содержимому)."
         }}
         """
         
     @staticmethod
     def build_ai_behavior_cultivation_prompt(actions_log: list) -> str:
-        return """
-        { "summary": "Log analysis not implemented yet." }
+        # UPGRADE: Реализация промпта для поведения
+        
+        log_text = ""
+        for act in actions_log[-40:]: # Берем последние 40 действий
+            atype = act.get('action_type', 'UNKNOWN')
+            dtls = act.get('details', '')
+            log_text += f"- {atype}: {dtls}\n"
+            
+        return f"""
+        АНАЛИЗ ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЯ.
+        Твоя задача — понять, кто пользователь и что он ищет, чтобы лучше фильтровать мусор.
+        
+        ЛОГ ДЕЙСТВИЙ:
+        {log_text}
+        
+        ЛЕГЕНДА:
+        - SEARCH: Пользователь вбил запрос.
+        - CLICK: Пользователь открыл товар (интерес).
+        - IGNORE: Пользователь пропустил/удалил товар (не интересно).
+        
+        FORMAT JSON:
+        {{
+            "summary": "Портрет пользователя (например: 'Ищет дешевые видеокарты под ремонт' или 'Ищет только новые iPhone').",
+            "interests": ["ключевое_слово_1", "ключевое_слово_2"],
+            "anti_interests": ["что_пользователь_игнорирует"],
+            "strategy_hint": "Совет для AI-фильтра (например: 'Строже фильтруй оверпрайс')."
+        }}
         """

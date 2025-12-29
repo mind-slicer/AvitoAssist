@@ -15,12 +15,7 @@ from app.core.log_manager import logger
 
 
 class KnowledgeManager:
-    """
-    Manages AI knowledge chunks with persistent storage.
-    Supports chunk types: PRODUCT, CATEGORY, DATABASE, AI_BEHAVIOR, CUSTOM.
-    """
-
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
     DB_FILENAME = "memory_knowledge.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -79,8 +74,6 @@ class KnowledgeManager:
             self._create_all_tables(cursor)
 
     def _create_all_tables(self, cursor: sqlite3.Cursor):
-        """Create all data tables."""
-        # Create the main knowledge table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ai_knowledge (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +87,7 @@ class KnowledgeManager:
                 new_data_items_count INTEGER DEFAULT 0,
                 last_cultivation_attempt TEXT,
                 retry_count INTEGER DEFAULT 0,
+                source_hash TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(chunk_type, chunk_key)
@@ -107,26 +101,29 @@ class KnowledgeManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_knowledge_priority ON ai_knowledge(priority)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
-        """Execute schema migrations."""
         if from_version < 2:
-            # Create all tables for version 2
             self._create_all_tables(cursor)
+        
+        # MIGRATION: Добавляем колонку source_hash при переходе на v3
+        if from_version < 3:
+            try:
+                logger.info("Migrating Knowledge DB to v3: Adding source_hash column")
+                cursor.execute("ALTER TABLE ai_knowledge ADD COLUMN source_hash TEXT")
+            except sqlite3.OperationalError:
+                # Колонка уже может существовать, если миграция прервалась
+                pass
 
     # === Basic CRUD ===
 
     def add_knowledge(self, chunk_type: str, chunk_key: str, title: str,
                       content: Optional[Dict] = None, status: str = 'PENDING',
-                      priority: int = 1) -> int:
-        """
-        Add or update knowledge chunk.
-        Returns the chunk id.
-        """
+                      priority: int = 1, source_hash: str = None) -> int:
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             content_json = json.dumps(content, ensure_ascii=False) if content else None
 
-            # Check if exists
             cursor.execute(
                 "SELECT id FROM ai_knowledge WHERE chunk_type = ? AND chunk_key = ?",
                 (chunk_type, chunk_key)
@@ -134,22 +131,30 @@ class KnowledgeManager:
             existing = cursor.fetchone()
 
             if existing:
-                # Update existing
-                cursor.execute("""
+                # UPGRADE: Обновляем source_hash если передан
+                sql = """
                     UPDATE ai_knowledge SET
                         title = ?, content = ?, summary = NULL,
                         status = ?, priority = ?, new_data_items_count = 0,
                         last_updated = ?
-                    WHERE id = ?
-                """, (title, content_json, status, priority, datetime.now().isoformat(), existing[0]))
+                """
+                params = [title, content_json, status, priority, datetime.now().isoformat()]
+                
+                if source_hash:
+                    sql += ", source_hash = ?"
+                    params.append(source_hash)
+                
+                sql += " WHERE id = ?"
+                params.append(existing[0])
+                
+                cursor.execute(sql, tuple(params))
                 return existing[0]
             else:
-                # Insert new
                 cursor.execute("""
                     INSERT INTO ai_knowledge (
-                        chunk_type, chunk_key, title, content, status, priority, last_updated
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (chunk_type, chunk_key, title, content_json, status, priority, datetime.now().isoformat()))
+                        chunk_type, chunk_key, title, content, status, priority, last_updated, source_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (chunk_type, chunk_key, title, content_json, status, priority, datetime.now().isoformat(), source_hash))
                 conn.commit()
                 return cursor.lastrowid
         finally:
@@ -258,21 +263,30 @@ class KnowledgeManager:
 
     # === Updates ===
 
-    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None):
-        """Update chunk content and summary."""
+    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None):
+        # UPGRADE: Метод принимает source_hash
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             content_json = json.dumps(content, ensure_ascii=False)
             if summary is None:
-                # Try to extract summary from content
                 summary = content.get('summary') or content.get('analysis', {}).get('summary', '')
-            cursor.execute("""
+            
+            sql = """
                 UPDATE ai_knowledge SET
                     content = ?, summary = ?, status = 'READY',
                     new_data_items_count = 0, last_updated = ?
-                WHERE id = ?
-            """, (content_json, summary, datetime.now().isoformat(), chunk_id))
+            """
+            params = [content_json, summary, datetime.now().isoformat()]
+            
+            if source_hash:
+                sql += ", source_hash = ?"
+                params.append(source_hash)
+                
+            sql += " WHERE id = ?"
+            params.append(chunk_id)
+            
+            cursor.execute(sql, tuple(params))
             conn.commit()
         finally:
             conn.close()

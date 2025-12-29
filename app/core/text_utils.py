@@ -159,64 +159,125 @@ defect_filter = SmartDefectFilter()
 
 
 class FeatureExtractor:
+    SEMANTIC_RULES = {
+        'GPU': {
+            'trigger': r'\b(rtx|gtx|rx|arc)\b',
+            'vendor': {
+                'nvidia': r'\b(rtx|gtx|nvidia)\b',
+                'amd': r'\b(rx|radeon|amd)\b',
+                'intel': r'\b(arc|intel)\b'
+            },
+            'model_pattern': r'\b((?:rtx|gtx|rx)\s*\d{3,4}(?:\s*(?:ti|super|xt|xtx))?)\b'
+        },
+        'CPU': {
+            'trigger': r'\b(ryzen|core|xeon|threadripper|epyc)\b',
+            'vendor': {
+                'intel': r'\b(core|xeon|intel)\b',
+                'amd': r'\b(ryzen|threadripper|epyc|amd)\b'
+            },
+            'model_pattern': r'\b((?:i\d|ryzen\s*\d)\s*-?\s*\d{3,5}[a-z]*)\b'
+        },
+        'MOBO': {
+            'trigger': r'\b(b450|b550|x570|z490|z590|z690|z790|lga|am4|am5)\b',
+            'vendor': {},
+            'model_pattern': r'\b([bzxhqa]\d{3}[a-z]?)\b'
+        },
+        'RAM': {
+            'trigger': r'\b(ddr\d|dimm|sodimm)\b',
+            'vendor': {},
+            'model_pattern': r'\b(ddr\d)\b'
+        }
+    }
+
     PATTERNS = {
-        # Память (Видеопамять или ОЗУ)
         'capacity': r'\b(\d+)\s*(gb|гб|tb|тб)\b',
-        
-        # Видеокарты (RTX, GTX, RX, Ti, Super, XT)
         'gpu_model': r'\b(rtx|gtx|rx)\s*(\d{3,4})\s*(ti|super|xt|xtx|oc|gaming)?\b',
-        
-        # Процессоры (i3-i9, Ryzen, поколения)
         'cpu_model': r'\b(core\s*i\d|ryzen\s*\d)\s*-?\s*(\d{4,5}[kKfFhHxX]?)\b',
-        
-        # Состояние (включая майнинг сленг)
         'condition': r'\b(new|новый|sealed|запеч|б/?у|used|ideal|идеал|lhr|не майнил|пломб[аы])\b',
-        
-        # Комплект
         'kit': r'\b(box|коробк[аи]|чек|гарантия|full\s*set|полный\s*комплект)\b'
     }
 
     STOP_WORDS = {
-        'продам', 'куплю', 'новый', 'новая', 'новое', 'бу', 'б/у', 
-        'игровой', 'мощный', 'пк', 'компьютер', 'для', 'на', 
+        'продам', 'куплю', 'новый', 'новая', 'новое', 'бу', 'б/у',
+        'игровой', 'мощный', 'пк', 'компьютер', 'для', 'на',
         'срочно', 'торг', 'обмен', 'оригинал', 'гарантия', 'чек',
         'состояние', 'идеал', 'полный', 'комплект', 'запечатан',
-        'видеокарта', 'процессор', 'ноутбук', 'телефон', 'смартфон'
+        'видеокарта', 'процессор', 'ноутбук', 'телефон', 'смартфон',
+        'цена', 'руб', 'рублей', 'договорная'
     }
 
     @staticmethod
-    def generate_product_key(title: str) -> str:
+    def extract_semantic_data(title: str) -> Dict[str, str]:
         """
-        Генерирует чистый ключ продукта из заголовка.
-        Пример: "Продам мощный игровой ПК RTX 3060" -> "rtx_3060"
-        Пример: "iPhone 15 Pro Max 256Gb" -> "iphone_15_pro_max"
+        Возвращает структурированные данные:
+        {
+            'category': 'GPU' | 'CPU' | 'MOBO' | 'MISC',
+            'sub_category': 'Nvidia' | 'AMD' | ...,
+            'product_key': 'nvidia_rtx_3060_ti',
+            'clean_name': 'RTX 3060 Ti'
+        }
         """
-        if not title:
-            return "unknown_item"
-            
         t_lower = title.lower()
-        
-        gpu = re.search(FeatureExtractor.PATTERNS['gpu_model'], t_lower)
-        if gpu:
-            return re.sub(r'\s+', '_', gpu.group(0).strip())
-            
-        cpu = re.search(FeatureExtractor.PATTERNS['cpu_model'], t_lower)
-        if cpu:
-            return re.sub(r'\s+', '_', cpu.group(0).strip())
+        result = {
+            'category': 'MISC',
+            'sub_category': 'general',
+            'product_key': '',
+            'clean_name': title
+        }
 
+        # 1. Определение категории
+        for cat_name, rules in FeatureExtractor.SEMANTIC_RULES.items():
+            if re.search(rules['trigger'], t_lower):
+                result['category'] = cat_name
+                
+                # 2. Определение подкатегории (вендора)
+                for sub_name, sub_pattern in rules['vendor'].items():
+                    if re.search(sub_pattern, t_lower):
+                        result['sub_category'] = sub_name
+                        break
+                
+                # 3. Извлечение конкретной модели
+                match = re.search(rules['model_pattern'], t_lower)
+                if match:
+                    model_raw = match.group(1)
+                    # Нормализация: убираем пробелы, тире, приводим к стандарту
+                    clean_model = re.sub(r'\s+', ' ', model_raw).strip()
+                    result['clean_name'] = clean_model
+                    
+                    # Генерация ключа продукта
+                    key_parts = [
+                        result['sub_category'] if result['sub_category'] != 'general' else '',
+                        clean_model
+                    ]
+                    result['product_key'] = "_".join(filter(None, key_parts)).replace(' ', '_')
+                
+                break # Категория найдена, выходим
+
+        # Фоллбэк для MISC категорий - старый метод
+        if result['category'] == 'MISC':
+            result['product_key'] = FeatureExtractor.generate_legacy_key(t_lower)
+            
+        return result
+
+    @staticmethod
+    def generate_product_key(title: str) -> str:
+        """Обертка для обратной совместимости"""
+        data = FeatureExtractor.extract_semantic_data(title)
+        return data['product_key']
+
+    @staticmethod
+    def generate_legacy_key(t_lower: str) -> str:
+        """Старая логика генерации ключей для неопределенных категорий"""
         cleaned = re.sub(r'[^\w\s]', '', t_lower)
         words = cleaned.split()
-        
         meaningful_words = [
-            w for w in words 
-            if w not in FeatureExtractor.STOP_WORDS 
-            and len(w) > 1 
+            w for w in words
+            if w not in FeatureExtractor.STOP_WORDS
+            and len(w) > 1
             and not w.isdigit()
         ]
-        
         if meaningful_words:
             return "_".join(meaningful_words[:4])
-            
         return "generic_item"
 
     @staticmethod

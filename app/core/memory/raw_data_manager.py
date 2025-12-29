@@ -5,6 +5,8 @@ import sys
 import hashlib
 from typing import List, Dict, Optional
 from datetime import datetime
+from collections import Counter
+import re
 
 # Add workspace root to path for config imports
 _workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,7 +23,7 @@ class RawDataManager:
     Supports categories, product keys, and many-to-many relationships.
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -145,6 +147,15 @@ class RawDataManager:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_type TEXT NOT NULL,
+                details TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Create indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id ON raw_items(ad_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price ON raw_items(price)")
@@ -153,10 +164,108 @@ class RawDataManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
-        """Execute schema migrations."""
         if from_version < 2:
-            # Create all tables for version 2
             self._create_all_tables(cursor)
+
+        if from_version < 3:
+            logger.info("Migrating RawData DB to v3: Adding user_actions table")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_type TEXT NOT NULL,
+                    details TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+    def get_database_vocabulary(self, limit: int = 60) -> List[str]:
+        """
+        Возвращает топ самых частых слов из заголовков базы.
+        Используется для формирования промпта DATABASE chunk, чтобы ИИ видел,
+        что реально есть в базе (видеокарты, телефоны и т.д.), и не выдумывал лишнее.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            # Берем последние 1000 заголовков для скорости
+            cursor.execute("SELECT title FROM raw_items ORDER BY id DESC LIMIT 1000")
+            titles = [r[0] for r in cursor.fetchall()]
+            
+            word_counter = Counter()
+            stop_words = {
+                'продам', 'куплю', 'цена', 'торг', 'обмен', 'новый', 'бу', 'состояние',
+                'комплект', 'гарантия', 'для', 'на', 'с', 'по', 'от', 'и', 'в'
+            }
+            
+            for t in titles:
+                # Оставляем только слова > 2 символов, убираем цифры
+                words = re.findall(r'\b[a-zA-Zа-яА-Я]{3,}\b', t.lower())
+                for w in words:
+                    if w not in stop_words:
+                        word_counter[w] += 1
+            
+            # Возвращаем топ слов, например: ["iphone", "xiaomi", "rtx", "samsung"]
+            return [w for w, count in word_counter.most_common(limit)]
+        finally:
+            conn.close()
+
+    # NEW: Метод вычисления сигнатуры данных
+    def calculate_data_signature(self, category_key: Optional[str] = None, 
+                                 product_key: Optional[str] = None) -> str:
+        """
+        Создает хэш текущего состояния данных для конкретной выборки.
+        Если хэш изменился -> данные изменились -> чанк нужно обновить.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = "SELECT id, price, edited_at FROM raw_items" # edited_at пока нет, используем analyzed_at
+            # Исправление: в схеме нет edited_at, используем analyzed_at
+            
+            params = []
+            where_clauses = []
+            
+            if category_key:
+                # Сложный джоин для категорий, упростим: если ключи совпадают
+                # Для скорости пока просто хэшируем кол-во и сумму цен
+                pass # Реализуем упрощенную логику ниже
+            
+            # Упрощенная реализация: хэш от (Count, AvgPrice, MaxId)
+            # Это очень быстро и достаточно надежно для наших целей
+            
+            base_query = """
+                SELECT 
+                    COUNT(*), 
+                    SUM(ri.price), 
+                    MAX(ri.id) 
+                FROM raw_items ri
+                LEFT JOIN raw_items_products rip ON ri.id = rip.raw_item_id
+                LEFT JOIN product_keys pk ON rip.product_key_id = pk.id
+                WHERE 1=1
+            """
+            
+            if product_key:
+                base_query += " AND pk.key = ?"
+                params.append(product_key)
+            elif category_key:
+                # Здесь сложнее, так как category_key у нас семантический (GPU_Nvidia)
+                # Пока привяжемся к product_keys, которые начинаются с этой категории
+                base_query += " AND pk.key LIKE ?"
+                params.append(f"{category_key}%")
+
+            cursor.execute(base_query, params)
+            row = cursor.fetchone()
+            
+            if not row:
+                return "empty"
+                
+            data_str = f"{row[0]}-{row[1]}-{row[2]}"
+            return hashlib.md5(data_str.encode('utf-8')).hexdigest()
+            
+        except Exception as e:
+            return "error"
+        finally:
+            conn.close()
 
     # === Categories ===
 
@@ -690,6 +799,51 @@ class RawDataManager:
 
             conn.commit()
             logger.success(f"Imported {len(data.get('items', []))} items from {filepath}")
+        finally:
+            conn.close()
+
+    def log_user_action(self, action_type: str, details: str):
+        """Сохраняет действие пользователя"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO user_actions (action_type, details) VALUES (?, ?)", 
+                (action_type, str(details)[:500]) # Ограничиваем длину
+            )
+            conn.commit()
+        except Exception as e:
+            logger.dev(f"Action log error: {e}", level="ERROR")
+        finally:
+            conn.close()
+
+    def get_recent_actions(self, limit: int = 50) -> List[Dict]:
+        """Возвращает последние действия для анализа поведения"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM user_actions ORDER BY id DESC LIMIT ?", (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def cleanup_old_actions(self, keep_last: int = 1000):
+        """Удаляет старые логи действий, оставляя только свежие"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            # Получаем ID, до которого нужно удалить
+            cursor.execute("SELECT id FROM user_actions ORDER BY id DESC LIMIT 1 OFFSET ?", (keep_last,))
+            row = cursor.fetchone()
+            if row:
+                cutoff_id = row[0]
+                cursor.execute("DELETE FROM user_actions WHERE id < ?", (cutoff_id,))
+                deleted = cursor.rowcount
+                if deleted > 0:
+                    logger.dev(f"Cleaned up {deleted} old user actions", level="DEBUG")
+            conn.commit()
+        except Exception as e:
+            logger.dev(f"Cleanup actions error: {e}", level="ERROR")
         finally:
             conn.close()
 

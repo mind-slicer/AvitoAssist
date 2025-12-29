@@ -30,6 +30,7 @@ class MemoryManager:
         # Initialize both managers
         self.raw_data = RawDataManager()
         self.knowledge = KnowledgeManager()
+        self.raw_data.cleanup_old_actions(keep_last=500)
         logger.success("MemoryManager initialized with persistent storage")
 
     # === Delegated methods for raw data ===
@@ -93,9 +94,9 @@ class MemoryManager:
 
     def add_knowledge(self, chunk_type: str, chunk_key: str, title: str,
                       content: Optional[Dict] = None, status: str = 'PENDING',
-                      priority: int = 1) -> int:
+                      priority: int = 1, source_hash: str = None) -> int:
         """Add or update knowledge chunk."""
-        return self.knowledge.add_knowledge(chunk_type, chunk_key, title, content, status, priority)
+        return self.knowledge.add_knowledge(chunk_type, chunk_key, title, content, status, priority, source_hash)
 
     def get_knowledge(self, chunk_id: Optional[int] = None,
                       chunk_key: Optional[str] = None,
@@ -114,9 +115,9 @@ class MemoryManager:
         """Delete chunk by id."""
         return self.knowledge.delete_knowledge(chunk_id)
 
-    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None):
+    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None):
         """Update chunk content."""
-        self.knowledge.update_chunk_content(chunk_id, content, summary)
+        self.knowledge.update_chunk_content(chunk_id, content, summary, source_hash)
 
     def update_chunk_status(self, chunk_id: int, status: str, progress: Optional[int] = None):
         """Update chunk status."""

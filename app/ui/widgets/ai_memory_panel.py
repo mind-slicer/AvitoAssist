@@ -114,6 +114,29 @@ class ChunkCard(QFrame):
         self.content_layout.setSpacing(6)
         self.layout.addWidget(self.content_container)
     
+    def update_progress(self, percent: int, status_text: str):
+        """NEW: Обновление прогресс-бара без полной перерисовки"""
+        if self.status != 'INITIALIZING':
+            # Если статус сменился, игнорируем старые пакеты прогресса
+            return
+            
+        self.status_label.setText(f"{status_text} ({percent}%)")
+        
+        # Находим прогресс-бар в лейауте (он добавлен в _render_initializing)
+        # Это немного "хак", но работает быстрее, чем хранить ссылки на все виджеты
+        # Лучше было бы сохранить ссылку на p_bar при создании
+        
+        if hasattr(self, 'fill_widget'):
+             # Обновляем ширину заливки (через stretch факторы)
+             # В QHBoxLayout stretch работает так: (fill_stretch, empty_stretch)
+             pct = min(max(percent, 1), 100)
+             
+             # Нам нужно найти родительский layout бара
+             bar_layout = self.fill_widget.parent().layout()
+             if bar_layout:
+                 bar_layout.setStretch(0, pct)
+                 bar_layout.setStretch(1, 100 - pct)
+
     def _update_appearance(self):
         self.status = self.chunk_data.get('status')
         title = self.chunk_data.get('title') or f"Chunk #{self.chunk_id}"
@@ -142,38 +165,38 @@ class ChunkCard(QFrame):
 
     def _render_initializing(self):
         self.icon_label.setText("⚙️")
+        # Сохраняем ссылки для апдейтов
         progress = self.chunk_data.get('progress_percent', 0)
-        self.status_label.setText(f"Формирование знаний... {progress}%")
+        self.status_label.setText(f"Подготовка... {progress}%")
         self.delete_btn.setVisible(False)
-        
+
         p_bar = QFrame()
         p_bar.setFixedHeight(4)
         p_bar.setStyleSheet(f"background: {Palette.BG_DARK}; border-radius: 2px;")
-        
-        fill = QFrame(p_bar)
-        fill.setFixedHeight(4)
-        width_pct = min(max(progress, 5), 100)
+
+        # Создаем контейнер для заливки
         bar_container = QWidget()
         bar_layout = QHBoxLayout(bar_container)
         bar_layout.setContentsMargins(0,0,0,0)
         bar_layout.setSpacing(0)
-        
-        fill_widget = QWidget()
-        fill_widget.setStyleSheet(f"background-color: {Palette.PRIMARY}; border-radius: 2px;")
-        
+
+        self.fill_widget = QWidget() # Сохраняем ссылку
+        self.fill_widget.setStyleSheet(f"background-color: {Palette.PRIMARY}; border-radius: 2px;")
+
         empty_widget = QWidget()
         empty_widget.setStyleSheet("background: transparent;")
-        
-        bar_layout.addWidget(fill_widget, stretch=width_pct)
+
+        width_pct = min(max(progress, 1), 100)
+        bar_layout.addWidget(self.fill_widget, stretch=width_pct)
         bar_layout.addWidget(empty_widget, stretch=100-width_pct)
-        
+
         p_bar_wrapper = QFrame()
         p_bar_wrapper.setFixedHeight(6)
         p_bar_wrapper.setStyleSheet(f"background: {Palette.BG_DARK}; border-radius: 3px; border: none;")
         wrapper_layout = QVBoxLayout(p_bar_wrapper)
         wrapper_layout.setContentsMargins(0,0,0,0)
         wrapper_layout.addWidget(bar_container)
-        
+
         self.content_layout.addWidget(p_bar_wrapper)
 
     def _render_ready(self, chunk_type):
@@ -702,12 +725,18 @@ class AIMemoryPanel(QWidget):
     def set_managers(self, memory_manager, chunk_manager):
         self.memory_manager = memory_manager
         self.chunk_manager = chunk_manager
-        
+
         if self.chunk_manager:
             self.chunk_manager.chunk_status_changed.connect(self._on_chunk_status_changed)
             self.chunk_manager.cultivation_ready.connect(self._on_cultivation_ready)
-            
+            # NEW: Подключаем прогресс
+            self.chunk_manager.chunk_progress.connect(self._on_chunk_progress)
+
         self._load_all_chunks()
+
+    def _on_chunk_progress(self, chunk_id, percent, text):
+        if chunk_id in self.cards:
+            self.cards[chunk_id].update_progress(percent, text)
 
     def _load_all_chunks(self):
         if not self.memory_manager: return
@@ -743,15 +772,24 @@ class AIMemoryPanel(QWidget):
         self.cards_layout.insertWidget(self.cards_layout.count(), card)
 
     def _on_card_deleted(self, chunk_id):
+        # 1. Сначала отменяем любые активные процессы с этим чанком
+        if self.chunk_manager:
+            self.chunk_manager.cancel_task(chunk_id)
+
+        # 2. Удаляем из БД
         if self.memory_manager:
             self.memory_manager.delete_knowledge(chunk_id)
-            
+
+        # 3. Удаляем визуально
         if chunk_id in self.cards:
             card = self.cards.pop(chunk_id)
             card.deleteLater()
-            
+
         self._update_stats()
         self.chunk_deleted.emit(chunk_id)
+        
+        # Лог для пользователя
+        logger.info(f"Чанк {chunk_id} полностью удален (Force Forget).")
 
     def _on_update_clicked(self):
         self.btn_update.setEnabled(False)

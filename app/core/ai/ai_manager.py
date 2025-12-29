@@ -160,6 +160,7 @@ class AIChatWorker(QThread):
 class AIChunkCultivationWorker(QThread):
     finished = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int, str)
 
     def __init__(self, port: int, chunk_id: int, chunk_type: str,
                  memory_manager, model_name: str, prompt: str, user_instructions: str = ""):
@@ -180,6 +181,9 @@ class AIChunkCultivationWorker(QThread):
         asyncio.run(self._cultivate_chunk())
 
     async def _cultivate_chunk(self):
+        # 1. Start
+        self.progress_signal.emit(5, "Подключение к нейросети...")
+        
         client = LlamaClient(self.port)
         try:
             if hasattr(self, '_is_running') and not self._is_running:
@@ -192,10 +196,8 @@ class AIChunkCultivationWorker(QThread):
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "max_tokens": 2048, #TODO: Увеличить?
-                "mirostat_mode": 1,
-                "mirostat_tau": 5.0,
-                "mirostat_eta": 0.1
+                "max_tokens": 4096, # Увеличим лимит для больших отчетов
+                "mirostat_mode": 0
             }
 
             system_content = "Ты аналитик рынка объявлений Авито. Твоя задача — свести данные в единый JSON."
@@ -212,11 +214,19 @@ class AIChunkCultivationWorker(QThread):
                 token="ai-cult",
             )
 
+            # 2. Sending Request
+            self.progress_signal.emit(15, "Генерация отчета (это может занять время)...")
+
+            # Эмуляция прогресса во время ожидания (так как вызов блокирующий для asyncio)
+            # В идеале нужно использовать streaming, но для сохранения архитектуры пока просто ждем.
             response = await client.chat_completion(
                 model=self.model_name,
                 messages=messages,
                 params=gen_params,
             )
+
+            # 3. Processing Response
+            self.progress_signal.emit(80, "Обработка ответа ИИ...")
 
             if not response or not isinstance(response, str) or len(response.strip()) < 10:
                 msg = f"ИИ вернул пустой или слишком короткий ответ для чанка {self.chunk_id}..."
@@ -227,6 +237,7 @@ class AIChunkCultivationWorker(QThread):
                 return
 
             text = response.strip()
+            # Очистка markdown json
             if '```' in text:
                 match_json = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
                 if match_json:
@@ -238,12 +249,11 @@ class AIChunkCultivationWorker(QThread):
                         if text.strip().lower().startswith('json'):
                             text = text.strip()[4:].strip()
 
+            self.progress_signal.emit(90, "Валидация JSON...")
+            
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if not match:
-                err = f"В ответе ИИ не найден JSON-объект для чанка {self.chunk_id}..."
-                logger.error(err, token="ai-cult")
-                if hasattr(self, 'error_signal'):
-                    self.error_signal.emit(err)
+                err = f"В ответе ИИ не найден JSON-объект..."
                 self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
                 return
 
@@ -252,10 +262,7 @@ class AIChunkCultivationWorker(QThread):
             try:
                 data = json.loads(clean_json_text)
             except json.JSONDecodeError as e:
-                err = f"Ошибка парсинга JSON для чанка {self.chunk_id}: {str(e)}..."
-                logger.error(err, token="ai-cult")
-                if hasattr(self, 'error_signal'):
-                    self.error_signal.emit(err)
+                err = f"Ошибка парсинга JSON: {str(e)}..."
                 self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
                 return
 
@@ -264,13 +271,12 @@ class AIChunkCultivationWorker(QThread):
                 analysis = data.get("analysis", {})
                 if isinstance(analysis, dict):
                     summary = analysis.get("summary")
-                
+
                 if not summary:
                     summary = data.get("summary")
-            else:
-                err = f"ИИ вернул некорректный тип данных для чанка {self.chunk_id}..."
-                self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
-                return
+            
+            # 4. Finalizing
+            self.progress_signal.emit(98, "Сохранение знаний...")
 
             result = {
                 "status": "success",
@@ -281,10 +287,8 @@ class AIChunkCultivationWorker(QThread):
             self.finished.emit(result)
 
         except Exception as e:
-            err = f"Критический сбой при культивации чанка {self.chunk_id}: {str(e)}"
+            err = f"Критический сбой при культивации: {str(e)}"
             logger.error(err, token="ai-cult", exc_info=True)
-            if hasattr(self, 'error_signal'):
-                self.error_signal.emit(str(e))
             self.finished.emit({"status": "error", "error": str(e), "chunk_id": self.chunk_id})
         finally:
             await client.close()
