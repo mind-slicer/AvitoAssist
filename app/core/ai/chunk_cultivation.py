@@ -11,19 +11,19 @@ from app.core.log_manager import logger
 from app.core.ai.prompts import ChunkCultivationPrompts
 
 class ChunkType(Enum):
-    PRODUCT = "ПРОДУКТ"
-    CATEGORY = "КАТЕГОРИЯ"
-    DATABASE = "БАЗА ДАННЫХ"
-    AI_BEHAVIOR = "ПОВЕДЕНИЕ ИИ"
-    CUSTOM = "ПОЛЬЗОВАТЕЛЬСКИЙ"
+    PRODUCT = "PRODUCT"
+    CATEGORY = "CATEGORY"
+    DATABASE = "DATABASE"
+    AI_BEHAVIOR = "AI_BEHAVIOR"
+    CUSTOM = "CUSTOM"
 
 class ChunkStatus(Enum):
-    PENDING = "В ОЖИДАНИИ"
-    INITIALIZING = "ИНИЦИАЛИЗАЦИЯ"
-    ACCUMULATING = "НАКОПЛЕНИЕ"
-    READY = "ГОТОВ"
-    COMPRESSED = "СЖАТ"
-    FAILED = "ОШИБКА"
+    PENDING = "PENDING"
+    INITIALIZING = "INITIALIZING"
+    ACCUMULATING = "ACCUMULATING"
+    READY = "READY"
+    COMPRESSED = "COMPRESSED"
+    FAILED = "FAILED"
 
 class ChunkCultivationTrigger(Enum):
     TIME_ELAPSED = "TIME_ELAPSED"
@@ -399,38 +399,84 @@ class ChunkCultivationManager(QObject):
             
         return False
 
+    def _extract_chunk_text(self, chunk_key: str, chunk_type: str) -> str:
+        chunk = self.memory.knowledge.get_chunk_by_key_and_type(chunk_key, chunk_type)
+        if chunk and chunk.get('status') == 'READY':
+            content = chunk.get('content')
+            if isinstance(content, str):
+                try: content = json.loads(content)
+                except: content = {}
+            if isinstance(content, dict):
+                desc = content.get('main_description') or content.get('summary')
+                if desc: return f"[{chunk_type} {chunk_key}]: {desc}"
+        return ""
+
     def _build_cultivation_prompt(self, chunk: Dict) -> str:
         chunk_type = str(chunk.get("chunk_type", "")).upper()
         chunk_key = chunk.get("chunk_key")
+        chunk_title = chunk.get("title", "")
 
-        prev_summary = chunk.get("summary") or ""
-        if not prev_summary and chunk.get("content"):
+        # 1. Загрузка истории (без изменений)
+        prev_summary = ""
+        if chunk.get("content"):
              try:
                  prev_content = json.loads(chunk.get("content"))
-                 prev_summary = prev_content.get("summary", "")
+                 prev_summary = prev_content.get("main_description") or prev_content.get("summary") or ""
              except: pass
+
+        # 2. Загрузка интересов (без изменений)
+        user_interests = ""
+        try:
+            import os
+            from app.config import BASE_APP_DIR
+            path = os.path.join(BASE_APP_DIR, "user_interests.txt")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f: user_interests = f.read().strip()
+        except: pass
+
+        # --- 3. ЛОГИКА СВЯЗЕЙ (LINKING STRATEGY) ---
+        linked_context = ""
+
+        if chunk_type == "PRODUCT":
+            # PRODUCT -> Родителем является CATEGORY (Cluster)
+            from app.core.text_utils import FeatureExtractor
+            semantic = FeatureExtractor.extract_semantic_data(chunk_title or chunk_key)
+            cluster_key = semantic.get('cluster_key')
+            if cluster_key:
+                linked_context = self._extract_chunk_text(cluster_key, "CATEGORY")
+        
+        elif chunk_type == "CATEGORY":
+            # CATEGORY -> Глобальный контекст из DATABASE
+            linked_context = self._extract_chunk_text("general", "DATABASE")
+            
+        elif chunk_type == "DATABASE":
+            # DATABASE -> Контекст пользователя из AI_BEHAVIOR
+            linked_context = self._extract_chunk_text("user_behavior", "AI_BEHAVIOR")
+            
+        elif chunk_type == "AI_BEHAVIOR":
+            # AI_BEHAVIOR -> Контекст рынка из DATABASE
+            linked_context = self._extract_chunk_text("general", "DATABASE")
+
+        # --- 4. СБОРКА ПРОМПТА ---
 
         if chunk_type == "PRODUCT":
             items = self.memory.find_similar_items(chunk_key, limit=50)
             return ChunkCultivationPrompts.build_product_cultivation_prompt(
-                chunk_key, items, previous_context=prev_summary
+                chunk_key, items, 
+                previous_context=prev_summary,
+                user_interests=user_interests,
+                user_instructions=chunk.get('user_instructions', ''),
+                linked_context=linked_context # <--
             )
 
         if chunk_type == "CATEGORY":
             all_chunks = self.memory.knowledge.get_chunks_by_type("PRODUCT")
-            sub_chunks = []
-            
-            for c in all_chunks:
-                if c.get('chunk_key', '').startswith(chunk_key) and c.get('status') == 'READY':
-                    sub_chunks.append(c)
-            
-            if not sub_chunks:
-                return ChunkCultivationPrompts.build_category_cultivation_prompt(
-                    chunk_key, [], previous_context=prev_summary
-                )
-            
+            sub_chunks = [c for c in all_chunks if c.get('chunk_key', '').startswith(chunk_key) and c.get('status') == 'READY']
             return ChunkCultivationPrompts.build_category_cultivation_prompt(
-                chunk_key, sub_chunks, previous_context=prev_summary
+                chunk_key, sub_chunks, 
+                previous_context=prev_summary,
+                user_interests=user_interests,
+                linked_context=linked_context # <--
             )
 
         if chunk_type == "DATABASE":
@@ -440,14 +486,18 @@ class ChunkCultivationManager(QObject):
                 "total_categories": raw_stats.get("total_categories", 0)
             }
             vocab = self.memory.raw_data.get_database_vocabulary(limit=60)
-            return ChunkCultivationPrompts.build_database_cultivation_prompt(db_stats, vocab)
+            return ChunkCultivationPrompts.build_database_cultivation_prompt(
+                db_stats, vocab, 
+                linked_context=linked_context # <--
+            )
 
         if chunk_type == "AI_BEHAVIOR":
             actions = self.memory.raw_data.get_recent_actions(limit=50)
-            if not actions:
-                return """{ "summary": "Нет данных о поведении пользователя." }"""
             return ChunkCultivationPrompts.build_ai_behavior_cultivation_prompt(
-                actions, previous_context=prev_summary
+                actions, 
+                user_interests=user_interests,
+                previous_context=prev_summary,
+                linked_context=linked_context # <--
             )
 
         raise ValueError(f"Unknown chunk type: {chunk_type}")

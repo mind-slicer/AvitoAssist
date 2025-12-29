@@ -195,60 +195,153 @@ class FeatureExtractor:
             'category': 'MISC',
             'sub_category': 'general',
             'product_key': '',
+            'cluster_key': '',
+            'entity_type': 'CATEGORY',
             'clean_name': title,
             'is_system': False
         }
 
+        # 1. System check
         for pattern in FeatureExtractor.SYSTEM_TRIGGERS:
             if re.search(pattern, t_lower):
                 result['is_system'] = True
                 break
 
+        # 2. Category & Model extraction
+        matched_rule = False
         for cat_name, rules in FeatureExtractor.SEMANTIC_RULES.items():
-            # Защита от ложных срабатываний (например, RAM в названии видеокарты)
-            if 'anti_trigger' in rules:
-                if re.search(rules['anti_trigger'], t_lower):
-                    continue
+            if 'anti_trigger' in rules and re.search(rules['anti_trigger'], t_lower):
+                continue
 
             if re.search(rules['trigger'], t_lower):
+                matched_rule = True
                 result['category'] = cat_name
 
+                # Vendor extraction
                 for sub_name, sub_pattern in rules['vendor'].items():
                     if re.search(sub_pattern, t_lower):
                         result['sub_category'] = sub_name
                         break
 
+                # Model extraction
                 match = re.search(rules['model_pattern'], t_lower)
                 if match:
                     model_raw = match.group(1)
                     clean_model = re.sub(r'\s+', ' ', model_raw).strip()
                     result['clean_name'] = clean_model
-
-                    key_parts = [
-                        result['sub_category'] if result['sub_category'] != 'general' else '',
-                        clean_model
-                    ]
+                    key_parts = [result['sub_category'] if result['sub_category'] != 'general' else '', clean_model]
                     result['product_key'] = "_".join(filter(None, key_parts)).replace(' ', '_')
+                    result['cluster_key'] = FeatureExtractor._derive_cluster_key(cat_name, clean_model)
+                    result['entity_type'] = 'PRODUCT'
+                else:
+                    if result['sub_category'] != 'general':
+                        result['entity_type'] = 'LINEUP'
+                        result['product_key'] = f"{cat_name}_{result['sub_category']}"
+                        result['cluster_key'] = f"{cat_name}_{result['sub_category']}"
+                    else:
+                        result['entity_type'] = 'CATEGORY'
+                        result['product_key'] = cat_name
+                        result['cluster_key'] = cat_name
                 break
+        
+        if not matched_rule and not result['is_system']:
+            # Пытаемся понять, что это, через эвристику первых слов
+            universal_keys = FeatureExtractor._generate_universal_keys(t_lower)
+            result['category'] = 'UNIVERSAL' # Маркер универсальной категории
+            result['cluster_key'] = universal_keys['cluster']
+            result['product_key'] = universal_keys['product']
+            result['entity_type'] = 'PRODUCT'
+            result['clean_name'] = title # Оставляем оригинал для читаемости
 
+        # 3. Handle Systems
         if result['is_system']:
             result['category'] = 'SYSTEM'
-
-            if result['product_key']:
+            if result['product_key'] and matched_rule:
+                result['cluster_key'] = f"pc_with_{result['cluster_key']}" 
                 result['product_key'] = f"pc_{result['product_key']}"
-                if result['clean_name'] == title:
-                     result['clean_name'] = f"PC System"
-                elif not result['clean_name'].lower().startswith("pc"):
-                     result['clean_name'] = f"PC {result['clean_name']}"
+                result['entity_type'] = 'PRODUCT'
             else:
+                # Универсальная обработка для системников без явной видеокарты в названии
                 legacy_key = FeatureExtractor.generate_legacy_key(t_lower)
                 result['product_key'] = f"pc_{legacy_key}"
-                result['clean_name'] = 'Generic System'
-
-        if result['category'] == 'MISC' and not result['product_key']:
-            result['product_key'] = FeatureExtractor.generate_legacy_key(t_lower)
+                result['cluster_key'] = 'pc_general'
+                result['entity_type'] = 'CATEGORY'
 
         return result
+
+    @staticmethod
+    def _generate_universal_keys(text: str) -> Dict[str, str]:
+        """
+        Универсальный генератор ключей для ЛЮБОЙ ниши (Авто, Недвижка, Мебель).
+        Берет первые значимые слова.
+        """
+        # Убираем спецсимволы
+        cleaned = re.sub(r'[^\w\s]', ' ', text)
+        words = cleaned.split()
+        
+        meaningful = []
+        for w in words:
+            # Фильтр стоп-слов и мусора
+            if len(w) < 2: continue
+            if w.isdigit() and len(w) < 3: continue # Пропускаем 1, 20, но оставляем 3060, 2020
+            if w in FeatureExtractor.STOP_WORDS: continue
+            meaningful.append(w)
+        
+        if not meaningful:
+            return {'cluster': 'misc_unknown', 'product': 'misc_item'}
+            
+        # Эвристика: Кластер = Первые 2 слова (Например: "BMW X5", "Диван Угловой")
+        # Продукт = Первые 4 слова ("BMW X5 2020 Черный")
+        
+        cluster_words = meaningful[:2]
+        product_words = meaningful[:4]
+        
+        return {
+            'cluster': "_".join(cluster_words),
+            'product': "_".join(product_words)
+        }
+
+    @staticmethod
+    def _derive_cluster_key(category: str, clean_model: str) -> str:
+        """
+        Groups specific models into families.
+        RTX 3060 Ti -> rtx_30
+        Core i5 12400F -> core_i5_12
+        """
+        m = clean_model.lower().replace(' ', '')
+        
+        if category == 'GPU':
+            # Nvidia RTX/GTX
+            if 'rtx30' in m: return 'gpu_nvidia_rtx30_series'
+            if 'rtx40' in m: return 'gpu_nvidia_rtx40_series'
+            if 'rtx50' in m: return 'gpu_nvidia_rtx50_series'
+            if 'rtx20' in m: return 'gpu_nvidia_rtx20_series'
+            if 'gtx16' in m: return 'gpu_nvidia_gtx16_series'
+            if 'gtx10' in m: return 'gpu_nvidia_gtx10_series'
+            # AMD RX
+            if 'rx7' in m: return 'gpu_amd_rx7000_series'
+            if 'rx6' in m: return 'gpu_amd_rx6000_series'
+            if 'rx5' in m and len(m) > 3: return 'gpu_amd_rx5000_or_500' # rx580, rx5700
+            
+        if category == 'CPU':
+            # Intel Core
+            match_intel = re.search(r'(corei\d)(\d{2,5})', m)
+            if match_intel:
+                family = match_intel.group(1) # corei5
+                gen = match_intel.group(2)
+                # Take first 1 or 2 digits as gen (12xxx -> 12, 9xxx -> 9)
+                gen_ver = gen[:2] if len(gen) >= 4 else gen[:1]
+                return f"cpu_intel_{family}_gen{gen_ver}"
+            
+            # AMD Ryzen
+            match_amd = re.search(r'(ryzen\d)(\d{4})', m)
+            if match_amd:
+                family = match_amd.group(1)
+                gen = match_amd.group(2)[0] # 5600 -> 5
+                return f"cpu_amd_{family}_{gen}000_series"
+
+        # Default: use first word + length logic or just raw model
+        return f"{category.lower()}_{clean_model.split()[0]}"
 
     @staticmethod
     def generate_product_key(title: str) -> str:

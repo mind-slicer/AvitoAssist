@@ -5,6 +5,8 @@ import sys
 from typing import List, Dict, Optional
 from datetime import datetime
 
+from app.core.text_utils import FeatureExtractor
+
 # Add workspace root to path for config imports
 _workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _workspace_root not in sys.path:
@@ -15,7 +17,7 @@ from app.core.log_manager import logger
 
 
 class KnowledgeManager:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
     DB_FILENAME = "memory_knowledge.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -104,14 +106,38 @@ class KnowledgeManager:
         if from_version < 2:
             self._create_all_tables(cursor)
         
-        # MIGRATION: Добавляем колонку source_hash при переходе на v3
         if from_version < 3:
             try:
-                logger.info("Migrating Knowledge DB to v3: Adding source_hash column")
                 cursor.execute("ALTER TABLE ai_knowledge ADD COLUMN source_hash TEXT")
             except sqlite3.OperationalError:
-                # Колонка уже может существовать, если миграция прервалась
                 pass
+
+        # --- ОБНОВЛЕННЫЙ БЛОК V4 ---
+        if from_version < 4:
+            logger.info("Migrating Knowledge DB to v4: Translating Enums to English")
+            try:
+                # 1. Перевод статусов
+                status_map = {
+                    'В ОЖИДАНИИ': 'PENDING', 'ИНИЦИАЛИЗАЦИЯ': 'INITIALIZING',
+                    'НАКОПЛЕНИЕ': 'ACCUMULATING', 'ГОТОВ': 'READY',
+                    'СЖАТ': 'COMPRESSED', 'ОШИБКА': 'FAILED'
+                }
+                for rus, eng in status_map.items():
+                    cursor.execute("UPDATE ai_knowledge SET status = ? WHERE status = ?", (eng, rus))
+                # Страховка регистра
+                cursor.execute("UPDATE ai_knowledge SET status = 'PENDING' WHERE status LIKE 'В ожидании'")
+
+                # 2. Перевод типов чанков
+                type_map = {
+                    'ПРОДУКТ': 'PRODUCT', 'КАТЕГОРИЯ': 'CATEGORY',
+                    'БАЗА ДАННЫХ': 'DATABASE', 'ПОВЕДЕНИЕ ИИ': 'AI_BEHAVIOR',
+                    'ПОЛЬЗОВАТЕЛЬСКИЙ': 'CUSTOM'
+                }
+                for rus, eng in type_map.items():
+                    cursor.execute("UPDATE ai_knowledge SET chunk_type = ? WHERE chunk_type = ?", (eng, rus))
+                
+            except Exception as e:
+                logger.error(f"Migration v4 error: {e}")
 
     # === Basic CRUD ===
 
@@ -221,13 +247,62 @@ class KnowledgeManager:
         return chunk
 
     def delete_knowledge(self, chunk_id: int) -> bool:
-        """Delete chunk by id."""
+        """
+        Удаляет чанк и сбрасывает статус зависимых чанков, чтобы обновить контекст.
+        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
+            
+            # 1. Получаем инфо о удаляемом чанке
+            cursor.execute("SELECT * FROM ai_knowledge WHERE id = ?", (chunk_id,))
+            row = cursor.fetchone()
+            if not row: return False
+            
+            target_chunk = dict(row)
+            target_key = target_chunk['chunk_key']
+            target_type = target_chunk['chunk_type']
+            
+            # 2. Удаляем
             cursor.execute("DELETE FROM ai_knowledge WHERE id = ?", (chunk_id,))
+            deleted = cursor.rowcount > 0
+            
+            if deleted:
+                logger.info(f"🧠 ИИ забыл концепцию: [{target_type}] {target_key}", token="ai-mem")
+                
+                # 3. Обработка зависимостей (Cascade Invalidate)
+                dependents_reset = 0
+                
+                # Если удалили КАТЕГОРИЮ -> Сбрасываем ПРОДУКТЫ, которые в нее входили
+                if target_type == 'CATEGORY':
+                    # Ищем продукты (эффективнее было бы хранить parent_id, но мы используем ключи)
+                    # Перебираем все продукты и проверяем их cluster_key
+                    # (Это может быть медленно на огромных базах, но для <1000 чанков приемлемо)
+                    cursor.execute("SELECT id, chunk_key, title FROM ai_knowledge WHERE chunk_type = 'PRODUCT'")
+                    products = cursor.fetchall()
+                    
+                    ids_to_reset = []
+                    for p_row in products:
+                        # Используем ту же логику определения родителя, что и при создании
+                        sem = FeatureExtractor.extract_semantic_data(p_row['title'] or p_row['chunk_key'])
+                        if sem.get('cluster_key') == target_key:
+                            ids_to_reset.append(p_row['id'])
+                    
+                    if ids_to_reset:
+                        placeholders = ','.join('?' * len(ids_to_reset))
+                        cursor.execute(f"UPDATE ai_knowledge SET status = 'PENDING' WHERE id IN ({placeholders})", tuple(ids_to_reset))
+                        dependents_reset = len(ids_to_reset)
+
+                # Если удалили БАЗУ ДАННЫХ -> Сбрасываем ПОВЕДЕНИЕ (оно опирается на базу)
+                elif target_type == 'DATABASE':
+                    cursor.execute("UPDATE ai_knowledge SET status = 'PENDING' WHERE chunk_type = 'AI_BEHAVIOR'")
+                    dependents_reset = cursor.rowcount
+
+                if dependents_reset > 0:
+                    logger.warning(f"⚠️ Сброшен статус у {dependents_reset} зависимых чанков (требуется перегенерация).", token="ai-mem")
+
             conn.commit()
-            return cursor.rowcount > 0
+            return deleted
         finally:
             conn.close()
 

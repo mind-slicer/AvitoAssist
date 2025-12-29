@@ -293,171 +293,141 @@ class PromptBuilder:
 
 
 class ChunkCultivationPrompts:
+    COMMON_FORMAT = """
+    ВАЖНО: Твой ответ должен быть СТРОГО валидным JSON. Без Markdown блоков.
+    
+    СТРУКТУРА JSON:
+    {
+        "display_status": "Краткий статус (2-4 слова, например: 'Рынок перегрет' или 'Отличная точка входа'). Используй CapsLock для важных статусов",
+        "main_description": "Суть анализа. Факты, цены, ликвидность. Для человека.",
+        "hidden_thought_process": "Твои скрытые мысли. Анализ аномалий, почему сформировался именно такой статус, связь с другими чанками.",
+        "formation_reason": "Почему этот кластер вообще существует?",
+        "data_sufficiency": "LOW" | "MEDIUM" | "HIGH",
+        "influence_weights": {
+            "system_prompt": 10,    // % влияния твоей базовой роли
+            "user_instructions": 0, // % влияния инструкций пользователя (если были)
+            "user_interests": 0,    // % влияния интересов пользователя
+            "linked_chunks": 0,     // % влияния прошлых знаний
+            "raw_data": 0          // % влияния самих данных
+        },
+        "price_analysis": {
+            "avg": 0, "med": 0, "q25": 0,
+            "trend": "up" | "down" | "stable"
+        }
+    }
+    """
+
     @staticmethod
-    def build_product_cultivation_prompt(product_key: str, items: list, previous_context: str = "") -> str:  
+    def _format_linked_block(text: str) -> str:
+        if not text: return ""
+        return f"""[СВЯЗАННЫЕ ЗНАНИЯ (КОНТЕКСТ)]
+        {text}
+        (Используй это для сравнения. Если текущие данные противоречат контексту — это аномалия)."""
+
+    @staticmethod
+    def build_product_cultivation_prompt(product_key: str, items: list, 
+                                         previous_context: str = "", 
+                                         user_interests: str = "",
+                                         user_instructions: str = "",
+                                         linked_context: str = "") -> str:
         current_date = datetime.now().strftime("%d.%m.%Y")
+        
+        prices = [i.get('price', 0) for i in items if i.get('price', 0) > 100]
+        stats_hint = ""
+        if prices:
+            med = int(statistics.median(prices))
+            q25 = int(sorted(prices)[int(len(prices)*0.25)])
+            stats_hint = f"РАСЧЕТНАЯ СТАТИСТИКА: Median={med}, Q25={q25} (Твоя цель <= {q25})"
+
         items_text = ""
         for item in items[:40]:
-            p = item.get('price', 0)
-            t = item.get('title', 'N/A')
-            v = item.get('verdict', 'N/A')
-            d = item.get('date_text', '')
-            items_text += f"- {t} | {p} руб. | {v} | {d}\n"
-        
-        context_block = ""
-        if previous_context:
-            context_block = f"""
-            [ПРЕДЫДУЩИЕ ЗНАНИЯ]
-            Ранее ты уже анализировал этот товар. Вот твои прошлые выводы:
-            \"\"\"{previous_context}\"\"\"
-            ЗАДАЧА: Обнови эти знания с учетом новых данных. Если рынок изменился — укажи это. Если стабилен — подтверди старые выводы.
-            """
+            items_text += f"- {item.get('title')} | {item.get('price')} руб. | {item.get('date_text')}\n"
 
         return f"""
-        СЕГОДНЯ: {current_date}.
-        ТЫ — ПРОФЕССИОНАЛЬНЫЙ РЫНОЧНЫЙ АНАЛИТИК по новому и Б/У компьютерному железу.
-        ТОВАР: "{product_key}"
+        СЕГОДНЯ: {current_date}. РОЛЬ: Профессиональный скупщик техники. Цель — маржа 20-50%.
+        ОБЪЕКТ: "{product_key}"
+        {stats_hint}
 
-        {context_block}
-
-        [НОВЫЕ ДАННЫЕ (список лотов)]
+        [ВХОДНЫЕ ДАННЫЕ]
+        1. ИНТЕРЕСЫ: "{user_interests}"
+        2. ИНСТРУКЦИИ: "{user_instructions}"
+        3. ЛОТЫ (raw_data):
         {items_text}
-        
-        ТРЕБОВАНИЯ К ОТВЕТУ (JSON):
-        1. "formation_reason": Опиши в 1 предложении, почему этот кластер товаров сформировался.
-        2. "data_sufficiency": Оцени объем данных: "LOW" (мало, <10 лотов), "MEDIUM" (есть база, 10-20 лотов), "HIGH" (отличная выборка, >30 лотов).
-        3. Остальные требования в самом формате JSON ниже.
 
-        FORMAT JSON:
-        {{
-            "formation_reason": "Причина формирования...",
-            "data_sufficiency": "LOW" | "MEDIUM" | "HIGH",
-            "summary": "Краткий обзор рынка в 2–3 предложения. Укажи диапазон цен. Отметь динамику (растет/падает или стабильна).",
-            "price_analysis": {{
-                "q25_price": (нижний квартиль — цель для покупки),
-                "median_price": (медиана рынка),
-                "trend": "up" | "down" | "stable",
-                "liquidity": "high" | "medium" | "low"
-            }},
-            "risk_factors": ["риск1", "риск2"],
-            "best_buy_zone": "Цены до X руб. — выгодная покупка",
-            "seller_insights": "Частники преобладают" | "Много перекупов" | "Смешанно"
-        }}
-        ВАЖНО: Нижний квартиль (q25) — главная цель для скупщика!
+        {ChunkCultivationPrompts._format_linked_block(linked_context)}
+        {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
+
+        ЗАДАЧА: Оцени ликвидность и цену (Q25).
+        ВЕСА: raw_data (база), linked_chunks (влияние категории), system_prompt (экспертиза).
+        {ChunkCultivationPrompts.COMMON_FORMAT}
         """
     
     @staticmethod
-    def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict], previous_context: str = "") -> str:
+    def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict], 
+                                          previous_context: str = "",
+                                          user_interests: str = "",
+                                          linked_context: str = "") -> str: # <-- NEW ARG
         current_date = datetime.now().strftime("%d.%m.%Y")
 
         products_text = ""
         for p in sub_products:
-            p_content = p.get('content') or {}
-            analysis = p_content.get('analysis') or {} if isinstance(p_content, dict) else {}
-            price = analysis.get('price_analysis', {})
-            
-            p_name = p.get('chunk_key', 'Unknown')
-            p_trend = price.get('trend', '?')
-            p_avg = price.get('avg_price', 0)
-            
-            products_text += f"- Модель: {p_name} | Тренд: {p_trend} | Ср.цена: {p_avg}\n"
-
-        context_block = ""
-        if previous_context:
-            context_block = f"ПРЕДЫДУЩИЙ ОБЗОР КАТЕГОРИИ:\n{previous_context}\nОбнови его на основе свежих данных по моделям."
+            content = p.get('content') or {}
+            if isinstance(content, str):
+                try: content = json.loads(content)
+                except: content = {}
+            status = content.get('display_status', 'N/A')
+            desc = content.get('main_description', '')[:60]
+            products_text += f"- {p.get('chunk_key')}: {status} ({desc}...)\n"
 
         return f"""
-        СЕГОДНЯ: {current_date}.
-        АНАЛИЗ КАТЕГОРИИ: "{category_key}"
-        Твоя задача — обобщить данные по конкретным моделям внутри этой категории.
+        СЕГОДНЯ: {current_date}. РОЛЬ: Аналитик категорий.
+        КАТЕГОРИЯ: "{category_key}"
 
-        {context_block}
-
-        [ДАННЫЕ ПО МОДЕЛЯМ]
+        [ИНТЕРЕСЫ] "{user_interests}"
+        [СОСТАВ (raw_data)]
         {products_text}
 
-        ТРЕБОВАНИЯ К ОТВЕТУ (JSON):
-        1. "formation_reason": Почему эта категория активна (например: "Много данных по разным моделям RTX").
-        2. "data_sufficiency": "LOW" (мало моделей), "MEDIUM" (есть выборка), "HIGH" (полная картина).
-        3. "summary": Общий обзор категории.
-        4. Остальные требования в самом формате JSON ниже.
-        
-        FORMAT JSON:
-        {{
-            "formation_reason": "...",
-            "data_sufficiency": "LOW" | "MEDIUM" | "HIGH",
-            "summary": "Общий обзор...",
-            "subcategories": {{
-                "best_value": "модель",
-                "high_end": "модель",
-                "budget": "модель"
-            }},
-            "market_insights": "Какие общие тренды видны (падение цен, дефицит)?",
-            "seasonal_patterns": "Есть ли сезонность?"
-        }}
+        {ChunkCultivationPrompts._format_linked_block(linked_context)}
+        {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
+
+        ЗАДАЧА: Дай обзор категории.
+        ВЕСА: raw_data (продукты внутри), linked_chunks (глобальный контекст рынка из Базы).
+        {ChunkCultivationPrompts.COMMON_FORMAT}
         """
     
     @staticmethod
-    def build_database_cultivation_prompt(db_stats: dict, vocabulary: list) -> str:
+    def build_database_cultivation_prompt(db_stats: dict, vocabulary: list, 
+                                          linked_context: str = "") -> str:
         vocab_str = ", ".join(vocabulary[:60])
-        
+
         return f"""
-        ГЛОБАЛЬНЫЙ АНАЛИЗ БАЗЫ ДАННЫХ.
+        ГЛОБАЛЬНЫЙ АНАЛИЗ БАЗЫ.
+        Записей: {db_stats.get('total_items')}.
+        Топ слов (raw_data): {vocab_str}
+
+        {ChunkCultivationPrompts._format_linked_block(linked_context)}
         
-        СТАТИСТИКА:
-        - Всего записей: {db_stats.get('total_items')}
-        
-        [РЕАЛЬНЫЙ СЛОВАРЬ]
-        [{vocab_str}]
-        
-        ЗАДАЧА: Сформировать отчет о составе базы. Если в словаре нет каких-то слов, НЕ ПИШИ о них.
-        
-        FORMAT JSON:
-        {{
-            "formation_reason": "Общий анализ накопленных данных.",
-            "data_sufficiency": "HIGH",
-            "summary": "Краткий обзор преобладающих товаров.",
-            "top_categories": ["категория_1", "категория_2"],
-            "insights": "Выводы о том, что ищет пользователь."
-        }}
+        ЗАДАЧА: Опиши наполнение базы. 
+        СВЯЗЬ: В linked_chunks передан портрет пользователя. Ответь: база соответствует интересам этого пользователя?
+        {ChunkCultivationPrompts.COMMON_FORMAT}
         """
         
     @staticmethod
-    def build_ai_behavior_cultivation_prompt(actions_log: list, previous_context: str = "") -> str:
-        log_text = ""
-        for act in actions_log[-40:]:
-            atype = act.get('action_type', 'UNKNOWN')
-            dtls = act.get('details', '')
-            log_text += f"- {atype}: {dtls}\n"
-
-        context_block = ""
-        if previous_context:
-            context_block = f"ТЕКУЩИЙ ПОРТРЕТ ПОЛЬЗОВАТЕЛЯ:\n{previous_context}\nСкорректируй его, если новые действия противоречат старому портрету."
-
+    def build_ai_behavior_cultivation_prompt(actions_log: list, user_interests: str = "", 
+                                             previous_context: str = "",
+                                             linked_context: str = "") -> str: # <-- NEW ARG
+        log_text = "\n".join([f"- {a.get('action_type')}: {a.get('details')}" for a in actions_log[-40:]])
+        
         return f"""
-        АНАЛИЗ ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЯ.
-        Твоя задача — понять, кто пользователь и что он ищет, чтобы лучше фильтровать мусор.
-
-        {context_block}
-
-        [ЛОГ НОВЫХ ДЕЙСТВИЙ]
+        РОЛЬ: Аналитик поведения пользователя.
+        ИНТЕРЕСЫ: "{user_interests}"
+        ДЕЙСТВИЯ (raw_data):
         {log_text}
+        
+        {ChunkCultivationPrompts._format_linked_block(linked_context)}
+        {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
 
-        ЛЕГЕНДА:
-        - SEARCH: Пользователь вбил запрос (его интересы).
-        - CLICK: Пользователь открыл товар (сильный интерес).
-        - IGNORE: Пользователь пропустил/удалил товар (не интересно или дорого).
-
-        FORMAT JSON:
-        {{  
-            "formation_reason": "Анализ последних действий пользователя.",
-            "data_sufficiency": "MEDIUM",
-            "summary": "Портрет пользователя (например: 'ищет дешевые видеокарты под ремонт' или 'перекуп/геймер').",
-            "user_profile": {{
-                 "interests": ["интерес1", "интерес2"],
-                 "anti_interests": ["игнор"],
-                 "budget_level": "low" | "medium" | "high" | "mixed"
-            }},
-            "strategy_hint": "Совет для AI-фильтра (например: 'Строже фильтруй оверпрайс')."
-        }}
+        ЗАДАЧА: Сравни слова и действия.
+        СВЯЗЬ: В linked_chunks передан обзор Базы Данных. Понимает ли пользователь рынок?
+        {ChunkCultivationPrompts.COMMON_FORMAT}
         """

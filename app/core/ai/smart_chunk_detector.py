@@ -1,5 +1,5 @@
-from collections import Counter, defaultdict
-from typing import List, Tuple, Dict
+from collections import defaultdict
+from typing import List, Tuple
 from app.core.log_manager import logger
 from app.core.text_utils import FeatureExtractor
 
@@ -7,76 +7,96 @@ class SmartChunkDetector:
     
     @staticmethod
     def detect_new_chunks(memory_manager) -> List[Tuple[str, str, str]]:
+        """
+        Анализирует сырые данные и предлагает кандидатов на создание чанков.
+        Использует двухуровневую группировку: Кластер (Семейство) -> Продукт.
+        """
         to_create = []
 
         try:
-            rows = memory_manager.raw_data.get_items(limit=5000)
+            # 1. Загружаем свежие данные
+            rows = memory_manager.raw_data.get_items(limit=3000)
             if not rows:
                 return []
 
-            product_prices: Dict[str, List[int]] = defaultdict(list)
-            category_counts = Counter()
-            product_examples = {} 
+            # Статистика
+            cluster_stats = defaultdict(int)        # cluster_key -> count
+            product_stats = defaultdict(list)       # product_key -> list of prices
+            product_to_cluster = {}                 # product_key -> cluster_key
             
+            # Словари для красивых названий
+            cluster_display_names = {}
+            product_display_names = {}
+
+            # 2. Проход по данным и группировка
             for row in rows:
                 title = row.get('title', '')
                 price = row.get('price', 0)
                 
-                # Используем обновленный FeatureExtractor (с поддержкой PC/System)
+                # Используем новый универсальный FeatureExtractor
                 semantic = FeatureExtractor.extract_semantic_data(title)
-
-                cat = semantic['category']
-                sub = semantic['sub_category']
-                pkey = semantic['product_key']
-
-                if not pkey: continue
-
-                # Собираем цены для проверки качества данных
-                if price > 100: # Игнорируем совсем мусор/договорные
-                    product_prices[pkey].append(price)
                 
-                if pkey not in product_examples:
-                    product_examples[pkey] = semantic['clean_name']
+                p_key = semantic['product_key']
+                c_key = semantic['cluster_key']
+                entity_type = semantic['entity_type']
+                clean_name = semantic['clean_name']
 
-                if cat != 'MISC':
-                    cat_key = f"{cat}_{sub}" if sub != 'general' else cat
-                    category_counts[cat_key] += 1
+                # Игнорируем мусорные цены для статистики (но учитываем товар в количестве)
+                valid_price = price > 100
 
-            # Анализ продуктов с проверкой качества данных
-            for pkey, prices in product_prices.items():
+                # Агрегация по Кластерам (Нейро-БД)
+                if c_key:
+                    cluster_stats[c_key] += 1
+                    # Сохраняем имя для заголовка (берем самое короткое или чистое)
+                    if c_key not in cluster_display_names:
+                        cluster_display_names[c_key] = clean_name
+                
+                # Агрегация по Продуктам
+                if p_key and entity_type == 'PRODUCT':
+                    if valid_price:
+                        product_stats[p_key].append(price)
+                    
+                    product_to_cluster[p_key] = c_key
+                    if p_key not in product_display_names:
+                        product_display_names[p_key] = clean_name
+
+            # 3. Анализ Кластеров (CATEGORY chunks)
+            # Если в семействе (например, RTX 30 Series) много товаров -> создаем чанк категории
+            for c_key, count in cluster_stats.items():
+                if count >= 8: # Порог создания кластера
+                    existing = memory_manager.knowledge.get_chunk_by_key_and_type(c_key, "CATEGORY")
+                    if not existing:
+                        # Формируем красивое название
+                        display_name = cluster_display_names.get(c_key, c_key).upper()
+                        # Если это спец. ключи из экстрактора, делаем их читаемыми
+                        if "series" in c_key:
+                            display_name = c_key.replace("gpu_", "").replace("cpu_", "").replace("_", " ").upper()
+                        
+                        to_create.append(("CATEGORY", c_key, f"Обзор семейства: {display_name}"))
+
+            # 4. Анализ Продуктов (PRODUCT chunks)
+            for p_key, prices in product_stats.items():
                 count = len(prices)
                 
-                # 1. Порог количества
+                # Порог для конкретного товара ниже, чем для кластера
                 if count < 5: continue
 
-                # 2. Проверка валидности данных (Price Consistency Check)
+                # Проверка на качество данных (отсеиваем шум)
                 if not SmartChunkDetector._is_data_clean(prices):
-                    logger.dev(f"Skipping dirty chunk candidate: {pkey} (High variance)", level="DEBUG")
                     continue
 
-                # 3. Проверка существования
-                existing = memory_manager.knowledge.get_chunk_by_key_and_type(pkey, "PRODUCT")
+                existing = memory_manager.knowledge.get_chunk_by_key_and_type(p_key, "PRODUCT")
                 if not existing:
-                    nice_name = product_examples.get(pkey, pkey).upper()
-                    to_create.append(("PRODUCT", pkey, f"Анализ товара: {nice_name}"))
+                    display_name = product_display_names.get(p_key, p_key)
+                    to_create.append(("PRODUCT", p_key, f"Слепок товара: {display_name}"))
 
-            # Анализ категорий
-            for cat_key, count in category_counts.items():
-                if count >= 8:
-                    existing = memory_manager.knowledge.get_chunk_by_key_and_type(cat_key, "CATEGORY")
-                    if not existing:
-                        nice_cat = cat_key.replace('_', ' ').upper()
-                        to_create.append(("CATEGORY", cat_key, f"Обзор рынка: {nice_cat}"))
-
-            # Глобальные чанки
+            # 5. Глобальные чанки (База и Поведение)
             total_items = memory_manager.get_stats().get("total", 0)
-            if total_items >= 10:
-                existing_db = memory_manager.knowledge.get_chunk_by_key_and_type("general", "DATABASE")
-                if not existing_db:
+            if total_items >= 20:
+                if not memory_manager.knowledge.get_chunk_by_key_and_type("general", "DATABASE"):
                     to_create.append(("DATABASE", "general", "Глобальная аналитика базы"))
 
-            existing_beh = memory_manager.knowledge.get_chunk_by_key_and_type("user_behavior", "AI_BEHAVIOR")
-            if not existing_beh:
+            if not memory_manager.knowledge.get_chunk_by_key_and_type("user_behavior", "AI_BEHAVIOR"):
                  to_create.append(("AI_BEHAVIOR", "user_behavior", "Портрет пользователя"))
 
         except Exception as e:
@@ -87,33 +107,32 @@ class SmartChunkDetector:
     @staticmethod
     def _is_data_clean(prices: List[int]) -> bool:
         """
-        Проверяет, не содержит ли набор данных явных выбросов (мусора),
-        которые могут испортить статистику.
-        Например: [30000, 32000, 29000, 1500] -> 1500 это коробка или кабель.
+        Фильтр "мусорных" чанков.
+        Если разброс цен слишком дикий (коробка за 500р и карта за 30к),
+        лучше не создавать чанк продукта, а оставить анализ на уровне кластера.
         """
         if not prices: return False
         avg = sum(prices) / len(prices)
-        
-        # Если среднее слишком мало, анализ не имеет смысла (мелочевка)
-        if avg < 1000: return True 
+        if avg < 500: return False # Слишком дешево для серьезного анализа
 
-        # Считаем товары, которые стоят дешевле 20% от средней цены
-        # Это грубый, но эффективный фильтр "коробок и кабелей"
+        # 1. Фильтр совсем низких выбросов (< 20% от средней)
         low_threshold = avg * 0.2
-        outliers = sum(1 for p in prices if p < low_threshold)
+        valid_prices = [p for p in prices if p > low_threshold]
         
-        # Если "мусора" больше 20% от выборки - данные грязные
-        if outliers / len(prices) > 0.2:
+        # Если после фильтрации осталось мало товаров -> мусор
+        if len(valid_prices) < len(prices) * 0.7:
             return False
             
         return True
 
     @staticmethod
     def create_missing_chunks(memory_manager, chunk_manager):
+        """Запускает детекцию и создание."""
         missing = SmartChunkDetector.detect_new_chunks(memory_manager)
         created = 0
         for chunk_type_str, key, title in missing:
             try:      
+                # Используем метод менеджера, он теперь принимает английские типы
                 chunk_manager.create_pending_chunk(
                     chunk_type_str,
                     key,
@@ -124,4 +143,4 @@ class SmartChunkDetector:
                 logger.error(f"Failed to auto-create chunk {key}: {e}", token="ai-det")
 
         if created:
-            logger.info(f"Обнаружено и создано {created} новых областей знаний.", token="ai-det")
+            logger.info(f"Сформировано {created} новых узлов 'Нейро-БД'.", token="ai-det")
