@@ -1,7 +1,7 @@
 import math
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer
 
 from app.core.worker import ParserWorker, CategoryScannerWorker
 from app.core.ai.ai_manager import AIManager
@@ -420,16 +420,54 @@ class ParserController(QObject):
         self.ai_manager._debug_logs = debug_mode
         self.ai_manager.start_chat_request(messages)
     
-    def start_cultivation(self):
+    def scan_database(self):
+        """Просто сканирует БД на наличие новых групп товаров"""
         if self.chunk_manager:
-            user_instr = ""
-            if hasattr(self.parent(), '_get_current_ai_instructions'):
-                user_instr = self.parent()._get_current_ai_instructions()
-
-            logger.info("Запуск актуализации памяти...", token="ai-cult")
-            self.chunk_manager.request_user_cultivation(user_instructions=user_instr)
+            self.chunk_manager.scan_database_only()
         else:
-            logger.error("Менеджер \"Памяти ИИ\" не инициализирован...")
+            logger.error("ChunkManager не инициализирован.")
+
+    def start_cultivation(self):
+        """Запускает процесс генерации отчетов с предварительным поднятием сервера"""
+        logger.info("Контроллер: Получен запрос на старт культивации")
+
+        if not self.chunk_manager:
+            logger.error("Менеджер памяти не инициализирован.")
+            return
+
+        # 1. Убеждаемся, что менеджер ИИ существует
+        self.ensure_ai_manager()
+
+        # 2. Проверяем модель
+        if not self.ai_manager.has_model():
+            self.error_occurred.emit("Не выбрана модель нейросети! Перейдите в настройки.")
+            return
+
+        # 3. Логика запуска
+        def _run_logic():
+            logger.info("Контроллер: Сервер готов, запускаем обработку очереди чанков...")
+            user_instr = "" 
+            self.chunk_manager.cultivate_pending_chunks(user_instructions=user_instr)
+
+        # 4. Проверяем статус сервера
+        if not self.ai_manager._server_ready:
+            logger.progress("Запуск нейросети для генерации отчетов...", token="ai_server_boot")
+            self.ui_lock_requested.emit(True) 
+            
+            # Используем lambda для замыкания, чтобы точно сработал слот
+            self.ai_manager.server_ready_signal.connect(
+                lambda: self.ui_lock_requested.emit(False), 
+                Qt.ConnectionType.SingleShotConnection
+            )
+            self.ai_manager.server_ready_signal.connect(
+                _run_logic, 
+                Qt.ConnectionType.SingleShotConnection
+            )
+            
+            self.ai_manager.ensure_server()
+        else:
+            # Сервер уже работает
+            _run_logic()
 
     def _on_cultivation_finished(self):
         logger.info("Культивация завершена...", token="ai-cult")

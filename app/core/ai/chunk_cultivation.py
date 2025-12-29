@@ -149,22 +149,31 @@ class ChunkCultivationManager(QObject):
         self.chunk_status_changed.emit(chunk_id, ChunkStatus.PENDING.value)
         return chunk_id
 
-    def request_user_cultivation(self, user_instructions: str = ""):
+    def scan_database_only(self):
+        """Только поиск новых чанков в сырых данных"""
         self._create_new_chunks_from_data()
-        
+        logger.info("Сканирование базы завершено.", token="ai-cult")
+
+    def cultivate_pending_chunks(self, user_instructions: str = ""):
+        """Запуск обработки для всех чанков со статусом PENDING"""
         pending = self.memory.get_pending_chunks()
-        
+
         if not pending:
-            logger.info("Нет чанков, требующих обновления...", token="ai-cult")
+            logger.info("Нет чанков, требующих обновления.", token="ai-cult")
             return
-            
+
         logger.info(f"Запуск культивации для {len(pending)} чанков...", token="ai-cult")
         for chunk in pending:
             self._initiate_cultivation(
-                chunk, 
-                ChunkCultivationTrigger.USER_BUTTON, 
+                chunk,
+                ChunkCultivationTrigger.USER_BUTTON,
                 user_instructions=user_instructions
             )
+
+    def request_user_cultivation(self, user_instructions: str = ""):
+        """Legacy метод: делает всё сразу (для обратной совместимости, если где-то используется)"""
+        self.scan_database_only()
+        self.cultivate_pending_chunks(user_instructions)
 
     def _check_triggers(self):
         try:

@@ -38,6 +38,7 @@ DEFAULT_INTERESTS_TEXT = """
 
 class ChunkCard(QFrame):    
     deleted = pyqtSignal(int)
+    refresh_requested = pyqtSignal(int)
     
     def __init__(self, chunk_data: dict, parent=None):
         super().__init__(parent)
@@ -88,7 +89,7 @@ class ChunkCard(QFrame):
         self.refresh_btn = QPushButton("↻")
         self.refresh_btn.setFixedSize(24, 24)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_btn.setToolTip("Пересоздать этот чанк")
+        self.refresh_btn.setToolTip("Отправить на перегенерацию") 
         self.refresh_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
@@ -154,9 +155,7 @@ class ChunkCard(QFrame):
                  bar_layout.setStretch(1, 100 - pct)
 
     def _on_refresh(self):
-        # Сигнал отправляется родителю
-        if self.parent() and hasattr(self.parent(), '_on_card_refresh_requested'):
-             self.parent()._on_card_refresh_requested(self.chunk_id)
+        self.refresh_requested.emit(self.chunk_id)
 
     def _update_appearance(self):
         self.status = self.chunk_data.get('status')
@@ -187,7 +186,8 @@ class ChunkCard(QFrame):
 
     def _render_pending(self):
         self.icon_label.setText("⏳")
-        self.status_label.setText("В ожидании обработки...")
+        self.status_label.setText("Ожидает генерации отчета...")
+        self.status_label.setStyleSheet(f"color: {Palette.WARNING};")
         self.delete_btn.setVisible(True)
 
     def _render_initializing(self):
@@ -323,7 +323,8 @@ class ChunkCard(QFrame):
 
 
 class AIMemoryPanel(QWidget):
-    update_memory_requested = pyqtSignal()
+    scan_database_signal = pyqtSignal()
+    generate_reports_signal = pyqtSignal()
     chunk_deleted = pyqtSignal(int)
     
     def __init__(self, parent=None):
@@ -431,14 +432,28 @@ class AIMemoryPanel(QWidget):
         left_col.addWidget(self.scroll)
         
         footer_layout = QHBoxLayout()
+        footer_layout.setSpacing(Spacing.MD)
+        
+        # Кнопка 1: Сканировать базу (бывшая Актуализировать)
+        self.btn_scan = QPushButton("🔍 Сканировать базу")
+        self.btn_scan.setToolTip("Быстрый поиск новых групп товаров в базе данных (без запуска ИИ)")
+        self.btn_scan.setStyleSheet(Components.nav_button()) # Стиль поспокойнее
+        self.btn_scan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_scan.clicked.connect(self._on_scan_clicked)
+        
+        # Кнопка 2: Сгенерировать отчеты (НОВАЯ)
+        self.btn_generate = QPushButton("✨ Сгенерировать все отчеты")
+        self.btn_generate.setToolTip("Запуск нейросети для обработки всех ожидающих чанков")
+        self.btn_generate.setStyleSheet(Components.start_button())
+        self.btn_generate.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_generate.clicked.connect(self._on_generate_clicked)
+        self.btn_generate.setEnabled(False) # По умолчанию выкл, включим если есть PENDING
+
+        footer_layout.addWidget(self.btn_scan)
+        footer_layout.addWidget(self.btn_generate)
         footer_layout.addStretch()
         
-        self.btn_update = QPushButton("Актуализировать память")
-        self.btn_update.setStyleSheet(Components.start_button())
-        self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_update.clicked.connect(self._on_update_clicked)
-        left_col.addWidget(self.btn_update, 0, Qt.AlignmentFlag.AlignRight)
-        
+        left_col.addLayout(footer_layout)
         columns_layout.addLayout(left_col, stretch=3)
         
         right_col = QFrame()
@@ -813,22 +828,39 @@ class AIMemoryPanel(QWidget):
         self.cards_layout.addStretch()
         self._update_stats()
 
+    def _on_scan_clicked(self):
+        """Только сканирование БД"""
+        self.btn_scan.setEnabled(False)
+        self.btn_scan.setText("Сканирование...")
+        self.scan_database_signal.emit()
+        
+        # Визуальный откат кнопки через таймер
+        QTimer.singleShot(1000, lambda: self.btn_scan.setText("🔍 Сканировать базу"))
+        QTimer.singleShot(1000, lambda: self.btn_scan.setEnabled(True))
+
+    def _on_generate_clicked(self):
+        """Запуск ИИ обработки"""
+        self.btn_generate.setEnabled(False)
+        self.btn_generate.setText("Запуск нейросети...")
+        self.generate_reports_signal.emit()
+        
+        # Кнопка разблокируется, когда придут статусы от менеджера, 
+        # или можно разблокировать через таймер, если процесс долгий
+        QTimer.singleShot(5000, lambda: self._update_generate_button_state())
+
     def _on_card_refresh_requested(self, chunk_id):
         if not self.memory_manager: return
-        
-        # 1. Сбрасываем статус на PENDING
+
+        # Ставим статус PENDING
         self.memory_manager.update_chunk_status(chunk_id, 'PENDING')
         
-        # 2. Обновляем UI мгновенно
         if chunk_id in self.cards:
             data = self.memory_manager.get_chunk_by_id(chunk_id)
             self.cards[chunk_id].update_data(data)
-            
-        # 3. Запускаем "Актуализацию" (это триггернет очередь)
-        # Важно: это вызовет check_and_cultivate в менеджере
-        self.update_memory_requested.emit() 
-        
-        logger.info(f"Запрошена перекультивация чанка {chunk_id}", token="ai-mem")
+
+        # Сразу запрашиваем генерацию, так как пользователь явно нажал "Обновить"
+        logger.info(f"Запрошено обновление отчета для чанка {chunk_id}, сигнал отправлен...", token="ai-mem")
+        self.generate_reports_signal.emit()
 
     def _add_card(self, chunk_data):
         card = ChunkCard(chunk_data, parent=self)
@@ -902,8 +934,34 @@ class AIMemoryPanel(QWidget):
             self.refresh_timer.stop()
             
     def _update_stats(self):
+        # Обновляем статистику и состояние кнопки генерации
         total = len(self.cards)
         ready = sum(1 for c in self.cards.values() if c.status in ['READY', 'COMPRESSED'])
-        compressed = sum(1 for c in self.cards.values() if c.status == 'COMPRESSED')
+        pending = sum(1 for c in self.cards.values() if c.status == 'PENDING')
         
-        self.stats_lbl.setText(f"Всего чанков: {total} | Готово: {ready} | Сжато: {compressed}")
+        self.stats_lbl.setText(f"Всего: {total} | Готово: {ready} | Ожидают: {pending}")
+        
+        # Включаем кнопку генерации только если есть что генерировать
+        self._update_generate_button_state(pending)
+
+    def _update_generate_button_state(self, pending_count=None):
+        if pending_count is None:
+            pending_count = sum(1 for c in self.cards.values() if c.status == 'PENDING')
+            
+        if pending_count > 0:
+            self.btn_generate.setEnabled(True)
+            self.btn_generate.setText(f"✨ Сгенерировать отчеты ({pending_count})")
+            self.btn_generate.setStyleSheet(Components.start_button())
+        else:
+            self.btn_generate.setEnabled(False)
+            self.btn_generate.setText("Нет новых данных")
+            self.btn_generate.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {Palette.BG_DARK_3};
+                    border: 1px solid {Palette.BORDER_SOFT};
+                    color: {Palette.TEXT_MUTED};
+                    border-radius: {Spacing.RADIUS_NORMAL}px;
+                    padding: 10px 18px;
+                    font-weight: bold;
+                }}
+            """)

@@ -164,14 +164,16 @@ class MainWindow(QWidget):
                 ai_manager=self.controller.ai_manager
             )
             
-        # Связываем панель с менеджерами
         self.memory_panel.set_managers(
             self.memory_manager,
             self.controller.chunk_manager
         )
         
-        # Подключаем кнопку "Актуализировать" из панели к контроллеру
-        self.memory_panel.update_memory_requested.connect(
+        self.memory_panel.scan_database_signal.connect(
+            self.controller.scan_database
+        )
+
+        self.memory_panel.generate_reports_signal.connect(
             self.controller.start_cultivation
         )
 

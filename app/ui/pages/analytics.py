@@ -50,11 +50,15 @@ class AnalyticsWidget(QWidget):
         self.tabs.addTab(self.ai_control, "Чат")
 
         self.ai_control.set_memory_manager(self.memory)
-        
+
         if self.controller:
             self.controller.cultivation_finished.connect(self.ai_control.cultivation_finished.emit)
 
         self.database_tab = DatabaseTab(self.memory)
+        
+        if self.controller:
+            self.database_tab.recultivate_requested.connect(self.controller.start_cultivation)
+
         self.tabs.addTab(self.database_tab, "База Данных")
 
         wip2_widget = QWidget()

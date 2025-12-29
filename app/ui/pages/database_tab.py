@@ -22,12 +22,8 @@ from app.config import BASE_APP_DIR
 
 
 class DatabaseTab(QWidget):
-    """
-    New tab for viewing and managing the memory database.
-    Provides complete access to raw_items and ai_knowledge.
-    """
-    
-    item_selected = pyqtSignal(dict)  # Emit when an item/chunk is selected
+    item_selected = pyqtSignal(dict)
+    recultivate_requested = pyqtSignal()
     
     def __init__(self, memory_manager, parent=None):
         super().__init__(parent)
@@ -680,17 +676,16 @@ class DatabaseTab(QWidget):
     def _recultivate(self):
         if not hasattr(self, 'current_selection') or self.current_selection['type'] != 'knowledge': return
         data = self.current_selection['data']
-        
-        # Сигнал в MainWindow для запуска
-        self.item_selected.emit({
-            'action': 'recultivate',
-            'chunk_id': data.get('id'),
-            'chunk_type': data.get('chunk_type'),
-            'chunk_key': data.get('chunk_key')
-        })
-        # Сразу ставим статус
+
+        # Обновляем статус в БД
         self.memory.knowledge.update_chunk_status(data.get('id'), 'PENDING')
+        
+        # Обновляем UI таблицы
         self._refresh_data()
+        
+        # Сигнализируем, что пора запускать нейросеть
+        logger.info(f"Запрошена перекультивация из БД для чанка {data.get('id')}")
+        self.recultivate_requested.emit()
     
     def _clear_details(self):
         """Clear the details panel."""
