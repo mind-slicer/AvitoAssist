@@ -5,11 +5,10 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QToolTip, QLineEdit,
-    QTabWidget, QPlainTextEdit, QCheckBox,
-    QComboBox, QMessageBox, QLayout
+    QTabWidget, QPlainTextEdit, QCheckBox, QComboBox, QMessageBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QPoint, QPointF
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QPointF, QSize, QRect, QPoint
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont
 
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.core.log_manager import logger
@@ -62,56 +61,37 @@ class ProgressThrobber(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        max_radius = 8
-        spacing = 8
-        x = max_radius # Центр первого круга по X
-        y = self.height() // 2
+        rect = self.rect().adjusted(4, 4, -4, -4)
+        
+        # Background track
+        pen_bg = QPen(QColor(Palette.BG_DARK_3), 4)
+        painter.setPen(pen_bg)
+        painter.drawEllipse(rect)
+        
+        # Rotating Arc (Throbber effect)
+        pen_active = QPen(QColor(Palette.PRIMARY), 4)
+        pen_active.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_active)
+        # Draw a 90 degree arc rotating
+        painter.drawArc(rect, -self.angle * 16, -100 * 16) 
 
-        for key, color_hex, _, _ in self.mapping:
-            val = self.weights.get(key, 0)
-            base_color = QColor(color_hex)
-            
-            # 1. Рисуем контур (пустой круг)
-            painter.setPen(QPen(QColor(Palette.TEXT_MUTED), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            # Используем QPoint(x, y) и int радиусы
-            painter.drawEllipse(QPoint(x, y), max_radius, max_radius)
-            
-            # 2. Рисуем заполнение (растет из центра)
-            if val > 0:
-                # Радиус зависит от веса (0..100)
-                fill_radius = max_radius * (val / 100.0)
-                # Минимальный размер точки
-                if fill_radius < 2: fill_radius = 2 
-                
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(base_color))
-                
-                # --- FIX: Явное приведение радиуса к int во избежание TypeError ---
-                r_int = int(fill_radius)
-                painter.drawEllipse(QPoint(x, y), r_int, r_int)
-                # ----------------------------------------------------------------
-
-            x += (max_radius * 2) + spacing
+        # Text
+        painter.setPen(QColor(Palette.TEXT))
+        font = QFont(Typography.UI, 8, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{self.percent}")
 
 
 class InfluenceCircles(QWidget):
-    """
-    Рисует 5 кружков влияния:
-    1. Raw Data (White)
-    2. System (Red)
-    3. Instructions (Orange)
-    4. Interests (Blue)
-    5. Linked (Lime)
-    """
     def __init__(self, weights: dict, parent=None):
         super().__init__(parent)
-        self.setFixedSize(160, 26)
+        self.setFixedSize(240, 60)
         self.weights = weights or {}
+        self.hovered_index = -1
         
         self.mapping = [
             ("raw_data", "#E0E0E0", "Сырые данные", "Фактическая статистика лотов и цен в БД."),
-            ("system_prompt", "#FF4D4F", "Роль", "Базовая роль нейросети заданная в главном промпте."),
+            ("system_prompt", "#9C27B0", "Роль", "Базовая роль нейросети заданная в главном промпте."),
             ("user_instructions", "#FA8C16", "Инструкции", "Ваши ручные указания для этого чанка."),
             ("user_interests", "#1890FF", "Интересы", "Совпадение с вашим списком интересов."),
             ("linked_chunks", "#A0D911", "Контекст", "Влияние родительских или связанных знаний.")
@@ -121,48 +101,109 @@ class InfluenceCircles(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Используем float для координат
-        max_radius = 8.0
-        spacing = 8.0
-        x = 8.0 # Начальный отступ (радиус первого круга)
-        y = self.height() / 2.0
 
-        for key, color_hex, _, _ in self.mapping:
+        max_radius = 12.0
+        spacing = 10.0
+        
+        # Сдвигаем начало отрисовки правее (было 12.0)
+        x = 80.0
+        
+        # Поднимаем кружки выше центра, чтобы снизу вместился текст
+        # (self.height() / 2.0) - 8.0
+        y = (self.height() / 2.0) - 8.0
+
+        for idx, (key, color_hex, _, _) in enumerate(self.mapping):
             val = self.weights.get(key, 0)
             base_color = QColor(color_hex)
-            
             center = QPointF(x, y)
 
             # 1. Рисуем контур (пустой круг)
-            painter.setPen(QPen(QColor(Palette.TEXT_MUTED), 1))
+            painter.setPen(QPen(QColor(Palette.TEXT_MUTED), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(center, max_radius, max_radius)
-            
-            # 2. Рисуем заполнение (растет из центра)
+
+            # 2. Рисуем заполнение
             if val > 0:
-                # Радиус зависит от веса (0..100)
                 fill_radius = max_radius * (val / 100.0)
-                # Минимальный размер точки
-                if fill_radius < 2.0: fill_radius = 2.0
-                
+                if fill_radius < 3.0: fill_radius = 3.0
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(base_color))
-                # Теперь все аргументы float, ошибок не будет
                 painter.drawEllipse(center, fill_radius, fill_radius)
+
+            # 3. ВСЕГДА рисуем процент под кружком (убрали условие if idx == self.hovered_index)
+            painter.setPen(QColor(Palette.TEXT))
+            # Можно сделать шрифт чуть меньше или оставить как есть
+            font = QFont(Typography.UI, 8, QFont.Weight.Bold)
+            painter.setFont(font)
+            
+            # Текст позиционируем под кружком. 
+            # y + max_radius + 4 - это начало текста. Высота 15px.
+            text_rect = QRect(int(x - max_radius), int(y + max_radius + 4), int(max_radius * 2), 15)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, f"{val}%")
 
             x += (max_radius * 2) + spacing
 
+    def leaveEvent(self, event):
+        """Мышь покинула виджет"""
+        if self.hovered_index != -1:
+            self.hovered_index = -1
+            self.update()
+        super().leaveEvent(event)
+
     def event(self, event):
         if event.type() == QEvent.Type.ToolTip:
-            parts = ["<b>ВЛИЯНИЕ НА ВЫВОДЫ ИИ:</b>"]
-            for key, _, label, desc in self.mapping:
+            # Параметры должны совпадать с paintEvent()
+            max_radius = 12.0
+            spacing = 10.0
+            x_start = 80.0
+            y_center = (self.height() / 2.0) - 8.0
+    
+            # 1) Определяем, над каким кружком курсор (не зависит от mouseMoveEvent)
+            pos = event.pos()
+            hovered = -1
+            for idx in range(len(self.mapping)):
+                circle_x = x_start + idx * (max_radius * 2 + spacing)
+                dx = pos.x() - circle_x
+                dy = pos.y() - y_center
+                if (dx * dx + dy * dy) ** 0.5 <= max_radius:
+                    hovered = idx
+                    break
+                
+            if hovered == -1:
+                QToolTip.hideText()
+                event.ignore()
+                return True
+    
+            self.hovered_index = hovered  # если вам где-то ещё нужен индекс
+    
+            # 2) HTML тултип
+            lines = []
+            lines.append(
+                f"<div style='font-family: {Typography.UI}; font-size: 12px; color: #E0E0E0;'>"
+            )
+            lines.append("<b>Веса влияния на этот ответ:</b><br>")
+    
+            for key, color_hex, name, desc in self.mapping:
                 val = self.weights.get(key, 0)
-                color = "#4CAF50" if val > 50 else "#BDBDBD"
-                parts.append(f"<br>• <b>{label}:</b> <span style='color:{color}'>{val}%</span><br>&nbsp;&nbsp;<i>{desc}</i>")
-            
-            QToolTip.showText(event.globalPos(), "".join(parts), self)
+                lines.append(
+                    "<div style='margin-bottom: 4px;'>"
+                    f"<span style='color: {color_hex}; font-size: 14px;'>●</span> "
+                    f"<b>{name}</b> ({val}%): "
+                    f"<span style='color: #B0B0B0;'>{desc}</span>"
+                    "</div>"
+                )
+    
+            lines.append("</div>")
+            html = "".join(lines)
+    
+            # 3) Якорим тултип под кружком hovered
+            circle_x = x_start + hovered * (max_radius * 2 + spacing)
+            anchor_local = QPoint(int(circle_x), int(y_center + max_radius + 8))
+            anchor_global = self.mapToGlobal(anchor_local)
+    
+            QToolTip.showText(anchor_global, html, self, self.rect())
             return True
+    
         return super().event(event)
 
 
@@ -186,7 +227,7 @@ class CollapsibleThought(QWidget):
         hl = QHBoxLayout(self.header)
         hl.setContentsMargins(0, 0, 0, 0)
         
-        self.arrow = QLabel("▶") # 🔽
+        self.arrow = QLabel("▶")
         self.arrow.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: bold;")
         
         lbl = QLabel("ХОД МЫСЛЕЙ")
@@ -199,10 +240,14 @@ class CollapsibleThought(QWidget):
         # Content
         self.content = QLabel(text)
         self.content.setWordWrap(True)
-        # --- FIX: Критично для переноса текста внутри вложенных лейаутов ---
-        self.content.setMinimumWidth(10) 
-        # ------------------------------------------------------------------
-        self.content.setStyleSheet(f"color: {Palette.TEXT}; font-style: italic; font-size: 11px; margin-left: 15px;")
+        self.content.setMinimumWidth(10)
+        self.content.setStyleSheet(f"""
+            color: {Palette.TEXT_SECONDARY}; 
+            font-size: 11px; 
+            margin-left: 5px; 
+            padding-left: 8px; 
+            border-left: 2px solid {Palette.BORDER_PRIMARY};
+        """)
         self.content.setVisible(False)
         
         self.layout.addWidget(self.header)
@@ -212,6 +257,15 @@ class CollapsibleThought(QWidget):
         self.is_expanded = not self.is_expanded
         self.arrow.setText("▼" if self.is_expanded else "▶")
         self.content.setVisible(self.is_expanded)
+        
+        # Используем processEvents для немедленной отрисовки
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        
+        # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Обновляем только себя и прямого родителя
+        self.updateGeometry()
+        if self.parent():
+            self.parent().updateGeometry()
 
 
 # --- 2. The New Chunk Card ---
@@ -233,20 +287,18 @@ class ChunkCard(QFrame):
             }}
         """)
         
-        # --- FIX: Policy Preferred + MinWidth 0 заставляют карточку уважать ширину колонки ---
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setMinimumWidth(0)
-        # -------------------------------------------------------------------------------------
         
         self._init_ui()
         self.update_data(chunk_data)
 
     def _init_ui(self):
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(10, 10, 10, 10)
-        self.main_layout.setSpacing(6)
+        self.main_layout.setContentsMargins(12, 12, 12, 12)
+        self.main_layout.setSpacing(8)
 
-        # 1. Header
+        # 1. Header Row
         h_layout = QHBoxLayout()
         h_layout.setSpacing(8)
         
@@ -256,14 +308,25 @@ class ChunkCard(QFrame):
         
         self.title_label = QLabel()
         self.title_label.setWordWrap(True)
-        # --- FIX: Обязательно ставим мин. ширину для враппинга ---
         self.title_label.setMinimumWidth(10)
         self.title_label.setStyleSheet(f"font-weight: bold; color: {Palette.TEXT}; font-size: 13px; border: none; background: transparent;")
         
+        self.status_badge = QLabel()
+        self.status_badge.setStyleSheet(f"""
+            background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)};
+            color: {Palette.SUCCESS};
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 10px;
+            font-weight: bold;
+        """)
+        self.status_badge.setVisible(False)
+
         self.refresh_btn = QPushButton("↻")
         self.refresh_btn.setFixedSize(20, 20)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(lambda: self.refresh_requested.emit(self.chunk_id))
+        self.refresh_btn.setToolTip("Пересоздать этот чанк")
         self.refresh_btn.setStyleSheet(f"color: {Palette.PRIMARY}; border: none; background: transparent; font-weight: bold;")
 
         self.delete_btn = QPushButton("✕")
@@ -274,21 +337,30 @@ class ChunkCard(QFrame):
 
         h_layout.addWidget(self.icon_label)
         h_layout.addWidget(self.title_label, 1)
+        h_layout.addWidget(self.status_badge)
         h_layout.addWidget(self.refresh_btn)
         h_layout.addWidget(self.delete_btn)
         self.main_layout.addLayout(h_layout)
 
         self.meta_label = QLabel()
-        self.meta_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 9px; font-family: {Typography.MONO}; margin-bottom: 4px;")
+        self.meta_label.setStyleSheet(f"""
+            color: {Palette.TEXT};
+            background-color: {Palette.with_alpha(Palette.BG_DARK_3, 0.5)};
+            font-size: 11px;
+            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin-bottom: 6px;
+        """)
         self.main_layout.addWidget(self.meta_label)
 
-        # 2. Loading State
+        # 2. Loading State (без изменений, просто для контекста)
         self.loader_container = QWidget()
         self.loader_layout = QVBoxLayout(self.loader_container)
         self.loader_layout.setContentsMargins(0,10,0,10)
         self.loader_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.throbber = ProgressThrobber(size=50)
-        self.loader_msg = QLabel("Подготовка...")
+        self.throbber = ProgressThrobber(size=40) # Чуть меньше
+        self.loader_msg = QLabel("Анализ данных...")
         self.loader_msg.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px; border: none; background: transparent;")
         self.loader_layout.addWidget(self.throbber)
         self.loader_layout.addWidget(self.loader_msg)
@@ -297,55 +369,59 @@ class ChunkCard(QFrame):
         # 3. Content State
         self.content_container = QWidget()
         self.content_container.setStyleSheet("border: none; background: transparent;")
-        # --- FIX: Разрешаем контейнеру сжиматься ---
         self.content_container.setMinimumWidth(0)
         self.content_ui = QVBoxLayout(self.content_container)
         self.content_ui.setContentsMargins(0, 0, 0, 0)
-        self.content_ui.setSpacing(6)
+        self.content_ui.setSpacing(8) # Больше воздуха
         
-        # Green Status Box (Оставляем как яркий акцент, но дублируем статус в мету)
-        self.status_box = QLabel()
-        self.status_box.setWordWrap(True)
-        self.status_box.setMinimumWidth(10)
-        self.status_box.setStyleSheet(f"""
-            background-color: {Palette.with_alpha(Palette.SUCCESS, 0.15)};
-            color: {Palette.SUCCESS};
-            border: 1px solid {Palette.SUCCESS};
-            border-radius: 4px;
-            padding: 6px;
-            font-size: 11px;
-            font-weight: bold;
-        """)
-        self.content_ui.addWidget(self.status_box)
-
-        # Thought Process (Placeholder)
+        # Thought Process (Placeholder) - переехал наверх, до описания
         self.thought_box = None 
 
         # Main Description
         self.desc_label = QLabel()
         self.desc_label.setWordWrap(True)
-        # --- FIX ---
         self.desc_label.setMinimumWidth(10)
-        self.desc_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; margin-top: 4px;")
+        self.desc_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.4;")
         self.content_ui.addWidget(self.desc_label)
 
-        # Footer Layout
+        # Footer Layout (Reason + Circles)
         footer = QHBoxLayout()
-        footer.setSpacing(10)
+        footer.setSpacing(15)
         
-        # --- UPDATED: Reason Label Styling ---
         self.reason_label = QLabel()
         self.reason_label.setWordWrap(True)
         self.reason_label.setMinimumWidth(10)
-        self.reason_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        # -------------------------------------
+        self.reason_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
         
         self.circles = None
         
-        footer.addWidget(self.reason_label, 1)
+        footer.addWidget(self.reason_label, 1, Qt.AlignmentFlag.AlignBaseline)
         self.content_ui.addLayout(footer)
         
         self.main_layout.addWidget(self.content_container)
+
+    def sizeHint(self):
+        """Возвращает реальный размер карточки на основе содержимого"""
+        # Учитываем основные элементы
+        height = 0
+        
+        # Заголовок + кнопки
+        height += 30  # примерная высота
+        
+        # Если в режиме загрузки
+        if self.loader_container.isVisible():
+            height += self.loader_container.sizeHint().height()
+        else:
+            # Основное содержимое
+            height += self.content_container.sizeHint().height()
+            # Мета информация
+            height += 20
+        
+        # Добавляем отступы
+        height += self.main_layout.contentsMargins().top() + self.main_layout.contentsMargins().bottom()
+        height += self.main_layout.spacing() * 3  # отступы между секциями
+        
+        return QSize(self.width(), height)
 
     def update_data(self, chunk_data: dict):
         self.chunk_data = chunk_data
@@ -358,26 +434,25 @@ class ChunkCard(QFrame):
         icons = { 'PRODUCT': '📦', 'CATEGORY': '📂', 'DATABASE': '🗄️', 'AI_BEHAVIOR': '🧠' }
         self.icon_label.setText(icons.get(chunk_type, '📄'))
 
-        # --- NEW: Meta Info Logic ---
-        # Форматирование дат
         def fmt_date(iso_str):
             if not iso_str: return "-"
             try:
                 dt = datetime.fromisoformat(iso_str)
-                return dt.strftime("%d.%m.%y %H:%M")
-            except: return iso_str[:16].replace('T', ' ')
+                return dt.strftime("%d.%m.%Y %H:%M")
+            except: return ""
 
         created_at = fmt_date(chunk_data.get('created_at'))
         updated_at = fmt_date(chunk_data.get('last_updated'))
-        if created_at == updated_at: updated_at = "-" # Если не обновлялся
         
-        # Размер (примерный в КБ)
         content_obj = chunk_data.get('content')
         size_kb = len(json.dumps(content_obj)) / 1024 if content_obj else 0
         
-        meta_text = f"{status_raw} | C: {created_at} | U: {updated_at} | {size_kb:.1f} KB"
+        if created_at == updated_at:
+            meta_text = f"📅 Создан: {created_at} • 💾 {size_kb:.1f} KB"
+        else:
+            meta_text = f"📅 Создан: {created_at} • 🔄 Обновлен: {updated_at} • 💾 {size_kb:.1f} KB"
+             
         self.meta_label.setText(meta_text)
-        # ----------------------------
 
         is_loading = status_raw in ['PENDING', 'INITIALIZING', 'ACCUMULATING']
         self.loader_container.setVisible(is_loading)
@@ -388,12 +463,11 @@ class ChunkCard(QFrame):
             msg = chunk_data.get('progress_text', 'Ожидание...')
             self.throbber.set_progress(pct)
             self.loader_msg.setText(msg)
-            # Скрываем лишнее при загрузке
-            self.status_box.setVisible(False) 
-            self.meta_label.setVisible(True)
+            self.status_badge.setVisible(False)
+            self.meta_label.setVisible(False) # Скрываем мету при загрузке
             return
         
-        self.status_box.setVisible(True)
+        self.meta_label.setVisible(True)
 
         # Parse Content
         content = content_obj
@@ -402,9 +476,24 @@ class ChunkCard(QFrame):
             except: content = {}
         if not content: content = {}
         
-        display_status = content.get('display_status', 'НЕТ ДАННЫХ')
-        self.status_box.setText(display_status.upper())
+        # --- ИЗМЕНЕНИЕ: Статус в бэйдже ---
+        display_status = content.get('display_status', 'N/A')
+        # Убираем CapsLock, делаем Capitalize
+        clean_status = display_status.replace('_', ' ').strip()
+        if len(clean_status) > 1:
+            clean_status = clean_status[0].upper() + clean_status[1:].lower()
+            
+        self.status_badge.setText(clean_status)
+        self.status_badge.setVisible(True)
         
+        # Цвет бэйджа в зависимости от текста (опционально)
+        # Если статус содержит "Low data" или "Warn" -> Yellow, иначе Green
+        if "data" in display_status.lower() or "мало" in display_status.lower():
+             self.status_badge.setStyleSheet(f"background-color: {Palette.with_alpha(Palette.WARNING, 0.2)}; color: {Palette.WARNING}; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold;")
+        else:
+             self.status_badge.setStyleSheet(f"background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)}; color: {Palette.SUCCESS}; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold;")
+        # ----------------------------------
+
         # Thoughts
         thoughts = content.get('hidden_thought_process', '')
         if self.thought_box: 
@@ -412,22 +501,22 @@ class ChunkCard(QFrame):
             self.thought_box.deleteLater()
             self.thought_box = None
         
-        if thoughts:
-            self.thought_box = CollapsibleThought(thoughts)
-            # Вставляем после status_box (индекс 1)
-            self.content_ui.insertWidget(1, self.thought_box)
-
         # Description
         desc = content.get('main_description') or chunk_data.get('summary') or "Нет описания."
         self.desc_label.setText(desc)
+
+        # Вставляем Thoughts ПЕРЕД описанием (индекс 0), чтобы логика шла сверху вниз
+        if thoughts:
+            self.thought_box = CollapsibleThought(thoughts)
+            self.content_ui.insertWidget(0, self.thought_box)
         
-        # --- NEW: Reason Styling ---
+        # Reason
         reason_text = content.get('formation_reason') or ""
         if reason_text:
+            # Делаем слово "ПРИЧИНА:" жирным для акцента
             self.reason_label.setText(f"<b>ПРИЧИНА:</b> {reason_text}")
         else:
             self.reason_label.setText("")
-        # ---------------------------
         
         # Circles
         weights = content.get('influence_weights', {})
@@ -438,60 +527,127 @@ class ChunkCard(QFrame):
             self.circles.deleteLater()
             
         self.circles = InfluenceCircles(weights)
+        # Добавляем в футер
         self.content_ui.itemAt(self.content_ui.count()-1).layout().addWidget(self.circles)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not event.spontaneous():
+            parent = self.parent()
+            while parent:
+                if parent.__class__.__name__ == 'MasonryWidget':
+                    try:
+                        QTimer.singleShot(50, parent.updateGeometry)
+                    except RuntimeError:
+                        pass
+                    break
+                parent = parent.parent() if parent else None
 
 
 # --- 3. Masonry Layout Widget ---
 
 class MasonryWidget(QWidget):
     """
-    Простой Masonry (Pinterest-like) лейаут.
-    Использует 2 колонки (QVBoxLayout).
-    Поддерживает словарь _cards для совместимости.
+    Masonry (Pinterest-like) лейаут.
+    
+    2 колонки, которые равномерно занимают всю ширину.
     """
+    
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Основной горизонтальный компоновщик
         self.layout = QHBoxLayout(self)
         self.layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.layout.setSpacing(10)
         self.layout.setContentsMargins(0, 0, 0, 0)
-
-        self.layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         
+        # Две вертикальные колонки - одинаковый вес (1), чтобы делить ширину поровну
         self.col1 = QVBoxLayout()
         self.col1.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.col1.setSpacing(10)
-        
         self.col2 = QVBoxLayout()
         self.col2.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.col2.setSpacing(10)
-
-        self.layout.addLayout(self.col1, 1)
-        self.layout.addLayout(self.col2, 1)
         
-        self._cards = {} # id -> card
+        self.layout.addLayout(self.col1, 1)  # вес 1
+        self.layout.addLayout(self.col2, 1)  # вес 1
+        
+        # ИСПРАВЛЕНИЕ: Expanding по горизонтали, Maximum по вертикали
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        
+        self._cards = {}  # id -> card
+    
+    def sizeHint(self):
+        """Возвращает естественный размер виджета на основе содержимого"""
+        # Получаем высоту каждой колонки
+        col1_height = 0
+        col2_height = 0
+        
+        # Считаем реальную высоту виджетов в колонках
+        for i in range(self.col1.count()):
+            item = self.col1.itemAt(i)
+            if item and item.widget() and item.widget().isVisible():
+                col1_height += item.widget().sizeHint().height()
+                if i > 0:  # Добавляем spacing между элементами
+                    col1_height += self.col1.spacing()
+        
+        for i in range(self.col2.count()):
+            item = self.col2.itemAt(i)
+            if item and item.widget() and item.widget().isVisible():
+                col2_height += item.widget().sizeHint().height()
+                if i > 0:
+                    col2_height += self.col2.spacing()
+        
+        # Берем максимальную высоту из двух колонок
+        total_height = max(col1_height, col2_height)
+        
+        # Добавляем отступы layout'а
+        total_height += self.layout.contentsMargins().top() + self.layout.contentsMargins().bottom()
+        
+        # ВАЖНО: Если нет карточек, минимальная высота
+        if total_height == 0:
+            total_height = 100
+        
+        # Ширина берется из родителя (scroll area)
+        width = self.width() if self.width() > 0 else 800
+        
+        return QSize(width, total_height)
+    
+    def minimumSizeHint(self):
+        """Минимальный размер"""
+        return QSize(400, 100)
+    
+    def resizeEvent(self, event):
+        """При изменении размера обновляем геометрию"""
+        super().resizeEvent(event)
+        self.updateGeometry()
 
     def add_card(self, chunk_id: int, card: QWidget):
-        """Добавляет карточку и сразу кладет в нужную колонку"""
+        """Добавляет карточку в нужную колонку"""
         self._cards[chunk_id] = card
-        # Кладем на основе текущего количества (чтобы чередовать)
-        self._place_card(card, len(self._cards) - 1)
-
+        index = len(self._cards) - 1
+        self._place_card(card, index)
+        # Обновляем геометрию асинхронно
+        QTimer.singleShot(0, self.updateGeometry)
+    
     def remove_card(self, chunk_id: int):
+        """Удаляет карточку"""
         if chunk_id in self._cards:
             card = self._cards.pop(chunk_id)
             card.hide()
             card.deleteLater()
-            QTimer.singleShot(10, self._rebalance)
-
+            # Сначала перебалансируем, потом обновляем геометрию
+            QTimer.singleShot(10, lambda: (self._rebalance(), self.updateGeometry()))
+    
     def clear(self):
         """Очистка всего"""
         for card in self._cards.values():
             card.deleteLater()
         self._cards.clear()
-
+        self.updateGeometry()
+    
     def _place_card(self, card, index):
-        """Кладет карточку в колонку."""
+        """Кладет карточку в колонку"""
         if index % 2 == 0:
             self.col1.addWidget(card)
         else:
@@ -499,6 +655,18 @@ class MasonryWidget(QWidget):
 
     def _rebalance(self):
         """Перекладывает все текущие виджеты заново"""
+        # Сначала удаляем все карточки из лейаутов
+        for i in range(self.col1.count()):
+            item = self.col1.itemAt(0)
+            if item and item.widget():
+                self.col1.removeItem(item)
+
+        for i in range(self.col2.count()):
+            item = self.col2.itemAt(0)
+            if item and item.widget():
+                self.col2.removeItem(item)
+
+        # Затем добавляем заново
         for i, card in enumerate(self._cards.values()):
             self._place_card(card, i)
 
@@ -570,11 +738,10 @@ class AIMemoryPanel(QWidget):
         # Scroll Area for Masonry
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll.setStyleSheet(Components.scroll_area())
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         
-        # MASONRY CONTAINER
         self.masonry = MasonryWidget()
         self.scroll.setWidget(self.masonry)
         left_col.addWidget(self.scroll)
@@ -721,6 +888,11 @@ class AIMemoryPanel(QWidget):
         l.addLayout(p_btns)
 
         self.right_tabs.addTab(tab, "Промпты")
+    
+    def _update_scroll_area(self):
+        if hasattr(self, 'masonry') and hasattr(self, 'scroll'):
+            self.masonry.updateGeometry()
+            self.scroll.viewport().update()
 
     # --- Logic ---
 
@@ -747,6 +919,7 @@ class AIMemoryPanel(QWidget):
             self._add_card(chunk)
             
         self._update_stats()
+        QTimer.singleShot(100, self._update_scroll_area)
 
     def _add_card(self, chunk_data):
         card = ChunkCard(chunk_data, parent=self)

@@ -17,13 +17,13 @@ class Palette:
     PRIMARY_DARK = "#e07030"   # Hover
     PRIMARY_LIGHT = "#ffaa6b"  # Focus
     
-    # ============ SECONDARY (ТЕМНО-СЕРЫЙ - ИЗМЕНЕН) ============
+    # ============ SECONDARY ============
     SECONDARY = "#4a4a4a"
     SECONDARY_DARK = "#3a3a3a"
     SECONDARY_LIGHT = "#5a5a5a"
     
-    # ============ TERTIARY (ГОЛУБОЙ) ============
-    TERTIARY = "#4da6ff"       
+    # ============ TERTIARY ============
+    TERTIARY = "#4da6ff"    
     
     # ============ ТЕКСТ ============
     TEXT = "#f0f0f0"
