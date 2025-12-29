@@ -1,6 +1,7 @@
 import os
 import json
 import statistics
+from datetime import datetime
 from typing import List, Dict, Optional
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
@@ -293,25 +294,39 @@ class PromptBuilder:
 
 class ChunkCultivationPrompts:
     @staticmethod
-    def build_product_cultivation_prompt(product_key: str, items: list) -> str:  
+    def build_product_cultivation_prompt(product_key: str, items: list, previous_context: str = "") -> str:  
+        current_date = datetime.now().strftime("%d.%m.%Y")
         items_text = ""
         for item in items[:40]:
             p = item.get('price', 0)
             t = item.get('title', 'N/A')
             v = item.get('verdict', 'N/A')
-            items_text += f"- {t} | {p} руб. | {v}\n"
+            d = item.get('date_text', '')
+            items_text += f"- {t} | {p} руб. | {v} | {d}\n"
         
+        context_block = ""
+        if previous_context:
+            context_block = f"""
+            [ПРЕДЫДУЩИЕ ЗНАНИЯ]
+            Ранее ты уже анализировал этот товар. Вот твои прошлые выводы:
+            \"\"\"{previous_context}\"\"\"
+            ЗАДАЧА: Обнови эти знания с учетом новых данных. Если рынок изменился — укажи это. Если стабилен — подтверди старые выводы.
+            """
+
         return f"""
+        СЕГОДНЯ: {current_date}.
         ТЫ — ПРОФЕССИОНАЛЬНЫЙ РЫНОЧНЫЙ АНАЛИТИК по новому и Б/У компьютерному железу.
         ТОВАР: "{product_key}"
 
-        ИСХОДНЫЕ ДАННЫЕ (объявления):
+        {context_block}
+
+        [НОВЫЕ ДАННЫЕ (объявления)]
         {items_text}
 
         ТРЕБОВАНИЕ: Проанализируй рынок и верни ТОЛЬКО JSON следующей структуры:
 
         {{
-            "summary": "Краткий обзор рынка в 2–3 предложения. Укажи диапазон цен от частников и перекупов.",
+            "summary": "Краткий обзор рынка в 2–3 предложения. Укажи диапазон цен. Отметь динамику (растет/падает или стабильна).",
             "price_analysis": {{
                 "q25_price": (нижний квартиль — цель для покупки),
                 "median_price": (медиана рынка),
@@ -326,14 +341,13 @@ class ChunkCultivationPrompts:
         """
     
     @staticmethod
-    def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict]) -> str:
-        # UPGRADE: Теперь промпт строится на основе уже готовых PRODUCT-чанков
-        
+    def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict], previous_context: str = "") -> str:
+        current_date = datetime.now().strftime("%d.%m.%Y")
+
         products_text = ""
         for p in sub_products:
-            # p - это содержимое PRODUCT чанка (JSON)
             p_content = p.get('content') or {}
-            analysis = p_content.get('analysis') or {}
+            analysis = p_content.get('analysis') or {} if isinstance(p_content, dict) else {}
             price = analysis.get('price_analysis', {})
             
             p_name = p.get('chunk_key', 'Unknown')
@@ -342,11 +356,18 @@ class ChunkCultivationPrompts:
             
             products_text += f"- Модель: {p_name} | Тренд: {p_trend} | Ср.цена: {p_avg}\n"
 
+        context_block = ""
+        if previous_context:
+            context_block = f"ПРЕДЫДУЩИЙ ОБЗОР КАТЕГОРИИ:\n{previous_context}\nОбнови его на основе свежих данных по моделям."
+
         return f"""
+        СЕГОДНЯ: {current_date}.
         АНАЛИЗ КАТЕГОРИИ: "{category_key}"
         Твоя задача — обобщить данные по конкретным моделям внутри этой категории.
 
-        ДАННЫЕ ПО МОДЕЛЯМ:
+        {context_block}
+
+        [ДАННЫЕ ПО МОДЕЛЯМ]
         {products_text}
 
         ТРЕБОВАНИЕ: Верни JSON со сводкой по всей категории.
@@ -366,7 +387,6 @@ class ChunkCultivationPrompts:
     
     @staticmethod
     def build_database_cultivation_prompt(db_stats: dict, vocabulary: list) -> str:
-        # UPGRADE: Добавлен vocabulary для защиты от галлюцинаций
         vocab_str = ", ".join(vocabulary[:60])
         
         return f"""
@@ -375,11 +395,11 @@ class ChunkCultivationPrompts:
         СТАТИСТИКА:
         - Всего записей: {db_stats.get('total_items')}
         
-        РЕАЛЬНЫЙ СЛОВАРЬ (ТОП слов из заголовков):
+        [РЕАЛЬНЫЙ СЛОВАРЬ]
         [{vocab_str}]
         
         ЗАДАЧА: Сформировать отчет о составе базы, опираясь ТОЛЬКО на предоставленный словарь.
-        Если в словаре нет слова "одежда" или "автомобили", НЕ ПИШИ о них.
+        Если в словаре нет каких-то слов, НЕ ПИШИ о них.
         
         FORMAT JSON:
         {{
@@ -390,32 +410,39 @@ class ChunkCultivationPrompts:
         """
         
     @staticmethod
-    def build_ai_behavior_cultivation_prompt(actions_log: list) -> str:
-        # UPGRADE: Реализация промпта для поведения
-        
+    def build_ai_behavior_cultivation_prompt(actions_log: list, previous_context: str = "") -> str:
         log_text = ""
-        for act in actions_log[-40:]: # Берем последние 40 действий
+        for act in actions_log[-40:]:
             atype = act.get('action_type', 'UNKNOWN')
             dtls = act.get('details', '')
             log_text += f"- {atype}: {dtls}\n"
-            
+
+        context_block = ""
+        if previous_context:
+            context_block = f"ТЕКУЩИЙ ПОРТРЕТ ПОЛЬЗОВАТЕЛЯ:\n{previous_context}\nСкорректируй его, если новые действия противоречат старому портрету."
+
         return f"""
         АНАЛИЗ ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЯ.
         Твоя задача — понять, кто пользователь и что он ищет, чтобы лучше фильтровать мусор.
-        
-        ЛОГ ДЕЙСТВИЙ:
+
+        {context_block}
+
+        [ЛОГ НОВЫХ ДЕЙСТВИЙ]
         {log_text}
-        
+
         ЛЕГЕНДА:
-        - SEARCH: Пользователь вбил запрос.
-        - CLICK: Пользователь открыл товар (интерес).
-        - IGNORE: Пользователь пропустил/удалил товар (не интересно).
-        
+        - SEARCH: Пользователь вбил запрос (его интересы).
+        - CLICK: Пользователь открыл товар (сильный интерес).
+        - IGNORE: Пользователь пропустил/удалил товар (не интересно или дорого).
+
         FORMAT JSON:
         {{
             "summary": "Портрет пользователя (например: 'Ищет дешевые видеокарты под ремонт' или 'Ищет только новые iPhone').",
-            "interests": ["ключевое_слово_1", "ключевое_слово_2"],
-            "anti_interests": ["что_пользователь_игнорирует"],
+            "user_profile": {{
+                 "interests": ["ключевое_слово_1", "ключевое_слово_2"],
+                 "anti_interests": ["что_пользователь_игнорирует"],
+                 "budget_level": "low" | "medium" | "high" | "mixed"
+            }},
             "strategy_hint": "Совет для AI-фильтра (например: 'Строже фильтруй оверпрайс')."
         }}
         """

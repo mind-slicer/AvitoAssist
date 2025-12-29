@@ -85,6 +85,27 @@ class ChunkCard(QFrame):
         
         header_layout.addLayout(title_layout, stretch=1)
         
+        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn.setFixedSize(24, 24)
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_btn.setToolTip("Пересоздать этот чанк")
+        self.refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: 1px solid {Palette.BORDER_SOFT};
+                color: {Palette.PRIMARY};
+                border-radius: 4px;
+                font-weight: bold;
+                padding-bottom: 2px;
+            }}
+            QPushButton:hover {{
+                background: {Palette.with_alpha(Palette.PRIMARY, 0.1)};
+                border-color: {Palette.PRIMARY};
+            }}
+        """)
+        self.refresh_btn.clicked.connect(self._on_refresh)
+        header_layout.addWidget(self.refresh_btn)
+
         self.delete_btn = QPushButton("✕")
         self.delete_btn.setFixedSize(24, 24)
         self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -115,9 +136,7 @@ class ChunkCard(QFrame):
         self.layout.addWidget(self.content_container)
     
     def update_progress(self, percent: int, status_text: str):
-        """NEW: Обновление прогресс-бара без полной перерисовки"""
         if self.status != 'INITIALIZING':
-            # Если статус сменился, игнорируем старые пакеты прогресса
             return
             
         self.status_label.setText(f"{status_text} ({percent}%)")
@@ -127,33 +146,41 @@ class ChunkCard(QFrame):
         # Лучше было бы сохранить ссылку на p_bar при создании
         
         if hasattr(self, 'fill_widget'):
-             # Обновляем ширину заливки (через stretch факторы)
-             # В QHBoxLayout stretch работает так: (fill_stretch, empty_stretch)
              pct = min(max(percent, 1), 100)
              
-             # Нам нужно найти родительский layout бара
              bar_layout = self.fill_widget.parent().layout()
              if bar_layout:
                  bar_layout.setStretch(0, pct)
                  bar_layout.setStretch(1, 100 - pct)
 
+    def _on_refresh(self):
+        # Сигнал отправляется родителю
+        if self.parent() and hasattr(self.parent(), '_on_card_refresh_requested'):
+             self.parent()._on_card_refresh_requested(self.chunk_id)
+
     def _update_appearance(self):
         self.status = self.chunk_data.get('status')
         title = self.chunk_data.get('title') or f"Chunk #{self.chunk_id}"
         chunk_type = self.chunk_data.get('chunk_type', 'UNKNOWN')
-        
+        self.refresh_btn.setVisible(True)
+
         self.title_label.setText(title)
-        
+
         self._clear_content()
-        
+
         if self.status == 'PENDING':
             self._render_pending()
         elif self.status == 'INITIALIZING':
             self._render_initializing()
+            self.refresh_btn.setVisible(False)
         elif self.status == 'READY':
             self._render_ready(chunk_type)
         elif self.status == 'COMPRESSED':
             self._render_compressed()
+        elif self.status == 'ACCUMULATING': # Added case
+            self._render_accumulating()
+        elif self.status == 'FAILED':
+            self._render_failed()
         else:
             self.status_label.setText(f"Status: {self.status}")
             self.icon_label.setText("❓")
@@ -165,22 +192,22 @@ class ChunkCard(QFrame):
 
     def _render_initializing(self):
         self.icon_label.setText("⚙️")
-        # Сохраняем ссылки для апдейтов
+
         progress = self.chunk_data.get('progress_percent', 0)
         self.status_label.setText(f"Подготовка... {progress}%")
-        self.delete_btn.setVisible(False)
+        
+        self.delete_btn.setVisible(True) 
 
         p_bar = QFrame()
         p_bar.setFixedHeight(4)
         p_bar.setStyleSheet(f"background: {Palette.BG_DARK}; border-radius: 2px;")
 
-        # Создаем контейнер для заливки
         bar_container = QWidget()
         bar_layout = QHBoxLayout(bar_container)
         bar_layout.setContentsMargins(0,0,0,0)
         bar_layout.setSpacing(0)
 
-        self.fill_widget = QWidget() # Сохраняем ссылку
+        self.fill_widget = QWidget()
         self.fill_widget.setStyleSheet(f"background-color: {Palette.PRIMARY}; border-radius: 2px;")
 
         empty_widget = QWidget()
@@ -199,22 +226,24 @@ class ChunkCard(QFrame):
 
         self.content_layout.addWidget(p_bar_wrapper)
 
-    def _render_ready(self, chunk_type):
+    def _render_ready(self, chunk_type): # TODO: chunk_type usage
         self.icon_label.setText("✓")
-        
+
         raw_date = self.chunk_data.get('last_updated', '')
         if len(raw_date) >= 16:
             last_upd = f"{raw_date[11:16]} • {raw_date[8:10]}.{raw_date[5:7]}.{raw_date[:4]}"
         else:
             last_upd = raw_date
 
-        size_bytes = self.chunk_data.get('original_size', 0)
+        content_str = str(self.chunk_data.get('content') or "")
+        size_bytes = len(content_str.encode('utf-8'))
         size_kb = size_bytes / 1024
+        
         self.status_label.setText(f"Активен • {last_upd} • {size_kb:.1f} KB")
         self.delete_btn.setVisible(True)
-        
+
         summary = self.chunk_data.get('summary')
-        
+
         if not summary and self.chunk_data.get('content'):
             import json
             try:
@@ -224,18 +253,26 @@ class ChunkCard(QFrame):
                     summary = data['analysis'].get('summary')
             except:
                 pass
-        
+
         if summary:
             lbl = QLabel(str(summary))
             lbl.setWordWrap(True)
             lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.4; border: none;")
-            lbl.setMaximumHeight(100) 
+            lbl.setMaximumHeight(100)
             self.content_layout.addWidget(lbl)
-            
         else:
             lbl = QLabel("Нет краткого описания.")
             lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-style: italic; font-size: 11px; border: none;")
             self.content_layout.addWidget(lbl)
+
+    def _render_accumulating(self):
+        self.icon_label.setText("📥")
+        self.status_label.setText("Накопление данных...")
+        self.delete_btn.setVisible(True)
+        
+        lbl = QLabel("Недостаточно данных для анализа.\nЧанк ждет новых объявлений.")
+        lbl.setStyleSheet(f"color: {Palette.WARNING}; font-size: 11px; font-style: italic;")
+        self.content_layout.addWidget(lbl)
 
     def _render_compressed(self):
         self.icon_label.setText("📦")
@@ -258,6 +295,17 @@ class ChunkCard(QFrame):
         
         lbl = QLabel("Архивная запись. Доступна для анализа, занимает минимум места.")
         lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px; border: none;")
+        self.content_layout.addWidget(lbl)
+
+    def _render_failed(self):
+        self.icon_label.setText("❌")
+        self.status_label.setText("Ошибка генерации")
+        self.status_label.setStyleSheet(f"color: {Palette.ERROR}; font-size: 11px;")
+        self.delete_btn.setVisible(True)
+        self.refresh_btn.setVisible(True)
+        
+        lbl = QLabel("Не удалось создать отчет. Проверьте логи или попробуйте снова.")
+        lbl.setStyleSheet(f"color: {Palette.ERROR}; font-size: 11px; font-style: italic;")
         self.content_layout.addWidget(lbl)
 
     def _clear_content(self):
@@ -765,8 +813,25 @@ class AIMemoryPanel(QWidget):
         self.cards_layout.addStretch()
         self._update_stats()
 
+    def _on_card_refresh_requested(self, chunk_id):
+        if not self.memory_manager: return
+        
+        # 1. Сбрасываем статус на PENDING
+        self.memory_manager.update_chunk_status(chunk_id, 'PENDING')
+        
+        # 2. Обновляем UI мгновенно
+        if chunk_id in self.cards:
+            data = self.memory_manager.get_chunk_by_id(chunk_id)
+            self.cards[chunk_id].update_data(data)
+            
+        # 3. Запускаем "Актуализацию" (это триггернет очередь)
+        # Важно: это вызовет check_and_cultivate в менеджере
+        self.update_memory_requested.emit() 
+        
+        logger.info(f"Запрошена перекультивация чанка {chunk_id}", token="ai-mem")
+
     def _add_card(self, chunk_data):
-        card = ChunkCard(chunk_data)
+        card = ChunkCard(chunk_data, parent=self)
         card.deleted.connect(self._on_card_deleted)
         self.cards[chunk_data['id']] = card
         self.cards_layout.insertWidget(self.cards_layout.count(), card)

@@ -184,6 +184,8 @@ class AIChunkCultivationWorker(QThread):
         # 1. Start
         self.progress_signal.emit(5, "Подключение к нейросети...")
         
+        self.progress_signal.emit(10, "Формирование контекста...")
+
         client = LlamaClient(self.port)
         try:
             if hasattr(self, '_is_running') and not self._is_running:
@@ -215,7 +217,7 @@ class AIChunkCultivationWorker(QThread):
             )
 
             # 2. Sending Request
-            self.progress_signal.emit(15, "Генерация отчета (это может занять время)...")
+            self.progress_signal.emit(20, "Генерация отчета (ИИ думает)...")
 
             # Эмуляция прогресса во время ожидания (так как вызов блокирующий для asyncio)
             # В идеале нужно использовать streaming, но для сохранения архитектуры пока просто ждем.
