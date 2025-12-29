@@ -334,12 +334,40 @@ class KnowledgeManager:
     # === Queries ===
 
     def get_pending_chunks(self) -> List[Dict]:
-        """Get all chunks with PENDING status."""
-        return self.get_knowledge(status='PENDING', limit=9999)
+        """
+        Возвращает чанки, ожидающие обработки.
+        Поддерживает как английский 'PENDING', так и русский 'В ОЖИДАНИИ' статусы.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT * FROM ai_knowledge 
+                WHERE status IN ('PENDING', 'В ОЖИДАНИИ') 
+                ORDER BY priority DESC, last_updated DESC
+            """
+            cursor.execute(query)
+            return [self._chunk_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
 
     def get_ready_chunks(self) -> List[Dict]:
-        """Get all chunks with READY status."""
-        return self.get_knowledge(status='READY', limit=9999)
+        """
+        Возвращает готовые чанки.
+        Поддерживает как английский 'READY', так и русский 'ГОТОВ'.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT * FROM ai_knowledge 
+                WHERE status IN ('READY', 'ГОТОВ', 'COMPRESSED', 'СЖАТ')
+                ORDER BY priority DESC, last_updated DESC
+            """
+            cursor.execute(query)
+            return [self._chunk_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
 
     def get_chunks_by_type(self, chunk_type: str) -> List[Dict]:
         """Get all chunks of a specific type."""

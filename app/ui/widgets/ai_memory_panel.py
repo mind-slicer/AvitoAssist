@@ -137,22 +137,20 @@ class ChunkCard(QFrame):
         self.layout.addWidget(self.content_container)
     
     def update_progress(self, percent: int, status_text: str):
-        if self.status != 'INITIALIZING':
-            return
+        # Обновляем локальные данные, чтобы при перерисовке они сохранились
+        self.chunk_data['progress_percent'] = percent
+        self.chunk_data['progress_text'] = status_text
+        
+        # Если мы все еще в статусе инициализации, обновляем UI напрямую
+        if self.status == 'ИНИЦИАЛИЗАЦИЯ' or self.status == 'INITIALIZING':
+            self.status_label.setText(f"{status_text} ({percent}%)")
             
-        self.status_label.setText(f"{status_text} ({percent}%)")
-        
-        # Находим прогресс-бар в лейауте (он добавлен в _render_initializing)
-        # Это немного "хак", но работает быстрее, чем хранить ссылки на все виджеты
-        # Лучше было бы сохранить ссылку на p_bar при создании
-        
-        if hasattr(self, 'fill_widget'):
-             pct = min(max(percent, 1), 100)
-             
-             bar_layout = self.fill_widget.parent().layout()
-             if bar_layout:
-                 bar_layout.setStretch(0, pct)
-                 bar_layout.setStretch(1, 100 - pct)
+            if hasattr(self, 'fill_widget'):
+                pct = min(max(percent, 1), 100)
+                bar_layout = self.fill_widget.parent().layout()
+                if bar_layout:
+                    bar_layout.setStretch(0, pct)
+                    bar_layout.setStretch(1, 100 - pct)
 
     def _on_refresh(self):
         self.refresh_requested.emit(self.chunk_id)
@@ -167,21 +165,21 @@ class ChunkCard(QFrame):
 
         self._clear_content()
 
-        if self.status == 'PENDING':
+        if self.status == 'В ОЖИДАНИИ' or self.status == 'PENDING':
             self._render_pending()
-        elif self.status == 'INITIALIZING':
+        elif self.status == 'ИНИЦИАЛИЗАЦИЯ' or self.status == 'INITIALIZING':
             self._render_initializing()
             self.refresh_btn.setVisible(False)
-        elif self.status == 'READY':
+        elif self.status == 'ГОТОВ' or self.status == 'READY':
             self._render_ready(chunk_type)
-        elif self.status == 'COMPRESSED':
+        elif self.status == 'СЖАТ' or self.status == 'COMPRESSED':
             self._render_compressed()
-        elif self.status == 'ACCUMULATING': # Added case
+        elif self.status == 'НАКОПЛЕНИЕ' or self.status == 'ACCUMULATING':
             self._render_accumulating()
-        elif self.status == 'FAILED':
+        elif self.status == 'ОШИБКА' or self.status == 'FAILED':
             self._render_failed()
         else:
-            self.status_label.setText(f"Status: {self.status}")
+            self.status_label.setText(f"Статус: {self.status}")
             self.icon_label.setText("❓")
 
     def _render_pending(self):
@@ -192,86 +190,112 @@ class ChunkCard(QFrame):
 
     def _render_initializing(self):
         self.icon_label.setText("⚙️")
-
-        progress = self.chunk_data.get('progress_percent', 0)
-        self.status_label.setText(f"Подготовка... {progress}%")
         
-        self.delete_btn.setVisible(True) 
+        # Берем текст прогресса, если он есть
+        progress_text = self.chunk_data.get('progress_text', "Подготовка...")
+        progress_val = self.chunk_data.get('progress_percent', 0)
+        
+        self.status_label.setText(f"{progress_text} ({progress_val}%)")
+        self.delete_btn.setVisible(True)
 
+        # Отрисовка прогресс-бара (оставляем старый код отрисовки, он корректен)
         p_bar = QFrame()
         p_bar.setFixedHeight(4)
         p_bar.setStyleSheet(f"background: {Palette.BG_DARK}; border-radius: 2px;")
-
         bar_container = QWidget()
         bar_layout = QHBoxLayout(bar_container)
         bar_layout.setContentsMargins(0,0,0,0)
         bar_layout.setSpacing(0)
-
         self.fill_widget = QWidget()
         self.fill_widget.setStyleSheet(f"background-color: {Palette.PRIMARY}; border-radius: 2px;")
-
         empty_widget = QWidget()
         empty_widget.setStyleSheet("background: transparent;")
-
-        width_pct = min(max(progress, 1), 100)
+        width_pct = min(max(progress_val, 1), 100)
         bar_layout.addWidget(self.fill_widget, stretch=width_pct)
         bar_layout.addWidget(empty_widget, stretch=100-width_pct)
-
         p_bar_wrapper = QFrame()
         p_bar_wrapper.setFixedHeight(6)
         p_bar_wrapper.setStyleSheet(f"background: {Palette.BG_DARK}; border-radius: 3px; border: none;")
         wrapper_layout = QVBoxLayout(p_bar_wrapper)
         wrapper_layout.setContentsMargins(0,0,0,0)
         wrapper_layout.addWidget(bar_container)
-
         self.content_layout.addWidget(p_bar_wrapper)
 
-    def _render_ready(self, chunk_type): # TODO: chunk_type usage
+    def _render_ready(self, chunk_type):
         self.icon_label.setText("✓")
+        self.icon_label.setStyleSheet(f"color: {Palette.SUCCESS}; font-size: 16px; border: none;")
 
         raw_date = self.chunk_data.get('last_updated', '')
         if len(raw_date) >= 16:
-            last_upd = f"{raw_date[11:16]} • {raw_date[8:10]}.{raw_date[5:7]}.{raw_date[:4]}"
+            last_upd = f"{raw_date[11:16]} • {raw_date[8:10]}.{raw_date[5:7]}"
         else:
             last_upd = raw_date
 
-        content_str = str(self.chunk_data.get('content') or "")
-        size_bytes = len(content_str.encode('utf-8'))
-        size_kb = size_bytes / 1024
-        
-        self.status_label.setText(f"Активен • {last_upd} • {size_kb:.1f} KB")
+        self.status_label.setText(f"Активен • {last_upd}")
+        self.status_label.setStyleSheet(f"color: {Palette.SUCCESS}; font-size: 11px;")
         self.delete_btn.setVisible(True)
 
+        # Пытаемся достать контент
+        content_obj = self.chunk_data.get('content')
         summary = self.chunk_data.get('summary')
+        formation_reason = ""
 
-        if not summary and self.chunk_data.get('content'):
-            import json
+        # Если контент строка - парсим
+        if isinstance(content_obj, str):
             try:
-                data = json.loads(self.chunk_data['content'])
-                summary = data.get('summary')
-                if not summary and isinstance(data.get('analysis'), dict):
-                    summary = data['analysis'].get('summary')
-            except:
-                pass
+                import json
+                content_obj = json.loads(content_obj)
+            except: pass
+        
+        if isinstance(content_obj, dict):
+            formation_reason = content_obj.get('formation_reason', '')
+            # Если summary не пришел отдельным полем, ищем внутри
+            if not summary:
+                summary = content_obj.get('summary')
 
+        # 1. Отображаем причину формирования (если есть)
+        if formation_reason:
+            reason_lbl = QLabel(f"ℹ️ {formation_reason}")
+            reason_lbl.setWordWrap(True)
+            reason_lbl.setStyleSheet(f"color: {Palette.PRIMARY}; font-size: 11px; font-weight: bold; margin-bottom: 4px;")
+            self.content_layout.addWidget(reason_lbl)
+
+        # 2. Отображаем саммари
         if summary:
             lbl = QLabel(str(summary))
             lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.4; border: none;")
-            lbl.setMaximumHeight(100)
+            lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.3;")
+            lbl.setMaximumHeight(120)
             self.content_layout.addWidget(lbl)
         else:
             lbl = QLabel("Нет краткого описания.")
-            lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-style: italic; font-size: 11px; border: none;")
+            lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-style: italic; font-size: 11px;")
             self.content_layout.addWidget(lbl)
 
     def _render_accumulating(self):
         self.icon_label.setText("📥")
         self.status_label.setText("Накопление данных...")
+        self.status_label.setStyleSheet(f"color: {Palette.TERTIARY};")
         self.delete_btn.setVisible(True)
         
-        lbl = QLabel("Недостаточно данных для анализа.\nЧанк ждет новых объявлений.")
-        lbl.setStyleSheet(f"color: {Palette.WARNING}; font-size: 11px; font-style: italic;")
+        # Пытаемся достать причину, почему данные копятся
+        content_obj = self.chunk_data.get('content')
+        formation_reason = ""
+        if isinstance(content_obj, str):
+            try:
+                import json
+                content_obj = json.loads(content_obj)
+            except: pass
+        if isinstance(content_obj, dict):
+            formation_reason = content_obj.get('formation_reason', '')
+
+        text = "ИИ ожидает больше данных для точного анализа."
+        if formation_reason:
+            text = f"{formation_reason}\n(Нужно больше данных)"
+
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px; font-style: italic;")
         self.content_layout.addWidget(lbl)
 
     def _render_compressed(self):
@@ -849,24 +873,45 @@ class AIMemoryPanel(QWidget):
         QTimer.singleShot(5000, lambda: self._update_generate_button_state())
 
     def _on_card_refresh_requested(self, chunk_id):
-        if not self.memory_manager: return
+        """
+        Обработчик нажатия кнопки рефреша на отдельной карточке.
+        Переводит статус в PENDING и запускает общий процесс культивации через контроллер.
+        Контроллер сам поднимет сервер, если он лежит.
+        """
+        if not self.memory_manager: 
+            return
 
-        # Ставим статус PENDING
+        # 1. Сбрасываем статус в базе
         self.memory_manager.update_chunk_status(chunk_id, 'PENDING')
-        
+
+        # 2. Мгновенно обновляем UI карточки, чтобы пользователь видел реакцию
         if chunk_id in self.cards:
             data = self.memory_manager.get_chunk_by_id(chunk_id)
-            self.cards[chunk_id].update_data(data)
+            if data:
+                self.cards[chunk_id].update_data(data)
 
-        # Сразу запрашиваем генерацию, так как пользователь явно нажал "Обновить"
-        logger.info(f"Запрошено обновление отчета для чанка {chunk_id}, сигнал отправлен...", token="ai-mem")
+        # 3. Обновляем общую статистику (кнопка "Сгенерировать" может стать активной/поменять текст)
+        self._update_stats()
+
+        # 4. Отправляем сигнал контроллеру на запуск обработки
+        # Контроллер (Controller.start_cultivation) проверит сервер и запустит его при необходимости.
+        logger.info(f"Запрошена перегенерация чанка {chunk_id}, инициализация нейросети...", token="ai-mem")
         self.generate_reports_signal.emit()
 
     def _add_card(self, chunk_data):
         card = ChunkCard(chunk_data, parent=self)
+        
+        # Подключаем сигналы от карточки
         card.deleted.connect(self._on_card_deleted)
+        # FIX: Подключаем сигнал рефреша, который ранее был пропущен
+        card.refresh_requested.connect(self._on_card_refresh_requested)
+        
         self.cards[chunk_data['id']] = card
         self.cards_layout.insertWidget(self.cards_layout.count(), card)
+
+    def _add_card_widget_only(self, data):
+        self._add_card(data)
+        return self.cards[data['id']]
 
     def _on_card_deleted(self, chunk_id):
         # 1. Сначала отменяем любые активные процессы с этим чанком
@@ -888,14 +933,6 @@ class AIMemoryPanel(QWidget):
         # Лог для пользователя
         logger.info(f"Чанк {chunk_id} полностью удален (Force Forget).")
 
-    def _on_update_clicked(self):
-        self.btn_update.setEnabled(False)
-        self.btn_update.setText("Запуск процессов...")
-        self.update_memory_requested.emit()
-        
-        QTimer.singleShot(2000, lambda: self.btn_update.setText("Актуализировать память"))
-        QTimer.singleShot(2000, lambda: self.btn_update.setEnabled(True))
-
     def _on_chunk_status_changed(self, chunk_id, new_status):
         if chunk_id in self.cards:
             data = self.memory_manager.get_chunk_by_id(chunk_id)
@@ -904,12 +941,13 @@ class AIMemoryPanel(QWidget):
         else:
             data = self.memory_manager.get_chunk_by_id(chunk_id)
             if data:
-                self.cards_layout.takeAt(self.cards_layout.count() - 1)
-                self._add_card(data)
-                self.cards_layout.addStretch()
+                # Вставляем перед растяжкой (stretch)
+                count = self.cards_layout.count()
+                insert_idx = count - 1 if count > 0 else 0
+                self.cards_layout.insertWidget(insert_idx, self._add_card_widget_only(data))
         
         self._update_stats()
-        
+
         if new_status == 'INITIALIZING':
             if not self.refresh_timer.isActive():
                 self.refresh_timer.start(1000)
@@ -936,8 +974,8 @@ class AIMemoryPanel(QWidget):
     def _update_stats(self):
         # Обновляем статистику и состояние кнопки генерации
         total = len(self.cards)
-        ready = sum(1 for c in self.cards.values() if c.status in ['READY', 'COMPRESSED'])
-        pending = sum(1 for c in self.cards.values() if c.status == 'PENDING')
+        ready = sum(1 for c in self.cards.values() if c.status in ['READY', 'COMPRESSED', 'ГОТОВ', 'СЖАТ'])
+        pending = sum(1 for c in self.cards.values() if c.status in ['PENDING', 'В ОЖИДАНИИ'])
         
         self.stats_lbl.setText(f"Всего: {total} | Готово: {ready} | Ожидают: {pending}")
         
@@ -946,7 +984,7 @@ class AIMemoryPanel(QWidget):
 
     def _update_generate_button_state(self, pending_count=None):
         if pending_count is None:
-            pending_count = sum(1 for c in self.cards.values() if c.status == 'PENDING')
+            pending_count = sum(1 for c in self.cards.values() if c.status in ['PENDING', 'В ОЖИДАНИИ'])
             
         if pending_count > 0:
             self.btn_generate.setEnabled(True)

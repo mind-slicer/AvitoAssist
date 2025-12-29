@@ -305,14 +305,23 @@ class ChunkCultivationManager(QObject):
         status = result.get("status")
         content = result.get("content")
         summary = result.get("summary")
+        formation_reason = result.get("formation_reason", "")
+        data_sufficiency = result.get("data_sufficiency", "MEDIUM")
 
         if status == "success" and isinstance(content, dict):
-            is_empty = False
-            if summary and "нет данных" in summary.lower():
-                is_empty = True
-            elif not content:
-                is_empty = True
+            # 1. Определяем финальный статус и текст для UI
+            final_status = ChunkStatus.READY.value
+            status_text = "Готово"
             
+            if data_sufficiency == "LOW":
+                final_status = ChunkStatus.ACCUMULATING.value
+                status_text = "Мало данных"
+                logger.warning(f"Чанк {chunk_id}: ИИ определил недостаток данных. Статус -> ACCUMULATING", token="ai-cult")
+            elif summary and "нет данных" in summary.lower():
+                final_status = ChunkStatus.ACCUMULATING.value
+                status_text = "Ожидание данных"
+
+            # 2. Сохраняем данные в БД (как и раньше)
             chunk_info = self.memory.get_chunk_by_id(chunk_id)
             source_hash = None
             if chunk_info:
@@ -323,19 +332,21 @@ class ChunkCultivationManager(QObject):
                 else:
                     source_hash = self.memory.raw_data.calculate_data_signature(product_key=key)
 
-            if is_empty:
-                logger.warning(f"Чанк {chunk_id}: недостаточно данных для выводов. Статус -> ACCUMULATING", token="ai-cult")
-                self.memory.update_chunk_content(chunk_id, content, summary=summary, source_hash=source_hash)
-                self.memory.update_chunk_status(chunk_id, ChunkStatus.ACCUMULATING.value)
-                self.chunk_status_changed.emit(chunk_id, ChunkStatus.ACCUMULATING.value)
-                self.chunk_progress.emit(chunk_id, 0, "Ожидание данных")
-            else:
-                self.memory.update_chunk_content(chunk_id, content, summary=summary, source_hash=source_hash)
-                self.chunk_status_changed.emit(chunk_id, ChunkStatus.READY.value)
+            self.memory.update_chunk_content(chunk_id, content, summary=summary, source_hash=source_hash)
+            self.memory.update_chunk_status(chunk_id, final_status)
+            
+            # 3. Отправляем сигналы в UI
+            self.chunk_status_changed.emit(chunk_id, final_status)
+            
+            # Используем status_text для финального сообщения прогресса
+            progress_message = f"{status_text}: {formation_reason[:40]}..." if formation_reason else status_text
+            self.chunk_progress.emit(chunk_id, 100, progress_message)
+
+            if final_status == ChunkStatus.READY.value:
                 self.cultivation_ready.emit(chunk_id)
-                self.chunk_progress.emit(chunk_id, 100, "Готово")
-                logger.success(f"Чанк {chunk_id} готов...", token="ai-cult")
+                logger.success(f"Чанк {chunk_id} готов. Причина: {formation_reason}", token="ai-cult")
         else:
+            # Блок обработки ошибок остается без изменений
             error_msg = result.get("error") or "unknown"
             self.chunk_progress.emit(chunk_id, 0, f"Ошибка: {error_msg[:20]}...")
 

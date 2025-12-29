@@ -141,31 +141,32 @@ class FeatureExtractor:
 
     SEMANTIC_RULES = {
         'GPU': {
-            'trigger': r'\b(rtx|gtx|rx|arc)\b',
+            'trigger': r'\b(rtx|gtx|rx|arc|geforce|radeon|nvidia|gt|titan|quadro|video\s*card|видеокарт[а-я]*)\b',
             'vendor': {
-                'nvidia': r'\b(rtx|gtx|nvidia)\b',
+                'nvidia': r'\b(rtx|gtx|nvidia|geforce|gt|titan|quadro)\b',
                 'amd': r'\b(rx|radeon|amd)\b',
                 'intel': r'\b(arc|intel)\b'
             },
-            'model_pattern': r'\b((?:rtx|gtx|rx)\s*\d{3,4}(?:\s*(?:ti|super|xt|xtx))?)\b'
+            'model_pattern': r'\b((?:rtx|gtx|rx|arc|gt)\s*\d{3,4}(?:\s*(?:ti|super|xt|xtx|oc|se))?|titan\s*\w*|quadro\s*\w+)\b'
         },
         'CPU': {
-            'trigger': r'\b(ryzen|core|xeon|threadripper|epyc)\b',
+            'trigger': r'\b(ryzen|core|xeon|threadripper|epyc|pentium|celeron|athlon|fx)\b',
             'vendor': {
-                'intel': r'\b(core|xeon|intel)\b',
-                'amd': r'\b(ryzen|threadripper|epyc|amd)\b'
+                'intel': r'\b(core|xeon|intel|pentium|celeron)\b',
+                'amd': r'\b(ryzen|threadripper|epyc|amd|athlon|fx)\b'
             },
-            'model_pattern': r'\b((?:i\d|ryzen\s*\d)\s*-?\s*\d{3,5}[a-z]*)\b'
+            'model_pattern': r'\b((?:i\d|ryzen\s*\d|fx|a\d)\s*-?\s*\d{3,5}[a-z]*)\b'
         },
         'MOBO': {
-            'trigger': r'\b(b450|b550|x570|z490|z590|z690|z790|lga|am4|am5)\b',
+            'trigger': r'\b([bzxhq]\d{2,3}[a-z]?|lga|am4|am5|socket|соке[тd])\b',
             'vendor': {},
-            'model_pattern': r'\b([bzxhqa]\d{3}[a-z]?)\b'
+            'model_pattern': r'\b([bzxhq]\d{2,3}[a-z]?)\b'
         },
         'RAM': {
             'trigger': r'\b(ddr\d|dimm|sodimm)\b',
             'vendor': {},
-            'model_pattern': r'\b(ddr\d)\b'
+            'model_pattern': r'\b(ddr\d)\b',
+            'anti_trigger': r'\b(video|gpu|graphic|видео|карт[а-я]*|geforce|radeon|rtx|gtx|rx|arc|gt|lga|am4|am5|socket)\b'
         }
     }
 
@@ -204,6 +205,11 @@ class FeatureExtractor:
                 break
 
         for cat_name, rules in FeatureExtractor.SEMANTIC_RULES.items():
+            # Защита от ложных срабатываний (например, RAM в названии видеокарты)
+            if 'anti_trigger' in rules:
+                if re.search(rules['anti_trigger'], t_lower):
+                    continue
+
             if re.search(rules['trigger'], t_lower):
                 result['category'] = cat_name
 
@@ -224,10 +230,10 @@ class FeatureExtractor:
                     ]
                     result['product_key'] = "_".join(filter(None, key_parts)).replace(' ', '_')
                 break
-        
+
         if result['is_system']:
             result['category'] = 'SYSTEM'
-            
+
             if result['product_key']:
                 result['product_key'] = f"pc_{result['product_key']}"
                 if result['clean_name'] == title:
@@ -251,21 +257,18 @@ class FeatureExtractor:
 
     @staticmethod
     def generate_legacy_key(t_lower: str) -> str:
-        # 1. Заменяем любые не-буквенные символы на пробелы
         cleaned = re.sub(r'[^\w\s]', ' ', t_lower)
         
         words = cleaned.split()
         
-        # Расширенный список мусорных префиксов
         garbage_filters = {
             'b', 'y', 'bu', 'by', 'бу', 'бy', 'v', 'c', 's', 'x', 'box', 'edition',
-            'ver', 'version', 'rev', 'revision', 'gb', 'tb', 'гб', 'тб'
+            'ver', 'version', 'rev', 'revision', 'gb', 'tb', 'гб', 'тб',
+            'ddr3', 'ddr4', 'ddr5', 'gddr5', 'gddr6'
         }
         
         meaningful_words = []
         for w in words:
-            # FIX: Если слово начинается с 'b' и дальше идет русский текст (bвидеокарта), обрезаем 'b'
-            # Это частый артефакт парсинга bold тегов <b>Видеокарта
             if w.startswith('b') and len(w) > 3 and re.search(r'[а-я]', w[1:]):
                 w = w[1:]
                 

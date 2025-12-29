@@ -181,9 +181,7 @@ class AIChunkCultivationWorker(QThread):
         asyncio.run(self._cultivate_chunk())
 
     async def _cultivate_chunk(self):
-        # 1. Start
         self.progress_signal.emit(5, "Подключение к нейросети...")
-        
         self.progress_signal.emit(10, "Формирование контекста...")
 
         client = LlamaClient(self.port)
@@ -198,7 +196,7 @@ class AIChunkCultivationWorker(QThread):
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "max_tokens": 4096, # Увеличим лимит для больших отчетов
+                "max_tokens": 4096,
                 "mirostat_mode": 0
             }
 
@@ -216,19 +214,41 @@ class AIChunkCultivationWorker(QThread):
                 token="ai-cult",
             )
 
-            # 2. Sending Request
-            self.progress_signal.emit(20, "Генерация отчета (ИИ думает)...")
+            # 2. Sending Request with Progress Emulation
+            self.progress_signal.emit(15, "Отправка данных в LLM...")
 
-            # Эмуляция прогресса во время ожидания (так как вызов блокирующий для asyncio)
-            # В идеале нужно использовать streaming, но для сохранения архитектуры пока просто ждем.
-            response = await client.chat_completion(
+            # Запускаем задачу в фоне, чтобы обновлять прогресс
+            task = asyncio.create_task(client.chat_completion(
                 model=self.model_name,
                 messages=messages,
                 params=gen_params,
-            )
+            ))
+
+            # Эмуляция "мыслительного процесса"
+            elapsed = 0
+            while not task.done():
+                if hasattr(self, '_is_running') and not self._is_running:
+                    task.cancel()
+                    self.finished.emit({"status": "error", "error": "cancelled", "chunk_id": self.chunk_id})
+                    return
+                
+                await asyncio.sleep(0.5)
+                elapsed += 0.5
+                
+                # Динамический прогресс, чтобы пользователь не скучал
+                if elapsed < 5:
+                    self.progress_signal.emit(20 + int(elapsed * 2), "ИИ анализирует цены...")
+                elif elapsed < 10:
+                    self.progress_signal.emit(30 + int(elapsed), "ИИ ищет аномалии...")
+                elif elapsed < 20:
+                    self.progress_signal.emit(40 + int(elapsed / 2), "ИИ формирует выводы...")
+                else:
+                    self.progress_signal.emit(50, "Генерация отчета (большой объем)...")
+
+            response = await task
 
             # 3. Processing Response
-            self.progress_signal.emit(80, "Обработка ответа ИИ...")
+            self.progress_signal.emit(80, "Ответ получен. Обработка...")
 
             if not response or not isinstance(response, str) or len(response.strip()) < 10:
                 msg = f"ИИ вернул пустой или слишком короткий ответ для чанка {self.chunk_id}..."
@@ -239,7 +259,7 @@ class AIChunkCultivationWorker(QThread):
                 return
 
             text = response.strip()
-            # Очистка markdown json
+
             if '```' in text:
                 match_json = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
                 if match_json:
@@ -252,7 +272,7 @@ class AIChunkCultivationWorker(QThread):
                             text = text.strip()[4:].strip()
 
             self.progress_signal.emit(90, "Валидация JSON...")
-            
+
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if not match:
                 err = f"В ответе ИИ не найден JSON-объект..."
@@ -268,15 +288,23 @@ class AIChunkCultivationWorker(QThread):
                 self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
                 return
 
-            summary = None
-            if isinstance(data, dict):
+            # Извлечение новых полей для умного статуса
+            summary = data.get("summary")
+            # Legacy fallback
+            if not summary:
                 analysis = data.get("analysis", {})
                 if isinstance(analysis, dict):
                     summary = analysis.get("summary")
-
                 if not summary:
                     summary = data.get("summary")
-            
+
+            formation_reason = data.get("formation_reason", "Причина не указана")
+            data_sufficiency = data.get("data_sufficiency", "MEDIUM")
+
+            # Если LLM считает, что данных мало, помечаем это в саммари
+            if data_sufficiency == "LOW":
+                summary = f"[НЕДОСТАТОЧНО ДАННЫХ] {summary}" if summary else "[НЕДОСТАТОЧНО ДАННЫХ]"
+
             # 4. Finalizing
             self.progress_signal.emit(98, "Сохранение знаний...")
 
@@ -284,6 +312,8 @@ class AIChunkCultivationWorker(QThread):
                 "status": "success",
                 "content": data,
                 "summary": summary if summary else "Анализ завершен",
+                "formation_reason": formation_reason, # Причина создания/обновления
+                "data_sufficiency": data_sufficiency, # Хватает ли данных
                 "chunk_id": self.chunk_id
             }
             self.finished.emit(result)
