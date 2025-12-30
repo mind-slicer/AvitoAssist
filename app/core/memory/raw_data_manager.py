@@ -1,26 +1,18 @@
 import sqlite3
 import json
 import os
-import sys
+import re
 import hashlib
 from typing import List, Dict, Optional
 from datetime import datetime
 from collections import Counter
-import re
-
-
-_workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _workspace_root not in sys.path:
-    sys.path.insert(0, _workspace_root)
 
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
 
 class RawDataManager:
-
-    # PURE V4 SCHEMA
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -40,7 +32,7 @@ class RawDataManager:
 
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
             if cursor.fetchone() is None:
-                logger.info("Creating fresh PURE v4 database schema")
+                logger.info("Creating fresh PURE v5 database schema")
                 cursor.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY DEFAULT 1)")
                 cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (self.SCHEMA_VERSION,))
                 self._create_all_tables(cursor)
@@ -55,8 +47,7 @@ class RawDataManager:
                 logger.info(f"Migrating raw_data schema from {current_version} to {self.SCHEMA_VERSION}")
                 self._migrate_schema(cursor, current_version, self.SCHEMA_VERSION)
                 cursor.execute("UPDATE schema_version SET version = ?", (self.SCHEMA_VERSION,))
-            
-            # Проверка наличия таблиц на всякий случай
+
             self._ensure_tables_exist(cursor)
             conn.commit()
         finally:
@@ -68,7 +59,6 @@ class RawDataManager:
             self._create_all_tables(cursor)
 
     def _create_all_tables(self, cursor: sqlite3.Cursor):
-        # 1. Справочники
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,7 +75,6 @@ class RawDataManager:
             )
         """)
 
-        # 2. Иерархия (Категории и Продукты)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,7 +96,6 @@ class RawDataManager:
             )
         """)
 
-        # 3. Основная таблица (CLEAN - без текстовых дублей)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS raw_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,18 +108,14 @@ class RawDataManager:
                 date_text TEXT,
                 link TEXT,
                 raw_data TEXT,
-                
-                -- Only Foreign Keys
                 city_id INTEGER REFERENCES cities(id),
                 seller_table_id INTEGER REFERENCES sellers(id),
                 product_id INTEGER REFERENCES products(id),
-
                 analyzed_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # 4. История цен
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,7 +126,6 @@ class RawDataManager:
             )
         """)
 
-        # 5. Логи действий пользователя
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,33 +135,28 @@ class RawDataManager:
             )
         """)
 
-        # Индексы
+        # Basic Indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id ON raw_items(ad_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price ON raw_items(price)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_item ON price_history(raw_item_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_key ON products(key)")
 
+        # Performance Indexes (v5)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price_city ON raw_items(price, city_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_analyzed_price ON raw_items(analyzed_at, price)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_product_id ON raw_items(product_id)")
+
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
-        # Если версия старая, создаем всё с нуля или обновляем
         if from_version < 2:
             self._create_all_tables(cursor)
-        
+
         if from_version < 3:
             cursor.execute("CREATE TABLE IF NOT EXISTS user_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT, details TEXT, created_at TEXT)")
 
         if from_version < 4:
             logger.info("Migrating to v4 PURE: Creating normalized tables...")
-            
-            # Создаем новые таблицы, если их нет
             self._create_all_tables(cursor)
-            
-            # --- MIGRATION LOGIC FOR OLD DATA ---
-            # 1. Rename old table to temp
-            # Это сложная миграция для SQLite, так как мы удаляем колонки.
-            # Упрощенный вариант: мы просто добавляем новые колонки в старую таблицу,
-            # но в коде перестаем использовать старые. SQLite позволяет иметь лишние колонки.
-            
-            # Проверяем, есть ли products (бывший product_keys)
+
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='product_keys'")
             if cursor.fetchone():
                 logger.info("Renaming product_keys -> products...")
@@ -188,7 +166,6 @@ class RawDataManager:
                 try: cursor.execute("ALTER TABLE products ADD COLUMN model TEXT")
                 except: pass
 
-            # Добавляем FK колонки в raw_items, если их нет
             try: cursor.execute("ALTER TABLE raw_items ADD COLUMN city_id INTEGER REFERENCES cities(id)")
             except: pass
             try: cursor.execute("ALTER TABLE raw_items ADD COLUMN seller_table_id INTEGER REFERENCES sellers(id)")
@@ -196,12 +173,11 @@ class RawDataManager:
             try: cursor.execute("ALTER TABLE raw_items ADD COLUMN product_id INTEGER REFERENCES products(id)")
             except: pass
 
-            # Пытаемся мигрировать данные из старых текстовых колонок, если они есть
             try:
                 logger.info("Migrating Cities data...")
                 cursor.execute("INSERT OR IGNORE INTO cities (name) SELECT DISTINCT city FROM raw_items WHERE city IS NOT NULL AND city != ''")
                 cursor.execute("UPDATE raw_items SET city_id = (SELECT id FROM cities WHERE cities.name = raw_items.city) WHERE city_id IS NULL")
-                
+
                 logger.info("Migrating Sellers data...")
                 cursor.execute("INSERT OR IGNORE INTO sellers (seller_link_id) SELECT DISTINCT seller_id FROM raw_items WHERE seller_id IS NOT NULL AND seller_id != ''")
                 cursor.execute("UPDATE raw_items SET seller_table_id = (SELECT id FROM sellers WHERE sellers.seller_link_id = raw_items.seller_id) WHERE seller_table_id IS NULL")
@@ -210,7 +186,15 @@ class RawDataManager:
 
             logger.info("Migration v4 (Pure Logic) complete.")
 
-    # --- HELPER METHODS ---
+        if from_version < 5:
+            logger.info("Migrating to v5: Adding performance indexes...")
+            try:
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price_city ON raw_items(price, city_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_analyzed_price ON raw_items(analyzed_at, price)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_product_id ON raw_items(product_id)")
+                logger.info("Indexes created successfully.")
+            except Exception as e:
+                logger.warning(f"Index creation warning: {e}")
 
     def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
         if not name: return None
@@ -237,7 +221,7 @@ class RawDataManager:
             if own_cursor:
                 conn = self._get_connection()
                 cursor = conn.cursor()
-            
+
             clean_name = name.strip().upper()
             cursor.execute("SELECT id FROM categories WHERE name = ?", (clean_name,))
             row = cursor.fetchone()
@@ -251,15 +235,12 @@ class RawDataManager:
             if own_cursor and conn:
                 conn.close()
 
-    # --- MAIN API ---
-
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
                      product_keys: Optional[List[str]] = None) -> str:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
 
-            # 1. Base Fields
             ad_id = str(item.get('id') or item.get('ad_id') or self._extract_ad_id(item.get('link', '')) or "")
             if not ad_id:
                 unique_str = f"{item.get('title')}_{item.get('seller_id')}_{item.get('city')}"
@@ -269,25 +250,20 @@ class RawDataManager:
             price = item.get('price', 0)
             city_str = item.get('city', 'Неизвестно')
             seller_str = item.get('seller_id', '')
-            
-            # 2. Normalize References
+
             city_id = self.get_or_create_city(city_str, cursor)
             seller_db_id = self.get_or_create_seller(seller_str, cursor)
 
-            # 3. Product Linking
             product_id = None
-            
-            # Приоритет 1: Semantic Data из item (от нового парсера)
+
             semantic = item.get('semantic_data')
             if semantic and semantic.get('product_key'):
-                # Логика создания продукта на основе семантики
                 p_key = semantic['product_key']
                 cat_name = semantic.get('category', 'MISC')
                 brand = semantic.get('brand')
                 model = semantic.get('model')
                 clean_name = semantic.get('clean_name')
-                
-                # Check/Create Product
+
                 cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
                 p_row = cursor.fetchone()
                 if p_row:
@@ -295,16 +271,14 @@ class RawDataManager:
                 else:
                     cat_id = self.get_or_create_category(cat_name, cursor)
                     cursor.execute("""
-                        INSERT INTO products (key, display_name, brand, model, category_id) 
+                        INSERT INTO products (key, display_name, brand, model, category_id)
                         VALUES (?, ?, ?, ?, ?)
                     """, (p_key, clean_name, brand, model, cat_id))
                     product_id = cursor.lastrowid
-
-            # Приоритет 2: Fallback на старые product_keys аргументы
             elif product_keys and len(product_keys) > 0:
                 p_key = product_keys[0]
                 cat_name = categories[0] if categories else 'MISC'
-                
+
                 cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
                 p_row = cursor.fetchone()
                 if p_row:
@@ -314,7 +288,6 @@ class RawDataManager:
                     cursor.execute("INSERT INTO products (key, category_id) VALUES (?, ?)", (p_key, cat_id))
                     product_id = cursor.lastrowid
 
-            # 4. Upsert Item
             cursor.execute("SELECT id, price, views FROM raw_items WHERE ad_id = ?", (ad_id,))
             existing = cursor.fetchone()
 
@@ -326,14 +299,11 @@ class RawDataManager:
                 raw_item_id = existing[0]
                 old_price = existing[1]
 
-                # History check
                 if old_price != price and price > 0:
                     cursor.execute("""
                         INSERT INTO price_history (raw_item_id, price, recorded_at)
                         VALUES (?, ?, ?)
                     """, (raw_item_id, old_price, datetime.now().isoformat()))
-                
-                # Update (Pure: no text city/seller update)
                 cursor.execute("""
                     UPDATE raw_items SET
                         price = ?, views = ?, raw_data = ?, analyzed_at = ?,
@@ -345,9 +315,7 @@ class RawDataManager:
                     raw_item_id
                 ))
                 status = "updated"
-                
             else:
-                # Insert (Pure: no text city/seller insert)
                 cursor.execute("""
                     INSERT INTO raw_items (
                         ad_id, title, price, description, condition,
@@ -362,7 +330,7 @@ class RawDataManager:
                 ))
                 raw_item_id = cursor.lastrowid
                 status = "created"
-                
+
                 if price > 0:
                     cursor.execute("""
                         INSERT INTO price_history (raw_item_id, price, recorded_at)
@@ -387,26 +355,24 @@ class RawDataManager:
         try:
             cursor = conn.cursor()
 
-            # PURE QUERY: Only JOINs, no fallback to raw_items text columns
             query = """
                 SELECT DISTINCT
-                    ri.id, ri.ad_id, ri.title, ri.price, ri.description, 
+                    ri.id, ri.ad_id, ri.title, ri.price, ri.description,
                     cit.name as city,
-                    ri.condition, 
+                    ri.condition,
                     sel.seller_link_id as seller_id,
                     ri.views, ri.date_text, ri.link,
                     ri.analyzed_at, ri.created_at,
-                    
                     prod.key as clean_product_key,
                     prod.brand,
                     prod.model
-                    
+
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
                 LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
                 LEFT JOIN products prod ON ri.product_id = prod.id
                 LEFT JOIN categories c ON prod.category_id = c.id
-                
+
                 WHERE 1=1
             """
             params = []
@@ -420,7 +386,6 @@ class RawDataManager:
                 params.append(product_key)
 
             if search_query:
-                # Search includes normalized city name
                 query += " AND (ri.title LIKE ? OR ri.description LIKE ? OR cit.name LIKE ?)"
                 search_term = f"%{search_query}%"
                 params.extend([search_term, search_term, search_term])
@@ -435,14 +400,11 @@ class RawDataManager:
 
     def _item_from_row(self, row: sqlite3.Row) -> Dict:
         item = dict(row)
-        
-        # Compatibility mapping
         if item.get('clean_product_key'):
             item['product_keys'] = [item['clean_product_key']]
         else:
             item['product_keys'] = []
 
-        # Fetch categories ONLY via product hierarchy
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -455,20 +417,15 @@ class RawDataManager:
             item['categories'] = cats
         finally:
             conn.close()
-            
         return item
 
     def get_hierarchy_data(self) -> Dict:
-        """
-        Возвращает дерево: Category -> Brand -> Product.
-        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            # COALESCE берет первое не-NULL значение.
-            # Если display_name нет, берем key. Если бренда нет, берем 'NO_BRAND'
+
             query = """
-                SELECT 
+                SELECT
                     c.name as category_name,
                     COALESCE(p.brand, 'NO_BRAND') as brand,
                     COALESCE(p.display_name, p.key) as display_name,
@@ -483,31 +440,28 @@ class RawDataManager:
             """
             cursor.execute(query)
             rows = cursor.fetchall()
-            
-            # Build tree structure
+
             tree = {}
             for row in rows:
                 cat = row['category_name']
                 brand = row['brand']
-                # Если бренд все еще пустой, делаем его 'NO_BRAND'
+
                 if not brand: brand = 'NO_BRAND'
                 brand = brand.upper()
-                
+
                 if cat not in tree: tree[cat] = {}
                 if brand not in tree[cat]: tree[cat][brand] = []
-                
+
                 tree[cat][brand].append({
                     'id': row['product_id'],
                     'key': row['product_key'],
                     'name': row['display_name'],
                     'count': row['item_count']
                 })
-                
+
             return tree
         finally:
             conn.close()
-
-    # --- LEGACY METHODS (UPDATED TO USE NEW STRUCTURE OR REMOVED) ---
 
     def _extract_ad_id(self, link: str) -> Optional[str]:
         if not link: return None
@@ -581,8 +535,8 @@ class RawDataManager:
         try:
             cursor = conn.cursor()
             query = """
-                SELECT p.id, p.key, p.display_name, p.category_id, c.name as category_name, 
-                       COUNT(ri.id) as item_count
+                SELECT p.id, p.key, p.display_name, p.category_id, c.name as category_name,
+                COUNT(ri.id) as item_count
                 FROM products p
                 LEFT JOIN categories c ON p.category_id = c.id
                 LEFT JOIN raw_items ri ON p.id = ri.product_id
@@ -592,7 +546,7 @@ class RawDataManager:
             if category_id:
                 query += " AND p.category_id = ?"
                 params.append(category_id)
-            
+
             query += " GROUP BY p.id ORDER BY p.key"
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
@@ -745,16 +699,14 @@ class RawDataManager:
     def import_from_json(self, filepath: str, clear_first: bool = False):
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             if clear_first:
                 self.clear_all_raw_items()
-            
+
             for item in data.get('items', []):
                 self.add_raw_item(item, item.get('categories'), item.get('product_keys'))
-            
             logger.success(f"Imported {len(data.get('items', []))} items from {filepath}")
         finally:
             conn.close()
