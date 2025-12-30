@@ -6,9 +6,26 @@ import hashlib
 from typing import List, Dict, Optional
 from datetime import datetime
 from collections import Counter
+from dataclasses import dataclass
 
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
+
+
+@dataclass
+class AddItemResult:
+    item_id: int
+    status: str  # 'created', 'updated', 'skipped', 'error'
+    price_changed: bool = False
+
+    # Backward compatibility: allows result == 'created'
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.status == other
+        return super().__eq__(other)
+
+    def __str__(self):
+        return self.status
 
 
 class RawDataManager:
@@ -29,7 +46,6 @@ class RawDataManager:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
             if cursor.fetchone() is None:
                 logger.info("Creating fresh PURE v5 database schema")
@@ -65,7 +81,6 @@ class RawDataManager:
                 name TEXT UNIQUE NOT NULL
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sellers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,7 +89,6 @@ class RawDataManager:
                 status TEXT DEFAULT 'active'
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +96,6 @@ class RawDataManager:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +108,6 @@ class RawDataManager:
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS raw_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,7 +127,6 @@ class RawDataManager:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,7 +136,6 @@ class RawDataManager:
                 FOREIGN KEY (raw_item_id) REFERENCES raw_items(id) ON DELETE CASCADE
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,14 +144,12 @@ class RawDataManager:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # Basic Indexes
+        # Indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id ON raw_items(ad_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price ON raw_items(price)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_item ON price_history(raw_item_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_key ON products(key)")
-
-        # Performance Indexes (v5)
+        # Performance Indexes v5
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price_city ON raw_items(price, city_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_analyzed_price ON raw_items(analyzed_at, price)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_product_id ON raw_items(product_id)")
@@ -149,52 +157,35 @@ class RawDataManager:
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
         if from_version < 2:
             self._create_all_tables(cursor)
-
         if from_version < 3:
             cursor.execute("CREATE TABLE IF NOT EXISTS user_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT, details TEXT, created_at TEXT)")
-
         if from_version < 4:
-            logger.info("Migrating to v4 PURE: Creating normalized tables...")
             self._create_all_tables(cursor)
-
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='product_keys'")
             if cursor.fetchone():
-                logger.info("Renaming product_keys -> products...")
                 cursor.execute("ALTER TABLE product_keys RENAME TO products")
                 try: cursor.execute("ALTER TABLE products ADD COLUMN brand TEXT")
                 except: pass
                 try: cursor.execute("ALTER TABLE products ADD COLUMN model TEXT")
                 except: pass
-
             try: cursor.execute("ALTER TABLE raw_items ADD COLUMN city_id INTEGER REFERENCES cities(id)")
             except: pass
             try: cursor.execute("ALTER TABLE raw_items ADD COLUMN seller_table_id INTEGER REFERENCES sellers(id)")
             except: pass
             try: cursor.execute("ALTER TABLE raw_items ADD COLUMN product_id INTEGER REFERENCES products(id)")
             except: pass
-
             try:
-                logger.info("Migrating Cities data...")
                 cursor.execute("INSERT OR IGNORE INTO cities (name) SELECT DISTINCT city FROM raw_items WHERE city IS NOT NULL AND city != ''")
                 cursor.execute("UPDATE raw_items SET city_id = (SELECT id FROM cities WHERE cities.name = raw_items.city) WHERE city_id IS NULL")
-
-                logger.info("Migrating Sellers data...")
                 cursor.execute("INSERT OR IGNORE INTO sellers (seller_link_id) SELECT DISTINCT seller_id FROM raw_items WHERE seller_id IS NOT NULL AND seller_id != ''")
                 cursor.execute("UPDATE raw_items SET seller_table_id = (SELECT id FROM sellers WHERE sellers.seller_link_id = raw_items.seller_id) WHERE seller_table_id IS NULL")
-            except Exception as e:
-                logger.warning(f"Data migration warning: {e}")
-
-            logger.info("Migration v4 (Pure Logic) complete.")
-
+            except Exception: pass
         if from_version < 5:
-            logger.info("Migrating to v5: Adding performance indexes...")
             try:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price_city ON raw_items(price, city_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_analyzed_price ON raw_items(analyzed_at, price)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_product_id ON raw_items(product_id)")
-                logger.info("Indexes created successfully.")
-            except Exception as e:
-                logger.warning(f"Index creation warning: {e}")
+            except Exception: pass
 
     def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
         if not name: return None
@@ -221,25 +212,45 @@ class RawDataManager:
             if own_cursor:
                 conn = self._get_connection()
                 cursor = conn.cursor()
-
+            
             clean_name = name.strip().upper()
             cursor.execute("SELECT id FROM categories WHERE name = ?", (clean_name,))
             row = cursor.fetchone()
             if row:
-                return row[0]
-            cursor.execute("INSERT INTO categories (name) VALUES (?)", (clean_name,))
-            if own_cursor:
-                conn.commit()
-            return cursor.lastrowid
+                cat_id = row[0]
+            else:
+                cursor.execute("INSERT INTO categories (name) VALUES (?)", (clean_name,))
+                cat_id = cursor.lastrowid
+            
+            if own_cursor: conn.commit()
+            return cat_id
         finally:
-            if own_cursor and conn:
-                conn.close()
+            if own_cursor and conn: conn.close()
 
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
-                     product_keys: Optional[List[str]] = None) -> str:
-        conn = self._get_connection()
+                     product_keys: Optional[List[str]] = None,
+                     external_cursor: sqlite3.Cursor = None) -> AddItemResult:
+        """
+        Adds or updates an item in the database.
+        
+        Args:
+            item: Item dictionary.
+            categories: Optional list of categories.
+            product_keys: Optional list of product keys.
+            external_cursor: Optional cursor for batch transactions.
+            
+        Returns:
+            AddItemResult object with item_id, status, and price_changed flag.
+        """
+        own_connection = external_cursor is None
+        conn = None
+        
         try:
-            cursor = conn.cursor()
+            if own_connection:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+            else:
+                cursor = external_cursor
 
             ad_id = str(item.get('id') or item.get('ad_id') or self._extract_ad_id(item.get('link', '')) or "")
             if not ad_id:
@@ -253,9 +264,9 @@ class RawDataManager:
 
             city_id = self.get_or_create_city(city_str, cursor)
             seller_db_id = self.get_or_create_seller(seller_str, cursor)
-
             product_id = None
 
+            # Resolve Product & Category
             semantic = item.get('semantic_data')
             if semantic and semantic.get('product_key'):
                 p_key = semantic['product_key']
@@ -275,10 +286,10 @@ class RawDataManager:
                         VALUES (?, ?, ?, ?, ?)
                     """, (p_key, clean_name, brand, model, cat_id))
                     product_id = cursor.lastrowid
+
             elif product_keys and len(product_keys) > 0:
                 p_key = product_keys[0]
                 cat_name = categories[0] if categories else 'MISC'
-
                 cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
                 p_row = cursor.fetchone()
                 if p_row:
@@ -288,33 +299,62 @@ class RawDataManager:
                     cursor.execute("INSERT INTO products (key, category_id) VALUES (?, ?)", (p_key, cat_id))
                     product_id = cursor.lastrowid
 
-            cursor.execute("SELECT id, price, views FROM raw_items WHERE ad_id = ?", (ad_id,))
+            # Check existing item
+            cursor.execute("""
+                SELECT id, price, views, title, description, condition, city_id, product_id 
+                FROM raw_items WHERE ad_id = ?
+            """, (ad_id,))
             existing = cursor.fetchone()
 
-            raw_item_id = None
-            status = "skipped"
             raw_data_json = json.dumps(item, ensure_ascii=False)
+            current_time = datetime.now().isoformat()
 
             if existing:
                 raw_item_id = existing[0]
                 old_price = existing[1]
+                
+                # Check what changed
+                old_views = existing[2] or 0
+                new_views = item.get('views', 0)
+                
+                # Loose check for content changes to avoid unnecessary writes
+                has_content_change = (
+                    existing[3] != title or
+                    existing[5] != item.get('condition') or
+                    existing[6] != city_id or
+                    existing[7] != product_id
+                )
+                
+                price_changed = (old_price != price and price > 0)
+                
+                # Update if significant changes found
+                if price_changed or new_views != old_views or has_content_change:
+                    if price_changed:
+                        cursor.execute("""
+                            INSERT INTO price_history (raw_item_id, price, recorded_at)
+                            VALUES (?, ?, ?)
+                        """, (raw_item_id, old_price, current_time))
 
-                if old_price != price and price > 0:
                     cursor.execute("""
-                        INSERT INTO price_history (raw_item_id, price, recorded_at)
-                        VALUES (?, ?, ?)
-                    """, (raw_item_id, old_price, datetime.now().isoformat()))
-                cursor.execute("""
-                    UPDATE raw_items SET
-                        price = ?, views = ?, raw_data = ?, analyzed_at = ?,
-                        city_id = ?, seller_table_id = ?, product_id = ?
-                    WHERE id = ?
-                """, (
-                    price, item.get('views', 0), raw_data_json, datetime.now().isoformat(),
-                    city_id, seller_db_id, product_id,
-                    raw_item_id
-                ))
-                status = "updated"
+                        UPDATE raw_items SET
+                            price = ?, views = ?, raw_data = ?, analyzed_at = ?,
+                            city_id = ?, seller_table_id = ?, product_id = ?,
+                            title = ?, description = ?, condition = ?, date_text = ?, link = ?
+                        WHERE id = ?
+                    """, (
+                        price, new_views, raw_data_json, current_time,
+                        city_id, seller_db_id, product_id,
+                        title, item.get('description'), item.get('condition'), 
+                        item.get('date_text'), item.get('link'),
+                        raw_item_id
+                    ))
+                    
+                    status = "updated"
+                else:
+                    status = "skipped"
+                    
+                result = AddItemResult(raw_item_id, status, price_changed)
+
             else:
                 cursor.execute("""
                     INSERT INTO raw_items (
@@ -325,26 +365,32 @@ class RawDataManager:
                 """, (
                     ad_id, title, price, item.get('description'), item.get('condition'),
                     item.get('views'), item.get('date_text'), item.get('link'),
-                    raw_data_json, datetime.now().isoformat(),
+                    raw_data_json, current_time,
                     city_id, seller_db_id, product_id
                 ))
                 raw_item_id = cursor.lastrowid
-                status = "created"
-
+                
                 if price > 0:
                     cursor.execute("""
                         INSERT INTO price_history (raw_item_id, price, recorded_at)
                         VALUES (?, ?, ?)
-                    """, (raw_item_id, price, datetime.now().isoformat()))
+                    """, (raw_item_id, price, current_time))
+                
+                result = AddItemResult(raw_item_id, "created", False)
 
-            conn.commit()
-            return status
+            if own_connection:
+                conn.commit()
+            
+            return result
+
         except Exception as e:
             logger.error(f"DB Error in add_raw_item: {e}")
-            if conn: conn.rollback()
-            return "error"
+            if own_connection and conn:
+                conn.rollback()
+            return AddItemResult(-1, "error", False)
         finally:
-            conn.close()
+            if own_connection and conn:
+                conn.close()
 
     def get_raw_items(self, category: Optional[str] = None,
                       product_key: Optional[str] = None,
@@ -354,7 +400,8 @@ class RawDataManager:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
+            
+            # Optimized query with Join to fetch category name directly
             query = """
                 SELECT DISTINCT
                     ri.id, ri.ad_id, ri.title, ri.price, ri.description,
@@ -365,7 +412,8 @@ class RawDataManager:
                     ri.analyzed_at, ri.created_at,
                     prod.key as clean_product_key,
                     prod.brand,
-                    prod.model
+                    prod.model,
+                    c.name as category_name
 
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
@@ -400,30 +448,26 @@ class RawDataManager:
 
     def _item_from_row(self, row: sqlite3.Row) -> Dict:
         item = dict(row)
+
         if item.get('clean_product_key'):
             item['product_keys'] = [item['clean_product_key']]
         else:
             item['product_keys'] = []
 
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT c.name FROM products p
-                JOIN categories c ON p.category_id = c.id
-                WHERE p.id = (SELECT product_id FROM raw_items WHERE id = ?)
-            """, (item['id'],))
-            cats = [r[0] for r in cursor.fetchall()]
-            item['categories'] = cats
-        finally:
-            conn.close()
+        # Optimization: Use fetched category_name instead of N+1 query
+        cat_name = item.get('category_name')
+        item['categories'] = [cat_name] if cat_name else []
+        
+        # Clean up internal field if not needed in final dict
+        if 'category_name' in item:
+            del item['category_name']
+
         return item
 
     def get_hierarchy_data(self) -> Dict:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
             query = """
                 SELECT
                     c.name as category_name,
@@ -445,7 +489,6 @@ class RawDataManager:
             for row in rows:
                 cat = row['category_name']
                 brand = row['brand']
-
                 if not brand: brand = 'NO_BRAND'
                 brand = brand.upper()
 
@@ -458,14 +501,12 @@ class RawDataManager:
                     'name': row['display_name'],
                     'count': row['item_count']
                 })
-
             return tree
         finally:
             conn.close()
 
     def _extract_ad_id(self, link: str) -> Optional[str]:
         if not link: return None
-        import re
         match = re.search(r'/(\d+)(?:\?|$)', link)
         return match.group(1) if match else None
 
@@ -487,11 +528,15 @@ class RawDataManager:
             conn.close()
 
     def calculate_data_signature(self, category_key: Optional[str] = None, product_key: Optional[str] = None) -> str:
+        """
+        Calculates a hash based on CONTENT of items, not just count.
+        Using MD5 of (id + price + title + analyzed_at) for items.
+        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             base_query = """
-                SELECT COUNT(*), SUM(ri.price), MAX(ri.id)
+                SELECT ri.id, ri.price, ri.title, ri.analyzed_at
                 FROM raw_items ri
                 LEFT JOIN products p ON ri.product_id = p.id
                 WHERE 1=1
@@ -503,12 +548,21 @@ class RawDataManager:
             elif category_key:
                 base_query += " AND p.key LIKE ?"
                 params.append(f"{category_key}%")
+            
+            base_query += " ORDER BY ri.id"
 
             cursor.execute(base_query, params)
-            row = cursor.fetchone()
-            if not row: return "empty"
-            data_str = f"{row[0]}-{row[1]}-{row[2]}"
-            return hashlib.md5(data_str.encode('utf-8')).hexdigest()
+            rows = cursor.fetchall()
+            
+            if not rows: return "empty"
+            
+            # Aggregate string for hashing
+            content_str = ""
+            for r in rows:
+                # Basic string concatenation of critical fields
+                content_str += f"{r[0]}:{r[1]}:{r[2]}:{r[3]}|"
+                
+            return hashlib.md5(content_str.encode('utf-8')).hexdigest()
         except Exception:
             return "error"
         finally:
@@ -536,7 +590,7 @@ class RawDataManager:
             cursor = conn.cursor()
             query = """
                 SELECT p.id, p.key, p.display_name, p.category_id, c.name as category_name,
-                COUNT(ri.id) as item_count
+                       COUNT(ri.id) as item_count
                 FROM products p
                 LEFT JOIN categories c ON p.category_id = c.id
                 LEFT JOIN raw_items ri ON p.id = ri.product_id
@@ -574,11 +628,13 @@ class RawDataManager:
         try:
             cursor = conn.cursor()
             query = """
-                SELECT ri.*, cit.name as city, sel.seller_link_id as seller_id, prod.key as clean_product_key
+                SELECT ri.*, cit.name as city, sel.seller_link_id as seller_id, prod.key as clean_product_key,
+                       c.name as category_name
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
                 LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
                 LEFT JOIN products prod ON ri.product_id = prod.id
+                LEFT JOIN categories c ON prod.category_id = c.id
                 WHERE ri.id = ?
             """
             cursor.execute(query, (item_id,))
@@ -699,14 +755,41 @@ class RawDataManager:
     def import_from_json(self, filepath: str, clear_first: bool = False):
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Start explicit transaction
+            cursor.execute("BEGIN TRANSACTION")
+            
             if clear_first:
                 self.clear_all_raw_items()
 
-            for item in data.get('items', []):
-                self.add_raw_item(item, item.get('categories'), item.get('product_keys'))
-            logger.success(f"Imported {len(data.get('items', []))} items from {filepath}")
+            items = data.get('items', [])
+            count = 0
+            
+            # Batch inserts using external cursor
+            for item in items:
+                self.add_raw_item(
+                    item, 
+                    item.get('categories'), 
+                    item.get('product_keys'),
+                    external_cursor=cursor
+                )
+                count += 1
+                
+                # Commit every 1000 items to keep transaction log small
+                if count % 1000 == 0:
+                    conn.commit()
+                    cursor.execute("BEGIN TRANSACTION")
+            
+            conn.commit()
+            logger.success(f"Imported {count} items from {filepath}")
+            
+        except Exception as e:
+            if conn: conn.rollback()
+            logger.error(f"Import error: {e}")
+            raise
         finally:
             conn.close()
