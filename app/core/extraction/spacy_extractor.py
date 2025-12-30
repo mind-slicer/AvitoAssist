@@ -2,18 +2,19 @@ import spacy
 import json
 import os
 import re
-from typing import Dict, List, Any, Optional
+import threading
+from typing import Dict, List, Any
 
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
 class SpacyFeatureExtractor:
     _instance = None
+    _lock = threading.Lock()
+    _initialized = False
 
-    # Производители чипов (основа для CPU/GPU)
     CHIP_MAKERS = {'nvidia', 'amd', 'intel', 'apple'}
     
-    # Вендоры устройств (ноутбуки, мониторы, сборки)
     VENDORS = {
         'asus', 'msi', 'gigabyte', 'palit', 'sapphire', 'zotac', 'evga', 
         'lenovo', 'hp', 'dell', 'acer', 'samsung', 'lg', 'aoc', 'benq', 
@@ -23,10 +24,9 @@ class SpacyFeatureExtractor:
     }
 
     SERIES_KEYWORDS = {
-        'rtx', 'gtx', 'rx', 'arc', 'titan', 'quadro', # GPU
-        'ryzen', 'core', 'athron', 'xeon', 'epyc', 'threadripper', 'pentium', 'celeron', # CPU
-        'i3', 'i5', 'i7', 'i9', 'r3', 'r5', 'r7', 'r9', # CPU Short
-        # Laptops Specific
+        'rtx', 'gtx', 'rx', 'arc', 'titan', 'quadro',
+        'ryzen', 'core', 'athron', 'xeon', 'epyc', 'threadripper', 'pentium', 'celeron',
+        'i3', 'i5', 'i7', 'i9', 'r3', 'r5', 'r7', 'r9',
         'macbook', 'air', 'pro', 'legion', 'vivobook', 'zenbook', 'rog', 'tuf', 'strix', 
         'ideapad', 'thinkpad', 'nitro', 'predator', 'alienware', 'xps', 'latitude', 
         'inspiron', 'omen', 'victus', 'pavilion', 'envy', 'matebook', 'magicbook',
@@ -49,9 +49,17 @@ class SpacyFeatureExtractor:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(SpacyFeatureExtractor, cls).__new__(cls)
-            cls._instance._init_model()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(SpacyFeatureExtractor, cls).__new__(cls)
         return cls._instance
+
+    def __init__(self):
+        if not SpacyFeatureExtractor._initialized:
+            with SpacyFeatureExtractor._lock:
+                if not SpacyFeatureExtractor._initialized:
+                    self._init_model()
+                    SpacyFeatureExtractor._initialized = True
 
     def _init_model(self):
         logger.info("Загрузка NLP модели (ru_core_news_md)...", token="nlp_load")

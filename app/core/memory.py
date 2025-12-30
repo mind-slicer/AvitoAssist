@@ -1,23 +1,12 @@
-"""
-MemoryManager - Unified facade for raw data and knowledge management.
-Combines RawDataManager and KnowledgeManager for comprehensive data persistence.
-"""
-
-import sys
 import os
 from typing import List, Dict, Optional
-
-# Add workspace root to path for imports
-_workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _workspace_root not in sys.path:
-    sys.path.insert(0, _workspace_root)
-
-from app.config import BASE_APP_DIR
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.core.text_utils import FeatureExtractor
 from app.core.memory.raw_data_manager import RawDataManager
 from app.core.memory.knowledge_manager import KnowledgeManager
 from app.core.log_manager import logger
+from app.config import BASE_APP_DIR
 
 
 class MemoryManager:
@@ -36,26 +25,73 @@ class MemoryManager:
     # === Delegated methods for raw data ===
 
     def add_items_bulk(self, items: List[Dict]) -> int:
-        """
-        Подготавливает данные (NLP) и сохраняет их пачкой.
-        """
+        if not items:
+            return 0
+
         prepared_data = []
-        
-        # Шаг 1: Подготовка данных (может занять время из-за NLP, поэтому это тоже будет в потоке)
-        for item in items:
-            title = item.get('title', '')
-            # Генерируем ключи заранее
-            product_key = FeatureExtractor.generate_product_key(title)
-            category = product_key.split('_')[0] if '_' in product_key else 'misc'
-            
-            prepared_data.append({
-                'item': item,
-                'categories': [category],
-                'product_keys': [product_key]
-            })
-            
-        # Шаг 2: Массовая вставка в БД
-        return self.raw_data.add_raw_items_bulk(prepared_data)
+
+        import os
+        max_workers = min(4, os.cpu_count() or 1, len(items))
+
+        logger.info(f"NLP обработка {len(items)} элементов в {max_workers} потоков...")
+
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Запускаем все задачи
+                future_to_item = {
+                    executor.submit(
+                        FeatureExtractor.generate_product_key,
+                        item.get('title', '')
+                    ): item
+                    for item in items
+                }
+
+                # Собираем результаты по мере готовности
+                for future in as_completed(future_to_item):
+                    item = future_to_item[future]
+                    try:
+                        product_key = future.result()
+                        category = product_key.split('_')[0] if '_' in product_key else 'misc'
+
+                        prepared_data.append({
+                            'item': item,
+                            'categories': [category],
+                            'product_keys': [product_key]
+                        })
+                    except Exception as e:
+                        logger.error(f"NLP error for item '{item.get('title', '')[:50]}': {e}")
+                        # Fallback: добавляем без обработки
+                        prepared_data.append({
+                            'item': item,
+                            'categories': ['misc'],
+                            'product_keys': ['misc_unknown']
+                        })
+
+        except Exception as e:
+            logger.error(f"Parallel NLP failed, falling back to sequential: {e}")
+            # Fallback на последовательную обработку
+            for item in items:
+                try:
+                    product_key = FeatureExtractor.generate_product_key(item.get('title', ''))
+                    category = product_key.split('_')[0] if '_' in product_key else 'misc'
+                    prepared_data.append({
+                        'item': item,
+                        'categories': [category],
+                        'product_keys': [product_key]
+                    })
+                except Exception as e:
+                    logger.error(f"NLP error: {e}")
+                    prepared_data.append({
+                        'item': item,
+                        'categories': ['misc'],
+                        'product_keys': ['misc_unknown']
+                    })
+
+        # === МАССОВАЯ ВСТАВКА В БД ===
+        if prepared_data:
+            return self.raw_data.add_raw_items_bulk(prepared_data)
+
+        return 0
 
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
                      product_keys: Optional[List[str]] = None) -> int:
