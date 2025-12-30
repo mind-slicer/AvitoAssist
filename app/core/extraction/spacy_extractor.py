@@ -2,13 +2,52 @@ import spacy
 import json
 import os
 import re
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
 class SpacyFeatureExtractor:
     _instance = None
+
+    # --- СЛОВАРИ ЗНАНИЙ (УНИВЕРСАЛЬНЫЕ) ---
+    
+    # Производители чипов (основа для CPU/GPU)
+    CHIP_MAKERS = {'nvidia', 'amd', 'intel', 'apple'}
+    
+    # Вендоры устройств (ноутбуки, мониторы, сборки)
+    VENDORS = {
+        'asus', 'msi', 'gigabyte', 'palit', 'sapphire', 'zotac', 'evga', 
+        'lenovo', 'hp', 'dell', 'acer', 'samsung', 'lg', 'aoc', 'benq', 
+        'kingston', 'adata', 'wd', 'seagate', 'sony', 'huawei', 'honor',
+        'xiaomi', 'thunderobot', 'maibenben', 'colorful', 'inno3d', 'pny'
+    }
+
+    # Ключевые слова серий (для склейки с моделью)
+    SERIES_KEYWORDS = {
+        'rtx', 'gtx', 'rx', 'arc', 'titan', 'quadro', # GPU
+        'ryzen', 'core', 'athron', 'xeon', 'epyc', 'threadripper', 'pentium', 'celeron', # CPU
+        'i3', 'i5', 'i7', 'i9', 'r3', 'r5', 'r7', 'r9', # CPU Short
+        'macbook', 'air', 'pro', 'legion', 'vivobook', 'zenbook', 'rog', 'tuf', 'strix', # Laptops
+        'playstation', 'xbox', 'nintendo' # Consoles
+    }
+
+    # Маркетинговый шум, который НЕ должен попасть в product_key
+    NOISE_WORDS = {
+        'gaming', 'edition', 'oc', 'overclock', 'ultra', 'pro', 'max', 'plus', 
+        'evo', 'x', 'z', 'super', 'ti', 'lhr', 'box', 'oem', 'new', 'used', 
+        'white', 'black', 'rgb', 'wifi', 'dvd', 'cd', 'hero', 'master', 'elite',
+        'eagle', 'vision', 'trio', 'ventus', 'suprim', 'strix', 'tuf', 'aorus',
+        'fatboy', 'nitro', 'pulse', 'mech', 'dual', 'windforce', 'phoenix',
+        'phantom', 'gamerock', 'jetstream', 'stormx', 'verto', 'epic', 'extreme',
+        'waterforce', 'se', 'xt', 'xtx', 'gddr6', 'gddr6x', 'gddr5', 'ddr4', 'ddr5',
+        'ssd', 'hdd', 'nvme', 'sata', 'm2', 'pci', 'express', 'usb', 'hdmi',
+        'displayport', 'vga', 'dvi', 'hz', 'mhz', 'ghz', 'inch', 'ips', 'va', 'tn', 'oled'
+    }
+    
+    # Слова, которые являются частью модели (исключения из шума)
+    # Например, "ti" и "super" важны для GPU, "k" и "f" для CPU, но мы их обработаем в логике склейки
+    MODEL_SUFFIXES = {'ti', 'super', 'xt', 'xtx', 'k', 'f', 'kf', 'x', 'x3d', 'h', 'hx', 'u', 'p'}
 
     def __new__(cls):
         if cls._instance is None:
@@ -17,13 +56,13 @@ class SpacyFeatureExtractor:
         return cls._instance
 
     def _init_model(self):
-        logger.info("Загрузка NLP модели (ru_core_news_sm)...", token="nlp_load")
+        logger.info("Загрузка NLP модели (ru_core_news_md)...", token="nlp_load")
         try:
-            self.nlp = spacy.load("ru_core_news_sm")
+            self.nlp = spacy.load("ru_core_news_md")
             self.category_rules = self._load_category_rules()
             logger.success("NLP модель загружена.", token="nlp_load")
         except OSError:
-            logger.error("Модель не найдена. Установите: python -m spacy download ru_core_news_sm")
+            logger.error("Модель не найдена. Установите: python -m spacy download ru_core_news_md")
             self.nlp = spacy.blank("ru")
             self.category_rules = {}
 
@@ -42,27 +81,31 @@ class SpacyFeatureExtractor:
         if not title:
             return self._empty_result()
 
-        doc = self.nlp(title)
+        # Предварительная очистка
+        clean_title = re.sub(r'[^\w\s\-\.]', ' ', title.lower())
+        doc = self.nlp(clean_title)
 
-        # 1. Лемматизация и фильтрация
         tokens = [t for t in doc if not t.is_stop and not t.is_punct and len(t.text) > 1]
         lemmas = [t.lemma_.lower() for t in tokens]
 
-        # 2. Определение категории
+        # 1. Определяем категорию
         category = self._detect_category(lemmas)
 
-        # 3. Извлечение сущностей (Бренды)
-        entities = self._extract_entities(doc, lemmas)
+        # 2. Извлекаем бренды (Chip maker и Vendor)
+        brands = self._extract_brands(lemmas)
         
-        # 4. Извлечение характеристик (память, состояние) - НОВОЕ
+        # 3. Извлекаем "сердце" названия - серию и модель
+        model_info = self._extract_series_and_model(lemmas, category)
+
+        # 4. Извлекаем характеристики
         features = self._extract_features_nlp(doc, lemmas)
 
-        # 5. Генерация ключей
-        product_key = self._generate_product_key(category, entities, lemmas)
-        cluster_key = self._generate_cluster_key(category, product_key)
-        
-        # 6. Чистое имя
-        clean_name = self._generate_clean_name(tokens) or title
+        # 5. Генерируем ключи
+        product_key = self._generate_product_key(category, brands, model_info, lemmas)
+        cluster_key = self._generate_cluster_key(category, brands, model_info)
+
+        # Генерация чистого имени для отображения
+        clean_name = self._generate_clean_name(category, brands, model_info)
 
         return {
             'category': category,
@@ -70,9 +113,9 @@ class SpacyFeatureExtractor:
             'cluster_key': cluster_key,
             'entity_type': 'PRODUCT',
             'clean_name': clean_name,
-            'brand': entities.get('brand', ''),
-            'model': entities.get('model', ''),
-            'features': features, # Словарь с capacity, condition и т.д.
+            'brand': brands.get('vendor') or brands.get('chip') or '',
+            'model': model_info.get('full_model', ''),
+            'features': features,
             'raw_tokens': lemmas
         }
 
@@ -83,89 +126,200 @@ class SpacyFeatureExtractor:
         for cat_name, rules in self.category_rules.items():
             keywords = rules.get("keywords", [])
             priority = rules.get("priority", 1)
-            
+
             matches = sum(1 for lemma in lemmas if lemma in keywords)
             if matches > 0:
                 score = matches * priority
+                # Бонус за точное совпадение первого слова (часто категория идет первой)
+                if lemmas and lemmas[0] in keywords:
+                    score += 2
+                
                 if score > max_score:
                     max_score = score
                     best_category = cat_name
-        
+
         return best_category
 
-    def _extract_entities(self, doc, lemmas: List[str]) -> Dict[str, str]:
-        entities = {'brand': ''}
+    def _extract_brands(self, lemmas: List[str]) -> Dict[str, str]:
+        brands = {'chip': None, 'vendor': None}
         
-        # Приоритет 1: NER от SpaCy
-        for ent in doc.ents:
-            if ent.label_ == "ORG":
-                entities['brand'] = ent.text
+        for lemma in lemmas:
+            if lemma in self.CHIP_MAKERS:
+                brands['chip'] = lemma
+            elif lemma in self.VENDORS:
+                # Если вендоров несколько, берем первый (обычно самый важный)
+                if not brands['vendor']:
+                    brands['vendor'] = lemma
+                    
+        return brands
+
+    def _extract_series_and_model(self, lemmas: List[str], category: str) -> Dict[str, str]:
+        """
+        Ищет серию и модель. 
+        Пример: ['geforce', 'rtx', '3060', 'ti'] -> Series: 'rtx', Model: '3060ti'
+        """
+        info = {'series': '', 'model': '', 'full_model': ''}
+        
+        # Индексы использованных токенов, чтобы не дублировать
+        used_indices = set()
+        
+        # Поиск серии
+        series_idx = -1
+        for i, lemma in enumerate(lemmas):
+            if lemma in self.SERIES_KEYWORDS:
+                info['series'] = lemma
+                series_idx = i
+                used_indices.add(i)
                 break
         
-        # Приоритет 2: Латиница (часто бренды это первое латинское слово)
-        if not entities['brand']:
-            for lemma in lemmas:
-                if re.match(r'^[a-z]+$', lemma) and len(lemma) > 2:
-                    # Исключаем единицы измерения и распространенные сокращения
-                    if lemma not in ['gb', 'tb', 'ddr', 'mhz', 'ssd', 'hdd', 'rgb']:
-                        entities['brand'] = lemma
-                        break
-        return entities
+        # Поиск цифровой модели
+        # Ищем цифры (3060, 12400) рядом с серией или просто цифры
+        model_parts = []
+        
+        start_search = series_idx + 1 if series_idx != -1 else 0
+        
+        for i in range(start_search, len(lemmas)):
+            token = lemmas[i]
+            
+            # Пропускаем уже использованные и шум
+            if i in used_indices or token in self.NOISE_WORDS:
+                continue
+                
+            # Паттерн модели: содержит цифры (3060, 5600x, 12700k)
+            # Но не является просто 'gb', 'tb', 'mhz' (это фильтруется в NOISE_WORDS частично, но проверим)
+            if re.search(r'\d', token):
+                # Исключаем явные характеристики памяти/частоты, если они не попали в шум
+                if any(x in token for x in ['gb', 'mb', 'tb', 'mhz', 'v', 'w']):
+                    continue
+                
+                model_parts.append(token)
+                used_indices.add(i)
+                
+                # Проверяем следующий токен на суффикс (ti, super, k, f)
+                if i + 1 < len(lemmas):
+                    next_token = lemmas[i+1]
+                    if next_token in self.MODEL_SUFFIXES:
+                        model_parts.append(next_token)
+                        used_indices.add(i+1)
+                
+                # Обычно модель - это одно число + суффикс. Нашли - выходим.
+                # Если это не набор типа "ryzen 5 5600"
+                if len(model_parts) >= 1: 
+                    # Дополнительная проверка для составных имен типа "core i5 12400"
+                    # Если сейчас нашли "5" (от i5), ищем дальше основное число
+                    if token in ['3', '5', '7', '9'] and len(token) == 1:
+                        continue 
+                    break
+        
+        info['model'] = "".join(model_parts)
+        
+        # Формируем полное название модели
+        parts = []
+        if info['series']: parts.append(info['series'])
+        if info['model']: parts.append(info['model'])
+        
+        info['full_model'] = "".join(parts) # rtx3060ti
+        return info
 
     def _extract_features_nlp(self, doc, lemmas: List[str]) -> Dict[str, str]:
         features = {}
-        
-        # Поиск объема (число + gb/tb)
-        # Проходим по исходному документу, чтобы сохранить порядок
         for i, token in enumerate(doc):
+            # Поиск памяти (8gb, 16gb)
             if token.like_num:
-                # Смотрим следующий токен
                 if i + 1 < len(doc):
                     next_token = doc[i+1].lemma_.lower()
-                    if next_token in ['gb', 'гб', 'tb', 'тб', 'гт']:
+                    if next_token in ['gb', 'гб', 'tb', 'тб']:
                         features['capacity'] = f"{token.text}{next_token.replace('гб','gb').replace('тб','tb')}"
-        
-        # Поиск состояния (по леммам)
+
         condition_keywords = {
-            'new': ['новый', 'запечатать', 'new', 'пломба'],
+            'new': ['новый', 'запечатать', 'new', 'пломба', 'магазин'],
             'used': ['бу', 'б/у', 'использовать'],
             'ideal': ['идеал', 'отличный', 'ideal']
         }
-        
         for state, keys in condition_keywords.items():
             if any(k in lemmas for k in keys):
                 features['condition'] = state
                 break
-                
         return features
 
-    def _generate_product_key(self, category: str, entities: Dict, lemmas: List[str]) -> str:
+    def _generate_product_key(self, category: str, brands: Dict, model_info: Dict, lemmas: List[str]) -> str:
+        """
+        Генерирует строгий ключ: category_brand_series+model
+        """
+        key_parts = [category.lower()]
+        
+        # Выбор бренда зависит от категории
+        # Для CPU/GPU важнее чипмейкер (nvidia, intel)
+        # Для Ноутбуков/Мониторов важнее вендор (asus, lg)
+        primary_brand = None
+        
+        if category in ['GPU', 'CPU', 'MOTHERBOARD']:
+            primary_brand = brands.get('chip') or brands.get('vendor')
+        else:
+            primary_brand = brands.get('vendor') or brands.get('chip')
+            
+        if primary_brand:
+            key_parts.append(primary_brand)
+            
+        # Добавляем модель (series + number)
+        if model_info.get('full_model'):
+            key_parts.append(model_info['full_model'])
+        else:
+            # Fallback: Если модель не найдена алгоритмически,
+            # берем 2-3 "значимых" слова из остатка, исключая шум
+            fallback_tokens = []
+            for lemma in lemmas:
+                if (lemma not in self.CHIP_MAKERS and 
+                    lemma not in self.VENDORS and 
+                    lemma not in self.NOISE_WORDS and
+                    lemma != category.lower() and
+                    len(lemma) > 2):
+                    fallback_tokens.append(lemma)
+            
+            if fallback_tokens:
+                # Берем не более 2 слов для чистоты
+                key_parts.extend(fallback_tokens[:2])
+            else:
+                key_parts.append("unknown")
+
+        # Финальная очистка
+        raw_key = "_".join(key_parts)
+        clean_key = re.sub(r'[^a-z0-9_]', '', raw_key)
+        return clean_key
+
+    def _generate_cluster_key(self, category: str, brands: Dict, model_info: Dict) -> str:
+        """
+        Кластер - это более общая группа. Например, rtx3060 и rtx3060ti могут быть в одном кластере,
+        или rtx30series.
+        Здесь упростим: кластер = категория + бренд + серия (без точной модели)
+        """
         parts = [category.lower()]
         
-        if entities.get('brand'):
-            parts.append(entities['brand'].lower())
+        brand = brands.get('chip') if category in ['GPU', 'CPU'] else brands.get('vendor')
+        if brand: parts.append(brand)
+        
+        if model_info.get('series'):
+            parts.append(model_info['series'])
+        elif model_info.get('full_model'):
+            # Если серии нет, но есть модель, берем начало модели (грубая эвристика)
+            parts.append(model_info['full_model'][:4])
             
-        # Добавляем модели/цифры, исключая мусор
-        for lemma in lemmas:
-            # Числа или комбинации букв+цифр (rtx3060, i5, 12400f)
-            if re.match(r'^[a-z0-9\-]+$', lemma) and (any(c.isdigit() for c in lemma) or len(lemma) > 3):
-                if lemma not in parts and lemma != category.lower() and lemma != entities.get('brand', '').lower():
-                    parts.append(lemma)
-        
-        # Очистка и обрезка
-        key = "_".join(parts[:5]) 
-        key = re.sub(r'[^a-z0-9_]', '', key)
-        return key
+        return "_".join(parts)
 
-    def _generate_cluster_key(self, category: str, product_key: str) -> str:
-        parts = product_key.split('_')
-        if len(parts) > 2:
-            return "_".join(parts[:3])
-        return product_key
+    def _generate_clean_name(self, category: str, brands: Dict, model_info: Dict) -> str:
+        parts = []
         
-    def _generate_clean_name(self, tokens) -> str:
-        # Собираем только значимые части речи
-        parts = [t.text for t in tokens if t.pos_ in ['NOUN', 'PROPN', 'ADJ', 'NUM', 'X']]
+        # Бренд
+        brand = brands.get('chip') if category in ['GPU', 'CPU'] else brands.get('vendor')
+        if brand: parts.append(brand.upper())
+        
+        # Серия и модель
+        if model_info.get('series'): parts.append(model_info['series'].upper())
+        if model_info.get('model'): parts.append(model_info['model'].upper())
+        
+        if not parts:
+            return f"{category} Unknown"
+            
         return " ".join(parts)
 
     def _empty_result(self):
