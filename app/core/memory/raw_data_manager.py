@@ -8,7 +8,7 @@ from datetime import datetime
 from collections import Counter
 import re
 
-# Add workspace root to path for config imports
+
 _workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _workspace_root not in sys.path:
     sys.path.insert(0, _workspace_root)
@@ -18,12 +18,9 @@ from app.core.log_manager import logger
 
 
 class RawDataManager:
-    """
-    Manages raw items data with persistent storage.
-    Supports categories, product keys, and many-to-many relationships.
-    """
 
-    SCHEMA_VERSION = 3
+    # PURE V4 SCHEMA
+    SCHEMA_VERSION = 4
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -31,35 +28,25 @@ class RawDataManager:
         self._ensure_db_exists()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection with row factory."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def _ensure_db_exists(self):
-        """Create tables if they don't exist."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
 
-            # Check if schema_version table exists
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
             if cursor.fetchone() is None:
-                # Fresh database - create schema_version and all tables
-                logger.info("Creating fresh database schema")
-                cursor.execute("""
-                    CREATE TABLE schema_version (
-                        version INTEGER PRIMARY KEY DEFAULT 1
-                    )
-                """)
+                logger.info("Creating fresh PURE v4 database schema")
+                cursor.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY DEFAULT 1)")
                 cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (self.SCHEMA_VERSION,))
-                # Create all data tables
                 self._create_all_tables(cursor)
                 conn.commit()
                 return
 
-            # Check version and migrate if needed
             cursor.execute("SELECT version FROM schema_version LIMIT 1")
             row = cursor.fetchone()
             current_version = row[0] if row else 0
@@ -68,23 +55,37 @@ class RawDataManager:
                 logger.info(f"Migrating raw_data schema from {current_version} to {self.SCHEMA_VERSION}")
                 self._migrate_schema(cursor, current_version, self.SCHEMA_VERSION)
                 cursor.execute("UPDATE schema_version SET version = ?", (self.SCHEMA_VERSION,))
-            elif current_version == self.SCHEMA_VERSION:
-                # Ensure tables exist even at current version
-                self._ensure_tables_exist(cursor)
-
+            
+            # Проверка наличия таблиц на всякий случай
+            self._ensure_tables_exist(cursor)
             conn.commit()
         finally:
             conn.close()
 
     def _ensure_tables_exist(self, cursor: sqlite3.Cursor):
-        """Ensure all data tables exist."""
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='categories'")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='raw_items'")
         if cursor.fetchone() is None:
             self._create_all_tables(cursor)
 
     def _create_all_tables(self, cursor: sqlite3.Cursor):
-        """Create all data tables."""
-        # Categories table
+        # 1. Справочники
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sellers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_link_id TEXT UNIQUE NOT NULL,
+                rating REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'active'
+            )
+        """)
+
+        # 2. Иерархия (Категории и Продукты)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,19 +94,20 @@ class RawDataManager:
             )
         """)
 
-        # Product keys table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS product_keys (
+            CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key TEXT UNIQUE NOT NULL,
                 display_name TEXT,
+                brand TEXT,
+                model TEXT,
                 category_id INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             )
         """)
 
-        # Raw items table
+        # 3. Основная таблица (CLEAN - без текстовых дублей)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS raw_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,40 +115,34 @@ class RawDataManager:
                 title TEXT,
                 price INTEGER,
                 description TEXT,
-                city TEXT,
                 condition TEXT,
-                seller_id TEXT,
                 views INTEGER,
                 date_text TEXT,
                 link TEXT,
                 raw_data TEXT,
+                
+                -- Only Foreign Keys
+                city_id INTEGER REFERENCES cities(id),
+                seller_table_id INTEGER REFERENCES sellers(id),
+                product_id INTEGER REFERENCES products(id),
+
                 analyzed_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # Items-Categories junction
+        # 4. История цен
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS raw_items_categories (
+            CREATE TABLE IF NOT EXISTS price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 raw_item_id INTEGER NOT NULL,
-                category_id INTEGER NOT NULL,
-                PRIMARY KEY (raw_item_id, category_id),
-                FOREIGN KEY (raw_item_id) REFERENCES raw_items(id) ON DELETE CASCADE,
-                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+                price INTEGER NOT NULL,
+                recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (raw_item_id) REFERENCES raw_items(id) ON DELETE CASCADE
             )
         """)
 
-        # Items-Products junction
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS raw_items_products (
-                raw_item_id INTEGER NOT NULL,
-                product_key_id INTEGER NOT NULL,
-                PRIMARY KEY (raw_item_id, product_key_id),
-                FOREIGN KEY (raw_item_id) REFERENCES raw_items(id) ON DELETE CASCADE,
-                FOREIGN KEY (product_key_id) REFERENCES product_keys(id) ON DELETE CASCADE
-            )
-        """)
-
+        # 5. Логи действий пользователя
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,132 +152,98 @@ class RawDataManager:
             )
         """)
 
-        # Create indexes
+        # Индексы
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id ON raw_items(ad_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price ON raw_items(price)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_analyzed ON raw_items(analyzed_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_product_keys_key ON product_keys(key)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_item ON price_history(raw_item_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_key ON products(key)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
+        # Если версия старая, создаем всё с нуля или обновляем
         if from_version < 2:
             self._create_all_tables(cursor)
-
+        
         if from_version < 3:
-            logger.info("Migrating RawData DB to v3: Adding user_actions table")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    action_type TEXT NOT NULL,
-                    details TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            cursor.execute("CREATE TABLE IF NOT EXISTS user_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT, details TEXT, created_at TEXT)")
 
-    def get_database_vocabulary(self, limit: int = 60) -> List[str]:
-        """
-        Возвращает топ самых частых слов из заголовков базы.
-        Используется для формирования промпта DATABASE chunk, чтобы ИИ видел,
-        что реально есть в базе (видеокарты, телефоны и т.д.), и не выдумывал лишнее.
-        """
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            # Берем последние 1000 заголовков для скорости
-            cursor.execute("SELECT title FROM raw_items ORDER BY id DESC LIMIT 1000")
-            titles = [r[0] for r in cursor.fetchall()]
+        if from_version < 4:
+            logger.info("Migrating to v4 PURE: Creating normalized tables...")
             
-            word_counter = Counter()
-            stop_words = {
-                'продам', 'куплю', 'цена', 'торг', 'обмен', 'новый', 'бу', 'состояние',
-                'комплект', 'гарантия', 'для', 'на', 'с', 'по', 'от', 'и', 'в'
-            }
+            # Создаем новые таблицы, если их нет
+            self._create_all_tables(cursor)
             
-            for t in titles:
-                # Оставляем только слова > 2 символов, убираем цифры
-                words = re.findall(r'\b[a-zA-Zа-яА-Я]{3,}\b', t.lower())
-                for w in words:
-                    if w not in stop_words:
-                        word_counter[w] += 1
+            # --- MIGRATION LOGIC FOR OLD DATA ---
+            # 1. Rename old table to temp
+            # Это сложная миграция для SQLite, так как мы удаляем колонки.
+            # Упрощенный вариант: мы просто добавляем новые колонки в старую таблицу,
+            # но в коде перестаем использовать старые. SQLite позволяет иметь лишние колонки.
             
-            # Возвращаем топ слов, например: ["iphone", "xiaomi", "rtx", "samsung"]
-            return [w for w, count in word_counter.most_common(limit)]
-        finally:
-            conn.close()
+            # Проверяем, есть ли products (бывший product_keys)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='product_keys'")
+            if cursor.fetchone():
+                logger.info("Renaming product_keys -> products...")
+                cursor.execute("ALTER TABLE product_keys RENAME TO products")
+                try: cursor.execute("ALTER TABLE products ADD COLUMN brand TEXT")
+                except: pass
+                try: cursor.execute("ALTER TABLE products ADD COLUMN model TEXT")
+                except: pass
 
-    # NEW: Метод вычисления сигнатуры данных
-    def calculate_data_signature(self, category_key: Optional[str] = None, 
-                                 product_key: Optional[str] = None) -> str:
-        """
-        Создает хэш текущего состояния данных для конкретной выборки.
-        Если хэш изменился -> данные изменились -> чанк нужно обновить.
-        """
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            query = "SELECT id, price, edited_at FROM raw_items" # edited_at пока нет, используем analyzed_at
-            # Исправление: в схеме нет edited_at, используем analyzed_at
-            
-            params = []
-            where_clauses = []
-            
-            if category_key:
-                # Сложный джоин для категорий, упростим: если ключи совпадают
-                # Для скорости пока просто хэшируем кол-во и сумму цен
-                pass # Реализуем упрощенную логику ниже
-            
-            # Упрощенная реализация: хэш от (Count, AvgPrice, MaxId)
-            # Это очень быстро и достаточно надежно для наших целей
-            
-            base_query = """
-                SELECT 
-                    COUNT(*), 
-                    SUM(ri.price), 
-                    MAX(ri.id) 
-                FROM raw_items ri
-                LEFT JOIN raw_items_products rip ON ri.id = rip.raw_item_id
-                LEFT JOIN product_keys pk ON rip.product_key_id = pk.id
-                WHERE 1=1
-            """
-            
-            if product_key:
-                base_query += " AND pk.key = ?"
-                params.append(product_key)
-            elif category_key:
-                # Здесь сложнее, так как category_key у нас семантический (GPU_Nvidia)
-                # Пока привяжемся к product_keys, которые начинаются с этой категории
-                base_query += " AND pk.key LIKE ?"
-                params.append(f"{category_key}%")
+            # Добавляем FK колонки в raw_items, если их нет
+            try: cursor.execute("ALTER TABLE raw_items ADD COLUMN city_id INTEGER REFERENCES cities(id)")
+            except: pass
+            try: cursor.execute("ALTER TABLE raw_items ADD COLUMN seller_table_id INTEGER REFERENCES sellers(id)")
+            except: pass
+            try: cursor.execute("ALTER TABLE raw_items ADD COLUMN product_id INTEGER REFERENCES products(id)")
+            except: pass
 
-            cursor.execute(base_query, params)
-            row = cursor.fetchone()
-            
-            if not row:
-                return "empty"
+            # Пытаемся мигрировать данные из старых текстовых колонок, если они есть
+            try:
+                logger.info("Migrating Cities data...")
+                cursor.execute("INSERT OR IGNORE INTO cities (name) SELECT DISTINCT city FROM raw_items WHERE city IS NOT NULL AND city != ''")
+                cursor.execute("UPDATE raw_items SET city_id = (SELECT id FROM cities WHERE cities.name = raw_items.city) WHERE city_id IS NULL")
                 
-            data_str = f"{row[0]}-{row[1]}-{row[2]}"
-            return hashlib.md5(data_str.encode('utf-8')).hexdigest()
-            
-        except Exception as e:
-            return "error"
-        finally:
-            conn.close()
+                logger.info("Migrating Sellers data...")
+                cursor.execute("INSERT OR IGNORE INTO sellers (seller_link_id) SELECT DISTINCT seller_id FROM raw_items WHERE seller_id IS NOT NULL AND seller_id != ''")
+                cursor.execute("UPDATE raw_items SET seller_table_id = (SELECT id FROM sellers WHERE sellers.seller_link_id = raw_items.seller_id) WHERE seller_table_id IS NULL")
+            except Exception as e:
+                logger.warning(f"Data migration warning: {e}")
 
-    # === Categories ===
+            logger.info("Migration v4 (Pure Logic) complete.")
+
+    # --- HELPER METHODS ---
+
+    def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
+        if not name: return None
+        clean_name = name.strip()
+        cursor.execute("SELECT id FROM cities WHERE name = ?", (clean_name,))
+        row = cursor.fetchone()
+        if row: return row[0]
+        cursor.execute("INSERT INTO cities (name) VALUES (?)", (clean_name,))
+        return cursor.lastrowid
+
+    def get_or_create_seller(self, seller_id_str: str, cursor: sqlite3.Cursor) -> int:
+        if not seller_id_str: return None
+        clean_id = seller_id_str.strip()
+        cursor.execute("SELECT id FROM sellers WHERE seller_link_id = ?", (clean_id,))
+        row = cursor.fetchone()
+        if row: return row[0]
+        cursor.execute("INSERT INTO sellers (seller_link_id) VALUES (?)", (clean_id,))
+        return cursor.lastrowid
 
     def get_or_create_category(self, name: str, cursor: sqlite3.Cursor = None) -> int:
-        """Get category id by name, creating if doesn't exist."""
         own_cursor = cursor is None
         conn = None
         try:
             if own_cursor:
                 conn = self._get_connection()
                 cursor = conn.cursor()
-            cursor.execute("SELECT id FROM categories WHERE name = ?", (name,))
+            
+            clean_name = name.strip().upper()
+            cursor.execute("SELECT id FROM categories WHERE name = ?", (clean_name,))
             row = cursor.fetchone()
             if row:
                 return row[0]
-            cursor.execute("INSERT INTO categories (name) VALUES (?)", (name,))
+            cursor.execute("INSERT INTO categories (name) VALUES (?)", (clean_name,))
             if own_cursor:
                 conn.commit()
             return cursor.lastrowid
@@ -289,282 +251,162 @@ class RawDataManager:
             if own_cursor and conn:
                 conn.close()
 
-    def get_all_categories(self) -> List[Dict]:
-        """Get all categories with counts."""
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    c.id,
-                    c.name,
-                    c.created_at,
-                    COUNT(DISTINCT rip.raw_item_id) as item_count
-                FROM categories c
-                LEFT JOIN raw_items_categories ric ON c.id = ric.category_id
-                LEFT JOIN raw_items_products rip ON ric.raw_item_id = rip.raw_item_id
-                GROUP BY c.id
-                ORDER BY c.name
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
-
-    def delete_category(self, category_id: int) -> bool:
-        """Delete category by id."""
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM categories WHERE id = ?", (category_id,))
-            conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            conn.close()
-
-    # === Product Keys ===
-
-    def get_or_create_product_key(self, key: str, display_name: Optional[str] = None,
-                                   category_id: Optional[int] = None,
-                                   cursor: sqlite3.Cursor = None) -> int:
-        """Get product key id, creating if doesn't exist."""
-        own_cursor = cursor is None
-        conn = None
-        try:
-            if own_cursor:
-                conn = self._get_connection()
-                cursor = conn.cursor()
-            cursor.execute("SELECT id, display_name, category_id FROM product_keys WHERE key = ?", (key,))
-            row = cursor.fetchone()
-            if row:
-                # Update display_name or category if provided
-                if display_name or category_id:
-                    update_fields = []
-                    params = []
-                    if display_name is not None:
-                        update_fields.append("display_name = ?")
-                        params.append(display_name)
-                    if category_id is not None:
-                        update_fields.append("category_id = ?")
-                        params.append(category_id)
-                    params.append(row[0])
-                    cursor.execute(f"UPDATE product_keys SET {', '.join(update_fields)} WHERE id = ?", params)
-                    if own_cursor:
-                        conn.commit()
-                return row[0]
-            cursor.execute(
-                "INSERT INTO product_keys (key, display_name, category_id) VALUES (?, ?, ?)",
-                (key, display_name, category_id)
-            )
-            if own_cursor:
-                conn.commit()
-            return cursor.lastrowid
-        finally:
-            if own_cursor and conn:
-                conn.close()
-
-    def get_all_product_keys(self, category_id: Optional[int] = None) -> List[Dict]:
-        """Get all product keys with optional category filter."""
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            if category_id:
-                cursor.execute("""
-                    SELECT
-                        pk.id,
-                        pk.key,
-                        pk.display_name,
-                        pk.category_id,
-                        c.name as category_name,
-                        pk.created_at,
-                        COUNT(DISTINCT rip.raw_item_id) as item_count
-                    FROM product_keys pk
-                    LEFT JOIN categories c ON pk.category_id = c.id
-                    LEFT JOIN raw_items_products rip ON pk.id = rip.product_key_id
-                    WHERE pk.category_id = ?
-                    GROUP BY pk.id
-                    ORDER BY pk.key
-                """, (category_id,))
-            else:
-                cursor.execute("""
-                    SELECT
-                        pk.id,
-                        pk.key,
-                        pk.display_name,
-                        pk.category_id,
-                        c.name as category_name,
-                        pk.created_at,
-                        COUNT(DISTINCT rip.raw_item_id) as item_count
-                    FROM product_keys pk
-                    LEFT JOIN categories c ON pk.category_id = c.id
-                    LEFT JOIN raw_items_products rip ON pk.id = rip.product_key_id
-                    GROUP BY pk.id
-                    ORDER BY pk.key
-                """)
-            return [dict(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
-
-    def delete_product_key(self, product_key_id: int) -> bool:
-        """Delete product key by id."""
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM product_keys WHERE id = ?", (product_key_id,))
-            conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            conn.close()
-
-    # === Raw Items ===
+    # --- MAIN API ---
 
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
                      product_keys: Optional[List[str]] = None) -> str:
-        """
-        Возвращает статус операции: 'created', 'updated', 'skipped'
-        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
 
-            # 1. Мягкая генерация ID (Hash fallback)
+            # 1. Base Fields
             ad_id = str(item.get('id') or item.get('ad_id') or self._extract_ad_id(item.get('link', '')) or "")
-            
             if not ad_id:
-                # Генерируем ID из заголовка и продавца, если нет явного ID
                 unique_str = f"{item.get('title')}_{item.get('seller_id')}_{item.get('city')}"
                 ad_id = hashlib.md5(unique_str.encode('utf-8')).hexdigest()
 
-            # 2. Проверка существования
+            title = item.get('title', '')
+            price = item.get('price', 0)
+            city_str = item.get('city', 'Неизвестно')
+            seller_str = item.get('seller_id', '')
+            
+            # 2. Normalize References
+            city_id = self.get_or_create_city(city_str, cursor)
+            seller_db_id = self.get_or_create_seller(seller_str, cursor)
+
+            # 3. Product Linking
+            product_id = None
+            
+            # Приоритет 1: Semantic Data из item (от нового парсера)
+            semantic = item.get('semantic_data')
+            if semantic and semantic.get('product_key'):
+                # Логика создания продукта на основе семантики
+                p_key = semantic['product_key']
+                cat_name = semantic.get('category', 'MISC')
+                brand = semantic.get('brand')
+                model = semantic.get('model')
+                clean_name = semantic.get('clean_name')
+                
+                # Check/Create Product
+                cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
+                p_row = cursor.fetchone()
+                if p_row:
+                    product_id = p_row[0]
+                else:
+                    cat_id = self.get_or_create_category(cat_name, cursor)
+                    cursor.execute("""
+                        INSERT INTO products (key, display_name, brand, model, category_id) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (p_key, clean_name, brand, model, cat_id))
+                    product_id = cursor.lastrowid
+
+            # Приоритет 2: Fallback на старые product_keys аргументы
+            elif product_keys and len(product_keys) > 0:
+                p_key = product_keys[0]
+                cat_name = categories[0] if categories else 'MISC'
+                
+                cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
+                p_row = cursor.fetchone()
+                if p_row:
+                    product_id = p_row[0]
+                else:
+                    cat_id = self.get_or_create_category(cat_name, cursor)
+                    cursor.execute("INSERT INTO products (key, category_id) VALUES (?, ?)", (p_key, cat_id))
+                    product_id = cursor.lastrowid
+
+            # 4. Upsert Item
             cursor.execute("SELECT id, price, views FROM raw_items WHERE ad_id = ?", (ad_id,))
             existing = cursor.fetchone()
-            
-            current_price = item.get('price', 0)
-            current_views = item.get('views', 0)
-            
+
             raw_item_id = None
             status = "skipped"
+            raw_data_json = json.dumps(item, ensure_ascii=False)
 
             if existing:
-                # LOGIC: Обновляем только если изменилась цена или просмотры, или прошло время
                 raw_item_id = existing[0]
                 old_price = existing[1]
-                
-                # Обновляем, если есть новые данные
-                if (current_price > 0 and current_price != old_price) or (current_views > 0):
-                    raw_data_json = json.dumps(item, ensure_ascii=False)
+
+                # History check
+                if old_price != price and price > 0:
                     cursor.execute("""
-                        UPDATE raw_items SET
-                            price = ?, views = ?, raw_data = ?, analyzed_at = ?
-                        WHERE id = ?
-                    """, (
-                        current_price,
-                        current_views,
-                        raw_data_json,
-                        datetime.now().isoformat(),
-                        raw_item_id
-                    ))
-                    status = "updated"
+                        INSERT INTO price_history (raw_item_id, price, recorded_at)
+                        VALUES (?, ?, ?)
+                    """, (raw_item_id, old_price, datetime.now().isoformat()))
+                
+                # Update (Pure: no text city/seller update)
+                cursor.execute("""
+                    UPDATE raw_items SET
+                        price = ?, views = ?, raw_data = ?, analyzed_at = ?,
+                        city_id = ?, seller_table_id = ?, product_id = ?
+                    WHERE id = ?
+                """, (
+                    price, item.get('views', 0), raw_data_json, datetime.now().isoformat(),
+                    city_id, seller_db_id, product_id,
+                    raw_item_id
+                ))
+                status = "updated"
+                
             else:
-                # INSERT
-                raw_data_json = json.dumps(item, ensure_ascii=False)
+                # Insert (Pure: no text city/seller insert)
                 cursor.execute("""
                     INSERT INTO raw_items (
-                        ad_id, title, price, description, city, condition,
-                        seller_id, views, date_text, link, raw_data, analyzed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ad_id, title, price, description, condition,
+                        views, date_text, link, raw_data, analyzed_at,
+                        city_id, seller_table_id, product_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    ad_id,
-                    item.get('title'),
-                    item.get('price'),
-                    item.get('description'),
-                    item.get('city'),
-                    item.get('condition'),
-                    item.get('seller_id'),
-                    item.get('views'),
-                    item.get('date_text'),
-                    item.get('link'),
-                    raw_data_json,
-                    datetime.now().isoformat()
+                    ad_id, title, price, item.get('description'), item.get('condition'),
+                    item.get('views'), item.get('date_text'), item.get('link'),
+                    raw_data_json, datetime.now().isoformat(),
+                    city_id, seller_db_id, product_id
                 ))
                 raw_item_id = cursor.lastrowid
                 status = "created"
-
-            # 3. Обновление связей (Categories / Product Keys)
-            if raw_item_id:
-                if categories:
-                    for cat_name in categories:
-                        cat_id = self.get_or_create_category(cat_name, cursor)
-                        cursor.execute("INSERT OR IGNORE INTO raw_items_categories (raw_item_id, category_id) VALUES (?, ?)", (raw_item_id, cat_id))
-
-                if product_keys:
-                    for pk in product_keys:
-                        pk_id = self.get_or_create_product_key(pk, cursor=cursor)
-                        cursor.execute("INSERT OR IGNORE INTO raw_items_products (raw_item_id, product_key_id) VALUES (?, ?)", (raw_item_id, pk_id))
+                
+                if price > 0:
+                    cursor.execute("""
+                        INSERT INTO price_history (raw_item_id, price, recorded_at)
+                        VALUES (?, ?, ?)
+                    """, (raw_item_id, price, datetime.now().isoformat()))
 
             conn.commit()
-            return status # Возвращаем статус вместо ID, чтобы понимать результат
+            return status
         except Exception as e:
             logger.error(f"DB Error in add_raw_item: {e}")
+            if conn: conn.rollback()
             return "error"
         finally:
             conn.close()
-
-    def _extract_ad_id(self, link: str) -> Optional[str]:
-        """Extract ad_id from Avito URL."""
-        if not link:
-            return None
-        import re
-        match = re.search(r'/(\d+)(?:\?|$)', link)
-        return match.group(1) if match else None
-
-    def _update_raw_item(self, cursor: sqlite3.Cursor, item_id: int, item: Dict):
-        """Update existing raw item."""
-        raw_data_json = json.dumps(item, ensure_ascii=False)
-        cursor.execute("""
-            UPDATE raw_items SET
-                title = ?, price = ?, description = ?, city = ?, condition = ?,
-                seller_id = ?, views = ?, date_text = ?, link = ?, raw_data = ?,
-                analyzed_at = ?
-            WHERE id = ?
-        """, (
-            item.get('title'),
-            item.get('price'),
-            item.get('description'),
-            item.get('city'),
-            item.get('condition'),
-            item.get('seller_id'),
-            item.get('views'),
-            item.get('date_text'),
-            item.get('link'),
-            raw_data_json,
-            datetime.now().isoformat(),
-            item_id
-        ))
-
-    def get_items(self, limit: int = 100000) -> List[Dict]:
-        """Get all raw items with optional limit."""
-        return self.get_raw_items(limit=limit)
 
     def get_raw_items(self, category: Optional[str] = None,
                       product_key: Optional[str] = None,
                       search_query: Optional[str] = None,
                       limit: int = 100,
                       offset: int = 0) -> List[Dict]:
-        """Get raw items with filtering and pagination."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
 
+            # PURE QUERY: Only JOINs, no fallback to raw_items text columns
             query = """
                 SELECT DISTINCT
-                    ri.id, ri.ad_id, ri.title, ri.price, ri.description, ri.city,
-                    ri.condition, ri.seller_id, ri.views, ri.date_text, ri.link,
-                    ri.analyzed_at, ri.created_at
+                    ri.id, ri.ad_id, ri.title, ri.price, ri.description, 
+                    cit.name as city,
+                    ri.condition, 
+                    sel.seller_link_id as seller_id,
+                    ri.views, ri.date_text, ri.link,
+                    ri.analyzed_at, ri.created_at,
+                    
+                    prod.key as clean_product_key,
+                    prod.brand,
+                    prod.model
+                    
                 FROM raw_items ri
-                LEFT JOIN raw_items_categories ric ON ri.id = ric.raw_item_id
-                LEFT JOIN categories c ON ric.category_id = c.id
-                LEFT JOIN raw_items_products rip ON ri.id = rip.raw_item_id
-                LEFT JOIN product_keys pk ON rip.product_key_id = pk.id
+                LEFT JOIN cities cit ON ri.city_id = cit.id
+                LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
+                LEFT JOIN products prod ON ri.product_id = prod.id
+                LEFT JOIN categories c ON prod.category_id = c.id
+                
                 WHERE 1=1
             """
             params = []
@@ -574,11 +416,12 @@ class RawDataManager:
                 params.append(category)
 
             if product_key:
-                query += " AND pk.key = ?"
+                query += " AND prod.key = ?"
                 params.append(product_key)
 
             if search_query:
-                query += " AND (ri.title LIKE ? OR ri.description LIKE ? OR ri.city LIKE ?)"
+                # Search includes normalized city name
+                query += " AND (ri.title LIKE ? OR ri.description LIKE ? OR cit.name LIKE ?)"
                 search_term = f"%{search_query}%"
                 params.extend([search_term, search_term, search_term])
 
@@ -591,75 +434,207 @@ class RawDataManager:
             conn.close()
 
     def _item_from_row(self, row: sqlite3.Row) -> Dict:
-        """Convert row to item dict."""
         item = dict(row)
-        # Parse categories
+        
+        # Compatibility mapping
+        if item.get('clean_product_key'):
+            item['product_keys'] = [item['clean_product_key']]
+        else:
+            item['product_keys'] = []
+
+        # Fetch categories ONLY via product hierarchy
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT c.name FROM categories c
-                JOIN raw_items_categories ric ON c.id = ric.category_id
-                WHERE ric.raw_item_id = ?
+                SELECT c.name FROM products p
+                JOIN categories c ON p.category_id = c.id
+                WHERE p.id = (SELECT product_id FROM raw_items WHERE id = ?)
             """, (item['id'],))
-            item['categories'] = [r[0] for r in cursor.fetchall()]
-            # Parse product keys
-            cursor.execute("""
-                SELECT pk.key FROM product_keys pk
-                JOIN raw_items_products rip ON pk.id = rip.product_key_id
-                WHERE rip.raw_item_id = ?
-            """, (item['id'],))
-            item['product_keys'] = [r[0] for r in cursor.fetchall()]
+            cats = [r[0] for r in cursor.fetchall()]
+            item['categories'] = cats
         finally:
             conn.close()
+            
         return item
 
-    def get_raw_items_count(self, category: Optional[str] = None,
-                            product_key: Optional[str] = None) -> int:
-        """Get count of raw items with filters."""
+    def get_hierarchy_data(self) -> Dict:
+        """
+        Возвращает дерево: Category -> Brand -> Product.
+        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
+            # COALESCE берет первое не-NULL значение.
+            # Если display_name нет, берем key. Если бренда нет, берем 'NO_BRAND'
             query = """
-                SELECT COUNT(DISTINCT ri.id)
+                SELECT 
+                    c.name as category_name,
+                    COALESCE(p.brand, 'NO_BRAND') as brand,
+                    COALESCE(p.display_name, p.key) as display_name,
+                    p.key as product_key,
+                    p.id as product_id,
+                    COUNT(ri.id) as item_count
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                LEFT JOIN raw_items ri ON p.id = ri.product_id
+                GROUP BY c.name, p.brand, p.display_name, p.key, p.id
+                ORDER BY c.name, p.brand, p.display_name
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            
+            # Build tree structure
+            tree = {}
+            for row in rows:
+                cat = row['category_name']
+                brand = row['brand']
+                # Если бренд все еще пустой, делаем его 'NO_BRAND'
+                if not brand: brand = 'NO_BRAND'
+                brand = brand.upper()
+                
+                if cat not in tree: tree[cat] = {}
+                if brand not in tree[cat]: tree[cat][brand] = []
+                
+                tree[cat][brand].append({
+                    'id': row['product_id'],
+                    'key': row['product_key'],
+                    'name': row['display_name'],
+                    'count': row['item_count']
+                })
+                
+            return tree
+        finally:
+            conn.close()
+
+    # --- LEGACY METHODS (UPDATED TO USE NEW STRUCTURE OR REMOVED) ---
+
+    def _extract_ad_id(self, link: str) -> Optional[str]:
+        if not link: return None
+        import re
+        match = re.search(r'/(\d+)(?:\?|$)', link)
+        return match.group(1) if match else None
+
+    def get_database_vocabulary(self, limit: int = 60) -> List[str]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT title FROM raw_items ORDER BY id DESC LIMIT 1000")
+            titles = [r[0] for r in cursor.fetchall()]
+            word_counter = Counter()
+            stop_words = {'продам', 'куплю', 'цена', 'торг', 'обмен', 'новый', 'бу', 'состояние', 'комплект', 'гарантия', 'для', 'на', 'с', 'по', 'от', 'и', 'в'}
+            for t in titles:
+                words = re.findall(r'\b[a-zA-Zа-яА-Я]{3,}\b', t.lower())
+                for w in words:
+                    if w not in stop_words:
+                        word_counter[w] += 1
+            return [w for w, count in word_counter.most_common(limit)]
+        finally:
+            conn.close()
+
+    def calculate_data_signature(self, category_key: Optional[str] = None, product_key: Optional[str] = None) -> str:
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            base_query = """
+                SELECT COUNT(*), SUM(ri.price), MAX(ri.id)
                 FROM raw_items ri
-                LEFT JOIN raw_items_categories ric ON ri.id = ric.raw_item_id
-                LEFT JOIN categories c ON ric.category_id = c.id
-                LEFT JOIN raw_items_products rip ON ri.id = rip.raw_item_id
-                LEFT JOIN product_keys pk ON rip.product_key_id = pk.id
+                LEFT JOIN products p ON ri.product_id = p.id
                 WHERE 1=1
             """
             params = []
-
-            if category:
-                query += " AND c.name = ?"
-                params.append(category)
-
             if product_key:
-                query += " AND pk.key = ?"
+                base_query += " AND p.key = ?"
                 params.append(product_key)
+            elif category_key:
+                base_query += " AND p.key LIKE ?"
+                params.append(f"{category_key}%")
 
-            cursor.execute(query, params)
-            return cursor.fetchone()[0] or 0
+            cursor.execute(base_query, params)
+            row = cursor.fetchone()
+            if not row: return "empty"
+            data_str = f"{row[0]}-{row[1]}-{row[2]}"
+            return hashlib.md5(data_str.encode('utf-8')).hexdigest()
+        except Exception:
+            return "error"
         finally:
             conn.close()
 
-    def get_raw_item_by_id(self, item_id: int) -> Optional[Dict]:
-        """Get single raw item by id."""
+    def get_all_categories(self) -> List[Dict]:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM raw_items WHERE id = ?", (item_id,))
+            cursor.execute("""
+                SELECT c.id, c.name, COUNT(ri.id) as item_count
+                FROM categories c
+                LEFT JOIN products p ON c.id = p.category_id
+                LEFT JOIN raw_items ri ON p.id = ri.product_id
+                GROUP BY c.id
+                ORDER BY c.name
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_all_product_keys(self, category_id: Optional[int] = None) -> List[Dict]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT p.id, p.key, p.display_name, p.category_id, c.name as category_name, 
+                       COUNT(ri.id) as item_count
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                LEFT JOIN raw_items ri ON p.id = ri.product_id
+                WHERE 1=1
+            """
+            params = []
+            if category_id:
+                query += " AND p.category_id = ?"
+                params.append(category_id)
+            
+            query += " GROUP BY p.id ORDER BY p.key"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_or_create_product_key(self, key: str, display_name: Optional[str] = None, category_id: Optional[int] = None) -> int:
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM products WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            if row: return row[0]
+            cursor.execute("INSERT INTO products (key, display_name, category_id) VALUES (?, ?, ?)", (key, display_name, category_id))
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
+    def get_items_for_product_key(self, product_key: str) -> List[Dict]:
+        return self.get_raw_items(product_key=product_key)
+
+    def get_raw_item_by_id(self, item_id: int) -> Optional[Dict]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT ri.*, cit.name as city, sel.seller_link_id as seller_id, prod.key as clean_product_key
+                FROM raw_items ri
+                LEFT JOIN cities cit ON ri.city_id = cit.id
+                LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
+                LEFT JOIN products prod ON ri.product_id = prod.id
+                WHERE ri.id = ?
+            """
+            cursor.execute(query, (item_id,))
             row = cursor.fetchone()
             return self._item_from_row(row) if row else None
         finally:
             conn.close()
 
     def delete_raw_items(self, item_ids: List[int]) -> int:
-        """Delete items by ids. Returns count of deleted items."""
-        if not item_ids:
-            return 0
+        if not item_ids: return 0
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -670,147 +645,55 @@ class RawDataManager:
         finally:
             conn.close()
 
+    def delete_category(self, category_id: int) -> bool:
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
     def clear_all_raw_items(self) -> int:
-        """Clear all raw items. Returns count of deleted items."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM raw_items")
             count = cursor.fetchone()[0] or 0
             cursor.execute("DELETE FROM raw_items")
+            cursor.execute("DELETE FROM price_history")
             conn.commit()
             return count
         finally:
             conn.close()
 
-    # === Product Key Relations ===
-
-    def get_items_for_product_key(self, product_key: str) -> List[Dict]:
-        """Get all items for a specific product key."""
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT
-                    ri.id, ri.ad_id, ri.title, ri.price, ri.description, ri.city,
-                    ri.condition, ri.seller_id, ri.views, ri.date_text, ri.link,
-                    ri.analyzed_at, ri.created_at
-                FROM raw_items ri
-                JOIN raw_items_products rip ON ri.id = rip.raw_item_id
-                JOIN product_keys pk ON rip.product_key_id = pk.id
-                WHERE pk.key = ?
-                ORDER BY ri.analyzed_at DESC
-            """, (product_key,))
-            return [self._item_from_row(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
-
-    # === Statistics ===
-
     def get_statistics(self) -> Dict:
-        """Get overall statistics."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
             cursor.execute("SELECT COUNT(*) FROM raw_items")
             total_items = cursor.fetchone()[0] or 0
-
             cursor.execute("SELECT COUNT(*) FROM categories")
-            total_categories = cursor.fetchone()[0] or 0
-
-            cursor.execute("SELECT COUNT(*) FROM product_keys")
-            total_product_keys = cursor.fetchone()[0] or 0
-
+            total_cats = cursor.fetchone()[0] or 0
+            cursor.execute("SELECT COUNT(*) FROM products")
+            total_prods = cursor.fetchone()[0] or 0
             cursor.execute("SELECT AVG(price) FROM raw_items WHERE price > 0")
             avg_price = cursor.fetchone()[0] or 0
-
             return {
                 'total_items': total_items,
-                'total_categories': total_categories,
-                'total_product_keys': total_product_keys,
+                'total_categories': total_cats,
+                'total_product_keys': total_prods,
                 'avg_price': round(avg_price, 2) if avg_price else 0
             }
         finally:
             conn.close()
 
-    # === Export/Import ===
-
-    def export_to_json(self, filepath: str):
-        """Export entire database to JSON."""
-        data = {
-            'exported_at': datetime.now().isoformat(),
-            'schema_version': self.SCHEMA_VERSION,
-            'categories': self.get_all_categories(),
-            'product_keys': self.get_all_product_keys(),
-            'items': self.get_raw_items(limit=999999)
-        }
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.success(f"Exported {data['items']} items to {filepath}")
-
-    def import_from_json(self, filepath: str, clear_first: bool = False):
-        """Import database from JSON."""
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-
-            if clear_first:
-                cursor.execute("DELETE FROM raw_items_categories")
-                cursor.execute("DELETE FROM raw_items_products")
-                cursor.execute("DELETE FROM raw_items")
-                cursor.execute("DELETE FROM product_keys")
-                cursor.execute("DELETE FROM categories")
-
-            # Import categories
-            for cat in data.get('categories', []):
-                cursor.execute(
-                    "INSERT OR IGNORE INTO categories (id, name, created_at) VALUES (?, ?, ?)",
-                    (cat['id'], cat['name'], cat.get('created_at'))
-                )
-
-            # Import product keys
-            for pk in data.get('product_keys', []):
-                cursor.execute(
-                    "INSERT OR IGNORE INTO product_keys (id, key, display_name, category_id, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (pk['id'], pk['key'], pk.get('display_name'), pk.get('category_id'), pk.get('created_at'))
-                )
-
-            # Import items
-            for item in data.get('items', []):
-                ad_id = item.get('ad_id')
-                if not ad_id:
-                    continue
-                raw_data = json.dumps(item, ensure_ascii=False)
-                cursor.execute("""
-                    INSERT OR IGNORE INTO raw_items (
-                        id, ad_id, title, price, description, city, condition,
-                        seller_id, views, date_text, link, raw_data, analyzed_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    item.get('id'), ad_id, item.get('title'), item.get('price'),
-                    item.get('description'), item.get('city'), item.get('condition'),
-                    item.get('seller_id'), item.get('views'), item.get('date_text'),
-                    item.get('link'), raw_data, item.get('analyzed_at'), item.get('created_at')
-                ))
-
-            conn.commit()
-            logger.success(f"Imported {len(data.get('items', []))} items from {filepath}")
-        finally:
-            conn.close()
-
     def log_user_action(self, action_type: str, details: str):
-        """Сохраняет действие пользователя"""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO user_actions (action_type, details) VALUES (?, ?)", 
-                (action_type, str(details)[:500]) # Ограничиваем длину
-            )
+            cursor.execute("INSERT INTO user_actions (action_type, details) VALUES (?, ?)", (action_type, str(details)[:500]))
             conn.commit()
         except Exception as e:
             logger.dev(f"Action log error: {e}", level="ERROR")
@@ -818,7 +701,6 @@ class RawDataManager:
             conn.close()
 
     def get_recent_actions(self, limit: int = 50) -> List[Dict]:
-        """Возвращает последние действия для анализа поведения"""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -828,30 +710,51 @@ class RawDataManager:
             conn.close()
 
     def cleanup_old_actions(self, keep_last: int = 1000):
-        """Удаляет старые логи действий, оставляя только свежие"""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            # Получаем ID, до которого нужно удалить
             cursor.execute("SELECT id FROM user_actions ORDER BY id DESC LIMIT 1 OFFSET ?", (keep_last,))
             row = cursor.fetchone()
             if row:
                 cutoff_id = row[0]
                 cursor.execute("DELETE FROM user_actions WHERE id < ?", (cutoff_id,))
-                deleted = cursor.rowcount
-                if deleted > 0:
-                    logger.dev(f"Cleaned up {deleted} old user actions", level="DEBUG")
             conn.commit()
-        except Exception as e:
-            logger.dev(f"Cleanup actions error: {e}", level="ERROR")
+        except Exception:
+            pass
         finally:
             conn.close()
 
-    # === Reset ===
-
     def reset_database(self):
-        """Completely reset the database."""
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
         self._ensure_db_exists()
         logger.info("Raw data database reset complete")
+
+    def export_to_json(self, filepath: str):
+        data = {
+            'exported_at': datetime.now().isoformat(),
+            'schema_version': self.SCHEMA_VERSION,
+            'categories': self.get_all_categories(),
+            'product_keys': self.get_all_product_keys(),
+            'items': self.get_raw_items(limit=999999)
+        }
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.success(f"Exported {len(data['items'])} items to {filepath}")
+
+    def import_from_json(self, filepath: str, clear_first: bool = False):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            if clear_first:
+                self.clear_all_raw_items()
+            
+            for item in data.get('items', []):
+                self.add_raw_item(item, item.get('categories'), item.get('product_keys'))
+            
+            logger.success(f"Imported {len(data.get('items', []))} items from {filepath}")
+        finally:
+            conn.close()

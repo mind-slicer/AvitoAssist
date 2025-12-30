@@ -229,11 +229,9 @@ class DatabaseTab(QWidget):
         if not self.memory:
             return
         
-        # Load categories and product keys for tree
-        categories = self.memory.get_all_categories()
-        product_keys = self.memory.get_all_product_keys()
+        # --- NEW HIERARCHY LOADING ---
+        hierarchy = self.memory.raw_data.get_hierarchy_data()
         
-        # Build navigation tree
         self.nav_tree.clear()
         
         # Root items
@@ -243,53 +241,59 @@ class DatabaseTab(QWidget):
         all_knowledge_node = QTreeWidgetItem(["🧠 Все знания"])
         all_knowledge_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'all_knowledge'})
         
-        categories_node = QTreeWidgetItem(["📁 Категории"])
-        categories_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'categories_root'})
-        
-        products_node = QTreeWidgetItem(["📁 Продукты"])
-        products_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'products_root'})
-        
         self.nav_tree.addTopLevelItem(all_items_node)
         self.nav_tree.addTopLevelItem(all_knowledge_node)
-        self.nav_tree.addTopLevelItem(categories_node)
-        self.nav_tree.addTopLevelItem(products_node)
         
-        # Add categories
-        for cat in categories:
-            cat_item = QTreeWidgetItem([f"📁 {cat.get('name', 'Unknown')} ({cat.get('item_count', 0)})"])
-            cat_item.setData(0, Qt.ItemDataRole.UserRole, {
+        # Iterate Categories
+        for cat_name, brands in hierarchy.items():
+            cat_node = QTreeWidgetItem([f"📂 {cat_name}"])
+            cat_node.setData(0, Qt.ItemDataRole.UserRole, {
                 'type': 'category',
-                'id': cat.get('id'),
-                'name': cat.get('name')
+                'name': cat_name
             })
-            categories_node.addChild(cat_item)
+            self.nav_tree.addTopLevelItem(cat_node)
+            
+            # Iterate Brands
+            for brand_name, products in brands.items():
+                # Если бренд пустой, добавляем продукты прямо в категорию (или в папку Misc)
+                parent_for_prod = cat_node
+                
+                if brand_name != 'NO_BRAND':
+                    brand_node = QTreeWidgetItem([f"🏭 {brand_name}"])
+                    brand_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'brand_group'}) # Dummy type
+                    cat_node.addChild(brand_node)
+                    parent_for_prod = brand_node
+                
+                # Iterate Products
+                for prod in products:
+                    name = prod['name']
+                    # Если имя все равно None (хотя SQL должен был исправить), ставим заглушку
+                    if not name or str(name).lower() == 'none':
+                        name = prod['key'] or "Unknown Product"
+                        
+                    count = prod['count']
+                    
+                    prod_item = QTreeWidgetItem([f"📦 {name} ({count})"])
+                    prod_item.setData(0, Qt.ItemDataRole.UserRole, {
+                        'type': 'product_key',
+                        'key': prod['key'],
+                        'id': prod['id']
+                    })
+                    parent_for_prod.addChild(prod_item)
+
+        # -----------------------------
         
-        # Add product keys
-        for pk in product_keys:
-            pk_item = QTreeWidgetItem([f"📦 {pk.get('key', 'Unknown')} ({pk.get('item_count', 0)})"])
-            pk_item.setData(0, Qt.ItemDataRole.UserRole, {
-                'type': 'product_key',
-                'id': pk.get('id'),
-                'key': pk.get('key')
-            })
-            products_node.addChild(pk_item)
+        all_items_node.setExpanded(True)
         
-        # Expand tree
-        categories_node.setExpanded(True)
-        products_node.setExpanded(True)
-        
-        # Load raw items
+        # Load raw items table
         raw_items = self.memory.get_raw_items(limit=1000)
         self._populate_raw_items_table(raw_items)
         
-        # Load knowledge
+        # Load knowledge table
         knowledge = self.memory.get_knowledge(limit=1000)
         self._populate_knowledge_table(knowledge)
         
-        # Graph Data
         self.graph_widget.load_data(knowledge)
-        
-        # Update stats
         self._update_stats()
     
     def _populate_raw_items_table(self, items: list):
@@ -318,8 +322,29 @@ class DatabaseTab(QWidget):
             self.raw_items_table.setItem(row, 4, QTableWidgetItem(item.get('date_text', '')))
             
             # Categories
-            categories = ', '.join(item.get('categories', []) + item.get('product_keys', []))
-            self.raw_items_table.setItem(row, 5, QTableWidgetItem(categories[:30]))
+            cat_list = item.get('categories', [])
+            main_cat = cat_list[0] if cat_list else "Misc"
+            
+            # Пытаемся найти Clean Name (из новых полей brand/model если они есть)
+            brand = item.get('brand', '')
+            model = item.get('model', '')
+            
+            # Если есть нормальные Brand/Model, показываем их
+            if brand or model:
+                brand_str = brand.upper() if brand else ""
+                model_str = model.upper() if model else ""
+                display_str = f"[{main_cat}] {brand_str} {model_str}".strip()
+            else:
+                # Fallback на старые ключи, но чистим их от дублей
+                raw_keys = item.get('product_keys', [])
+                if raw_keys:
+                    # Берем первый ключ и убираем из него имя категории для чистоты
+                    k = raw_keys[0].replace(main_cat.lower() + '_', '')
+                    display_str = f"[{main_cat}] {k}"
+                else:
+                    display_str = f"[{main_cat}]"
+
+            self.raw_items_table.setItem(row, 5, QTableWidgetItem(display_str))
             
             # Store full data
             self.raw_items_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, item)
@@ -393,8 +418,7 @@ class DatabaseTab(QWidget):
     def _on_tree_item_clicked(self, item, column):
         """Handle tree item click."""
         data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data:
-            return
+        if not data: return
         
         item_type = data.get('type')
         
@@ -402,15 +426,19 @@ class DatabaseTab(QWidget):
             items = self.memory.get_raw_items(limit=1000)
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
+            
         elif item_type == 'all_knowledge':
             chunks = self.memory.get_knowledge(limit=1000)
             self._populate_knowledge_table(chunks)
             self.table_tabs.setCurrentIndex(1)
+            
         elif item_type == 'category':
             items = self.memory.get_raw_items(category=data.get('name'), limit=1000)
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
+            
         elif item_type == 'product_key':
+            # Ищем по product_key (clean key)
             items = self.memory.get_items_for_product_key(data.get('key'))
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)

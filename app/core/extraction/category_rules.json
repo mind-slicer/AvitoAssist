@@ -1,46 +1,53 @@
 {
+  "LAPTOP": {
+    "keywords": ["ноутбук", "laptop", "ultrabook", "macbook", "netbook", "лэптоп", "mac", "макбук", "legion", "nitro", "pavilion", "rog", "strix", "tuf", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", "alienware", "matebook", "magicbook", "katana", "sword", "gf", "gp", "gl", "ge", "gs", "gt", "predator", "helios", "omen", "victus", "aspire", "swift"],
+    "banned_keywords": ["матрица", "клавиатура", "зарядка", "блок питания", "аккумулятор", "батарея", "корпус", "петли", "шлейф", "кулер", "вентилятор", "разбор", "запчасти", "запчасть", "донор", "битый", "нерабочий", "кнопка", "топкейс", "поддон", "рамка"],
+    "priority": 50
+  },
+  "PC_BUILD": {
+    "keywords": ["пк", "сборка", "компьютер", "системный", "блок", "системник", "desktop", "station", "gaming", "игровой", "офисный", "моноблок", "imac", "mac", "mini", "tower"],
+    "banned_keywords": ["корпус", "вентилятор", "кулер"],
+    "priority": 40
+  },
   "GPU": {
-    "keywords": ["видеокарта", "gpu", "rtx", "gtx", "rx", "radeon", "geforce", "nvidia", "arc", "titan", "quadro", "graphics"],
+    "keywords": ["видеокарта", "gpu", "rtx", "gtx", "rx", "radeon", "geforce", "nvidia", "arc", "titan", "quadro", "graphics", "vga", "map", "card", "видюха"],
+    "banned_keywords": ["ноутбук", "laptop", "пк", "сборка", "компьютер", "системный", "райзер", "riser", "кабель", "переходник", "кулер", "вентилятор", "охлаждение", "коробка"],
     "priority": 10
   },
   "CPU": {
-    "keywords": ["процессор", "cpu", "ryzen", "core", "intel", "amd", "xeon", "i3", "i5", "i7", "i9", "threadripper", "epyc", "athlon", "pentium"],
+    "keywords": ["процессор", "cpu", "ryzen", "core", "intel", "amd", "xeon", "i3", "i5", "i7", "i9", "threadripper", "epyc", "athlon", "pentium", "celeron", "lga", "am4", "am5", "socket", "сокет", "проц", "камень"],
+    "banned_keywords": ["ноутбук", "laptop", "пк", "сборка", "компьютер", "материнская", "плата", "комплект", "кулер"],
     "priority": 9
   },
   "MOTHERBOARD": {
-    "keywords": ["материнская", "плата", "motherboard", "mobo", "mainboard", "lga", "am4", "am5", "socket", "сокет", "chipset", "z690", "z790", "b650", "b550", "b450", "x570", "x670", "h610"],
+    "keywords": ["материнская", "плата", "motherboard", "mobo", "mainboard", "chipset", "z690", "z790", "b650", "b550", "b450", "x570", "x670", "h610", "b760", "b660", "z590", "z490", "x570s", "мать", "материнка"],
     "priority": 8
   },
   "RAM": {
-    "keywords": ["оперативная", "память", "ram", "ddr4", "ddr5", "dimm", "sodimm", "xmp", "expo", "3200mhz", "3600mhz", "6000mhz"],
+    "keywords": ["оперативная", "память", "ram", "ddr4", "ddr5", "dimm", "sodimm", "xmp", "expo", "3200mhz", "3600mhz", "6000mhz", "5200mhz", "5600mhz", "cl16", "cl30", "cl32", "cl36", "cl40", "озу", "плашка"],
     "priority": 7
   },
   "STORAGE": {
-    "keywords": ["ssd", "hdd", "nvme", "sata", "накопитель", "диск", "винчестер", "m.2", "hard", "drive", "samsung", "kingston", "wd", "seagate"],
+    "keywords": ["ssd", "hdd", "nvme", "sata", "накопитель", "диск", "винчестер", "m.2", "hard", "drive", "samsung", "kingston", "wd", "seagate", "evo", "pro", "barracuda", "blue", "black", "red", "gold"],
     "priority": 7
   },
   "PSU": {
-    "keywords": ["блок", "питания", "psu", "power", "supply", "500w", "600w", "700w", "750w", "800w", "850w", "1000w", "gold", "bronze", "platinum", "titanium"],
+    "keywords": ["блок", "питания", "psu", "power", "supply", "500w", "600w", "700w", "750w", "800w", "850w", "1000w", "gold", "bronze", "platinum", "titanium", "watt", "ватт", "бп"],
     "priority": 6
   },
   "COOLING": {
-    "keywords": ["кулер", "cooling", "cooler", "сво", "сжо", "водянка", "вентилятор", "fan", "heatsink", "башня", "aio", "water", "liquid"],
+    "keywords": ["кулер", "cooling", "cooler", "сво", "сжо", "водянка", "вентилятор", "fan", "heatsink", "башня", "aio", "water", "liquid", "air", "rgb", "argb", "термопаста"],
+    "banned_keywords": ["видеокарта", "процессор"],
     "priority": 5
   },
-  "PC_BUILD": {
-    "keywords": ["пк", "сборка", "компьютер", "системный", "блок", "системник", "desktop", "station", "gaming", "игровой", "офисный"],
-    "priority": 10
-  },
-  "LAPTOP": {
-    "keywords": ["ноутбук", "laptop", "ultrabook", "macbook", "netbook", "лэптоп"],
-    "priority": 10
-  },
   "MONITOR": {
-    "keywords": ["монитор", "monitor", "display", "экран", "144hz", "165hz", "240hz", "ips", "oled", "va"],
+    "keywords": ["монитор", "monitor", "display", "экран", "144hz", "165hz", "240hz", "ips", "oled", "va", "tn", "fhd", "2k", "4k", "qhd", "uhd"],
+    "banned_keywords": ["ноутбук", "разбит", "матрица", "кронштейн", "кабель"],
     "priority": 6
   },
   "CASE": {
-    "keywords": ["корпус", "case", "tower", "atx", "matx", "itx", "mesh", "glass"],
+    "keywords": ["корпус", "case", "tower", "atx", "matx", "itx", "mesh", "glass", "midi", "full", "mini"],
+    "banned_keywords": ["пк", "сборка", "компьютер"],
     "priority": 4
   }
 }
