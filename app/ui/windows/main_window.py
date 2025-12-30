@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QScrollArea, QFrame, QApplication, QMessageBox,
     QLabel, QDialog
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QCursor
 
 from app.core.controller import ParserController
@@ -27,6 +27,20 @@ from app.ui.widgets.progress_and_logs_panel import ProgressAndLogsPanel
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.ui.widgets.category_selection_dialog import CategorySelectionDialog
 from app.core.log_manager import logger
+
+
+class DatabaseImportWorker(QThread):
+    finished = pyqtSignal(int)
+    
+    def __init__(self, memory_manager, items):
+        super().__init__()
+        self.memory_manager = memory_manager
+        self.items = items
+        
+    def run(self):
+        count = self.memory_manager.add_items_bulk(self.items)
+        self.finished.emit(count)
+
 
 class ScanPromptDialog(QDialog):
     def __init__(self, queue_name: str, parent=None):
@@ -1386,18 +1400,29 @@ class MainWindow(QWidget):
         )
 
     def on_add_to_memory_requested(self, items: List[Dict]):
-        """Добавить все элементы в RAG-память"""
         if not items:
             QMessageBox.warning(self, "Ошибка", "Таблица пуста!")
             return
 
-        added = 0
-        for item in items:
-            if self.memory_manager.add_item(item):
-                added += 1
+        # Блокируем интерфейс или показываем прогресс
+        self.controls_widget.set_ui_locked(True)
+        logger.progress(f"Подготовка и сохранение {len(items)} элементов в БД...", token="db_import")
+        
+        # Создаем и запускаем воркер
+        self.db_worker = DatabaseImportWorker(self.memory_manager, items)
+        self.db_worker.finished.connect(self._on_import_finished)
+        self.db_worker.finished.connect(lambda: self.db_worker.deleteLater())
+        self.db_worker.start()
 
-        logger.success(f"Добавлено {added} из {len(items)} элементов в память ИИ")
-        QMessageBox.information(self, "Успех", f"Добавлено {added} элементов в память ИИ")
+    def _on_import_finished(self, count):
+        self.controls_widget.set_ui_locked(False)
+        logger.success(f"Успешно сохранено {count} элементов в память ИИ", token="db_import")
+        
+        # Обновляем виджеты, если они открыты
+        if hasattr(self, 'memory_panel'):
+            self.memory_panel._update_stats()
+        if hasattr(self, 'analytics_page') and hasattr(self.analytics_page, 'database_tab'):
+            self.analytics_page.database_tab._update_stats()
 
     def on_export_table_requested(self, items: List[Dict]):
         """Экспортировать таблицу в файл"""

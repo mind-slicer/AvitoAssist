@@ -254,6 +254,52 @@ class RawDataManager:
         finally:
             if own_cursor and conn: conn.close()
 
+    def add_raw_items_bulk(self, items_with_meta: List[Dict]) -> int:
+        """
+        Массовое добавление элементов в одной транзакции.
+        items_with_meta: список кортежей или словарей, содержащих:
+        {
+            'item': dict, (исходный элемент)
+            'categories': list,
+            'product_keys': list
+        }
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        count = 0
+        
+        try:
+            cursor.execute("BEGIN TRANSACTION")
+            
+            # Предварительно кэшируем города и продавцов, чтобы уменьшить кол-во SELECT запросов
+            # (Опциональная микро-оптимизация, но даже простая транзакция даст прирост x100)
+            
+            for entry in items_with_meta:
+                item = entry['item']
+                cats = entry.get('categories')
+                p_keys = entry.get('product_keys')
+                
+                # Передаем cursor, чтобы использовать одно соединение
+                self.add_raw_item(
+                    item, 
+                    categories=cats, 
+                    product_keys=p_keys, 
+                    external_cursor=cursor
+                )
+                count += 1
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            
+        except Exception as e:
+            logger.error(f"Bulk insert failed: {e}")
+            conn.rollback()
+            count = 0
+        finally:
+            conn.close()
+            
+        return count
+
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
                      product_keys: Optional[List[str]] = None,
                      external_cursor: sqlite3.Cursor = None) -> AddItemResult:

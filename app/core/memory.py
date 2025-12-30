@@ -35,6 +35,28 @@ class MemoryManager:
 
     # === Delegated methods for raw data ===
 
+    def add_items_bulk(self, items: List[Dict]) -> int:
+        """
+        Подготавливает данные (NLP) и сохраняет их пачкой.
+        """
+        prepared_data = []
+        
+        # Шаг 1: Подготовка данных (может занять время из-за NLP, поэтому это тоже будет в потоке)
+        for item in items:
+            title = item.get('title', '')
+            # Генерируем ключи заранее
+            product_key = FeatureExtractor.generate_product_key(title)
+            category = product_key.split('_')[0] if '_' in product_key else 'misc'
+            
+            prepared_data.append({
+                'item': item,
+                'categories': [category],
+                'product_keys': [product_key]
+            })
+            
+        # Шаг 2: Массовая вставка в БД
+        return self.raw_data.add_raw_items_bulk(prepared_data)
+
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
                      product_keys: Optional[List[str]] = None) -> int:
         """Add raw item with categories and product keys."""
