@@ -2,6 +2,7 @@ import sqlite3
 import json
 import os
 import sys
+import time
 from typing import List, Dict, Optional
 from datetime import datetime
 
@@ -17,17 +18,26 @@ from app.core.log_manager import logger
 
 
 class KnowledgeManager:
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 4 # TODO
     DB_FILENAME = "memory_knowledge.db"
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or os.path.join(BASE_APP_DIR, self.DB_FILENAME)
+        self._stats_cache = None
+        self._stats_cache_time = 0
         self._ensure_db_exists()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection with row factory."""
+
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA cache_size = -32000")
+        conn.execute("PRAGMA mmap_size = 134217728")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        
         return conn
 
     def _ensure_db_exists(self):
@@ -157,7 +167,6 @@ class KnowledgeManager:
             existing = cursor.fetchone()
 
             if existing:
-                # UPGRADE: Обновляем source_hash если передан
                 sql = """
                     UPDATE ai_knowledge SET
                         title = ?, content = ?, summary = NULL,
@@ -182,6 +191,7 @@ class KnowledgeManager:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (chunk_type, chunk_key, title, content_json, status, priority, datetime.now().isoformat(), source_hash))
                 conn.commit()
+                self._stats_cache = None
                 return cursor.lastrowid
         finally:
             conn.close()
@@ -247,9 +257,6 @@ class KnowledgeManager:
         return chunk
 
     def delete_knowledge(self, chunk_id: int) -> bool:
-        """
-        Удаляет чанк и сбрасывает статус зависимых чанков, чтобы обновить контекст.
-        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -302,6 +309,8 @@ class KnowledgeManager:
                     logger.warning(f"⚠️ Сброшен статус у {dependents_reset} зависимых чанков (требуется перегенерация).", token="ai-mem")
 
             conn.commit()
+            if deleted:
+                self._stats_cache = None
             return deleted
         finally:
             conn.close()
@@ -339,7 +348,6 @@ class KnowledgeManager:
     # === Updates ===
 
     def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None):
-        # UPGRADE: Метод принимает source_hash
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -363,6 +371,7 @@ class KnowledgeManager:
             
             cursor.execute(sql, tuple(params))
             conn.commit()
+            self._stats_cache = None
         finally:
             conn.close()
 
@@ -487,7 +496,9 @@ class KnowledgeManager:
             conn.close()
 
     def get_statistics(self) -> Dict:
-        """Get overall statistics."""
+        if self._stats_cache and (time.time() - self._stats_cache_time < 60):
+            return self._stats_cache
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -503,12 +514,15 @@ class KnowledgeManager:
             cursor.execute("SELECT COUNT(*) FROM ai_knowledge WHERE chunk_type = 'CATEGORY'")
             category_count = cursor.fetchone()[0] or 0
 
-            return {
+            result = {
                 'total_chunks': total,
                 'by_status': status_summary,
                 'product_chunks': product_count,
                 'category_chunks': category_count
             }
+            self._stats_cache = result
+            self._stats_cache_time = time.time()
+            return result
         finally:
             conn.close()
 

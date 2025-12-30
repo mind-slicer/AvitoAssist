@@ -3,6 +3,7 @@ import json
 import os
 import re
 import hashlib
+import time
 from typing import List, Dict, Optional
 from datetime import datetime
 from collections import Counter
@@ -12,13 +13,31 @@ from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
 
+class StatisticsCache:
+    def __init__(self, ttl_seconds=60):
+        self.ttl = ttl_seconds
+        self._data = None
+        self._last_update = 0
+
+    def get(self):
+        if self._data and (time.time() - self._last_update < self.ttl):
+            return self._data
+        return None
+
+    def set(self, data):
+        self._data = data
+        self._last_update = time.time()
+
+    def invalidate(self):
+        self._data = None
+
+
 @dataclass
 class AddItemResult:
     item_id: int
-    status: str  # 'created', 'updated', 'skipped', 'error'
+    status: str
     price_changed: bool = False
 
-    # Backward compatibility: allows result == 'created'
     def __eq__(self, other):
         if isinstance(other, str):
             return self.status == other
@@ -34,11 +53,19 @@ class RawDataManager:
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or os.path.join(BASE_APP_DIR, self.DB_FILENAME)
+        self._stats_cache = StatisticsCache(ttl_seconds=60)
         self._ensure_db_exists()
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA cache_size = -64000")
+        conn.execute("PRAGMA mmap_size = 268435456")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
@@ -230,18 +257,6 @@ class RawDataManager:
     def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
                      product_keys: Optional[List[str]] = None,
                      external_cursor: sqlite3.Cursor = None) -> AddItemResult:
-        """
-        Adds or updates an item in the database.
-        
-        Args:
-            item: Item dictionary.
-            categories: Optional list of categories.
-            product_keys: Optional list of product keys.
-            external_cursor: Optional cursor for batch transactions.
-            
-        Returns:
-            AddItemResult object with item_id, status, and price_changed flag.
-        """
         own_connection = external_cursor is None
         conn = None
         
@@ -380,7 +395,10 @@ class RawDataManager:
 
             if own_connection:
                 conn.commit()
-            
+
+            if result.status in ("created", "updated"):
+                self._stats_cache.invalidate()
+
             return result
 
         except Exception as e:
@@ -400,8 +418,6 @@ class RawDataManager:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            
-            # Optimized query with Join to fetch category name directly
             query = """
                 SELECT DISTINCT
                     ri.id, ri.ad_id, ri.title, ri.price, ri.description,
@@ -651,6 +667,7 @@ class RawDataManager:
             placeholders = ','.join('?' * len(item_ids))
             cursor.execute(f"DELETE FROM raw_items WHERE id IN ({placeholders})", item_ids)
             conn.commit()
+            self._stats_cache.invalidate()
             return cursor.rowcount
         finally:
             conn.close()
@@ -674,11 +691,16 @@ class RawDataManager:
             cursor.execute("DELETE FROM raw_items")
             cursor.execute("DELETE FROM price_history")
             conn.commit()
+            self._stats_cache.invalidate()
             return count
         finally:
             conn.close()
 
     def get_statistics(self) -> Dict:
+        cached = self._stats_cache.get()
+        if cached:
+            return cached
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -690,12 +712,15 @@ class RawDataManager:
             total_prods = cursor.fetchone()[0] or 0
             cursor.execute("SELECT AVG(price) FROM raw_items WHERE price > 0")
             avg_price = cursor.fetchone()[0] or 0
-            return {
+            
+            result = {
                 'total_items': total_items,
                 'total_categories': total_cats,
                 'total_product_keys': total_prods,
                 'avg_price': round(avg_price, 2) if avg_price else 0
             }
+            self._stats_cache.set(result)
+            return result
         finally:
             conn.close()
 
@@ -737,6 +762,7 @@ class RawDataManager:
     def reset_database(self):
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
+        self._stats_cache.invalidate()
         self._ensure_db_exists()
         logger.info("Raw data database reset complete")
 
