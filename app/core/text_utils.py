@@ -150,10 +150,6 @@ class FeatureExtractor:
 
     @staticmethod
     def extract_features(text: str) -> Dict[str, str]:
-        """
-        Теперь использует NLP для извлечения характеристик.
-        """
-        # Получаем данные через общий пайплайн
         data = SpacyFeatureExtractor().extract_semantic_data(text)
         return data.get('features', {})
 

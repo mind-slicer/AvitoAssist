@@ -1,22 +1,13 @@
-"""
-DatabaseTab - UI for viewing and managing the memory database.
-Replaces/augments the "Trends" tab functionality with full database access.
-"""
-
-import json
-import os
-
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QTreeWidget, QTreeWidgetItem, QTableWidget,
     QTableWidgetItem, QLineEdit, QComboBox, QSplitter, QToolBar,
-    QToolButton, QMenu, QMessageBox, QTabWidget, QGridLayout,
-    QHeaderView, QAbstractItemView
+    QMessageBox, QTabWidget, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction
 
-from app.ui.styles import Components, Palette, Spacing, Typography
+from app.ui.styles import Components, Palette, Spacing
 from app.core.log_manager import logger
 from app.config import BASE_APP_DIR
 
@@ -36,7 +27,6 @@ class DatabaseTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # === Toolbar ===
         toolbar = QToolBar()
         toolbar.setStyleSheet(f"""
             QToolBar {{ background-color: {Palette.BG_DARK}; border-bottom: 1px solid {Palette.BORDER_SOFT}; padding: 8px; }}
@@ -80,12 +70,10 @@ class DatabaseTab(QWidget):
         toolbar.addAction(clear_action)
         layout.addWidget(toolbar)
         
-        # === Splitter ===
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(4)
         self.splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {Palette.BORDER_SOFT}; }}")
         
-        # === Left Panel ===
         self.left_panel = QFrame()
         self.left_panel.setMinimumWidth(370)
         self.left_panel.setStyleSheet(Components.panel())
@@ -325,25 +313,33 @@ class DatabaseTab(QWidget):
             cat_list = item.get('categories', [])
             main_cat = cat_list[0] if cat_list else "Misc"
             
-            # Пытаемся найти Clean Name (из новых полей brand/model если они есть)
+            # Получаем semantic_data если есть
             brand = item.get('brand', '')
             model = item.get('model', '')
             
-            # Если есть нормальные Brand/Model, показываем их
-            if brand or model:
+            # === УЛУЧШЕННАЯ ЛОГИКА ОТОБРАЖЕНИЯ ===
+            if main_cat == 'PC_BUILD':
+                # Для сборок показываем компоненты
+                raw_keys = item.get('product_keys', [])
+                if raw_keys:
+                    build_type = raw_keys[0].replace('pc_build_', '').replace('_', ' ').title()
+                    display_str = f"[PC Build] {build_type}"
+                else:
+                    display_str = "[PC Build]"
+            elif brand or model:
+                # Для товаров с брендом/моделью
                 brand_str = brand.upper() if brand else ""
                 model_str = model.upper() if model else ""
                 display_str = f"[{main_cat}] {brand_str} {model_str}".strip()
             else:
-                # Fallback на старые ключи, но чистим их от дублей
+                # Fallback на старые ключи
                 raw_keys = item.get('product_keys', [])
                 if raw_keys:
-                    # Берем первый ключ и убираем из него имя категории для чистоты
-                    k = raw_keys[0].replace(main_cat.lower() + '_', '')
+                    k = raw_keys[0].replace(main_cat.lower() + '_', '').replace('_', ' ').title()
                     display_str = f"[{main_cat}] {k}"
                 else:
                     display_str = f"[{main_cat}]"
-
+            
             self.raw_items_table.setItem(row, 5, QTableWidgetItem(display_str))
             
             # Store full data

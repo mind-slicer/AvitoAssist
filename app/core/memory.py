@@ -24,43 +24,155 @@ class MemoryManager:
 
     # === Delegated methods for raw data ===
 
+    #def add_items_bulk(self, items: List[Dict]) -> int:
+    #    if not items:
+    #        return 0
+#
+    #    prepared_data = []
+#
+    #    import os
+    #    max_workers = min(4, os.cpu_count() or 1, len(items))
+#
+    #    logger.info(f"NLP обработка {len(items)} элементов в {max_workers} потоков...")
+#
+    #    try:
+    #        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #            # Запускаем все задачи
+    #            future_to_item = {
+    #                executor.submit(
+    #                    FeatureExtractor.generate_product_key,
+    #                    item.get('title', '')
+    #                ): item
+    #                for item in items
+    #            }
+#
+    #            # Собираем результаты по мере готовности
+    #            for future in as_completed(future_to_item):
+    #                item = future_to_item[future]
+    #                try:
+    #                    product_key = future.result()
+    #                    category = product_key.split('_')[0] if '_' in product_key else 'misc'
+#
+    #                    prepared_data.append({
+    #                        'item': item,
+    #                        'categories': [category],
+    #                        'product_keys': [product_key]
+    #                    })
+    #                except Exception as e:
+    #                    logger.error(f"NLP error for item '{item.get('title', '')[:50]}': {e}")
+    #                    # Fallback: добавляем без обработки
+    #                    prepared_data.append({
+    #                        'item': item,
+    #                        'categories': ['misc'],
+    #                        'product_keys': ['misc_unknown']
+    #                    })
+#
+    #    except Exception as e:
+    #        logger.error(f"Parallel NLP failed, falling back to sequential: {e}")
+    #        # Fallback на последовательную обработку
+    #        for item in items:
+    #            try:
+    #                product_key = FeatureExtractor.generate_product_key(item.get('title', ''))
+    #                category = product_key.split('_')[0] if '_' in product_key else 'misc'
+    #                prepared_data.append({
+    #                    'item': item,
+    #                    'categories': [category],
+    #                    'product_keys': [product_key]
+    #                })
+    #            except Exception as e:
+    #                logger.error(f"NLP error: {e}")
+    #                prepared_data.append({
+    #                    'item': item,
+    #                    'categories': ['misc'],
+    #                    'product_keys': ['misc_unknown']
+    #                })
+#
+    #    # === МАССОВАЯ ВСТАВКА В БД ===
+    #    if prepared_data:
+    #        return self.raw_data.add_raw_items_bulk(prepared_data)
+#
+    #    return 0
+
     def add_items_bulk(self, items: List[Dict]) -> int:
+        """
+        Подготавливает данные (NLP) параллельно и сохраняет их пачкой.
+        """
         if not items:
             return 0
 
-        prepared_data = []
+        # === ВКЛЮЧАЕМ ДИАГНОСТИКУ ===
+        from app.core.diagnostic_logger import get_diagnostic_logger
+        diag = get_diagnostic_logger()
 
+        # Инициализируем extractor
+        from app.core.extraction.spacy_extractor import SpacyFeatureExtractor
+        extractor = SpacyFeatureExtractor()
+
+        # Проверка готовности
+        import time
+        timeout = 30
+        start = time.time()
+        while not hasattr(extractor, 'nlp'):
+            if time.time() - start > timeout:
+                logger.error("NLP модель не загрузилась за 30 секунд!")
+                return 0
+            time.sleep(0.1)
+
+        prepared_data = []
         import os
         max_workers = min(4, os.cpu_count() or 1, len(items))
 
         logger.info(f"NLP обработка {len(items)} элементов в {max_workers} потоков...")
 
+        # === ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА С ДИАГНОСТИКОЙ ===
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Запускаем все задачи
+                # Helper для безопасного получения цены
+                def get_price_safe(itm):
+                    try:
+                        p = itm.get('price')
+                        return int(p) if p is not None else 0
+                    except (ValueError, TypeError):
+                        return 0
+
+                # Используем версию с debug данными
                 future_to_item = {
                     executor.submit(
-                        FeatureExtractor.generate_product_key,
-                        item.get('title', '')
+                        extractor.extract_semantic_data_with_debug,
+                        item.get('title', ''),
+                        item.get('description', ''),
+                        get_price_safe(item)  # <--- ИСПРАВЛЕНИЕ: Передаем цену
                     ): item
                     for item in items
                 }
 
-                # Собираем результаты по мере готовности
                 for future in as_completed(future_to_item):
                     item = future_to_item[future]
                     try:
-                        product_key = future.result()
-                        category = product_key.split('_')[0] if '_' in product_key else 'misc'
+                        semantic_data, debug_data = future.result()
+                        # Защита от кривого product_key
+                        p_key = semantic_data.get('product_key', 'misc_unknown')
+                        category = p_key.split('_')[0] if '_' in p_key else 'misc'
+
+                        # Добавляем semantic_data в item
+                        item['semantic_data'] = semantic_data
 
                         prepared_data.append({
                             'item': item,
                             'categories': [category],
-                            'product_keys': [product_key]
+                            'product_keys': [p_key]
                         })
+
+                        # === ЛОГИРУЕМ В ДИАГНОСТИКУ ===
+                        if diag.enabled:
+                            diag.log_item_processing(
+                                original_item=item,
+                                semantic_data=semantic_data,
+                                intermediate_data=debug_data
+                            )
+
                     except Exception as e:
                         logger.error(f"NLP error for item '{item.get('title', '')[:50]}': {e}")
-                        # Fallback: добавляем без обработки
                         prepared_data.append({
                             'item': item,
                             'categories': ['misc'],
@@ -68,28 +180,18 @@ class MemoryManager:
                         })
 
         except Exception as e:
-            logger.error(f"Parallel NLP failed, falling back to sequential: {e}")
-            # Fallback на последовательную обработку
-            for item in items:
-                try:
-                    product_key = FeatureExtractor.generate_product_key(item.get('title', ''))
-                    category = product_key.split('_')[0] if '_' in product_key else 'misc'
-                    prepared_data.append({
-                        'item': item,
-                        'categories': [category],
-                        'product_keys': [product_key]
-                    })
-                except Exception as e:
-                    logger.error(f"NLP error: {e}")
-                    prepared_data.append({
-                        'item': item,
-                        'categories': ['misc'],
-                        'product_keys': ['misc_unknown']
-                    })
+            logger.error(f"Parallel NLP failed: {e}")
+            return 0
 
-        # === МАССОВАЯ ВСТАВКА В БД ===
+        # Вставка в БД
         if prepared_data:
-            return self.raw_data.add_raw_items_bulk(prepared_data)
+            count = self.raw_data.add_raw_items_bulk(prepared_data)
+
+            # === СОХРАНЯЕМ ДИАГНОСТИКУ ===
+            if diag.enabled:
+                diag.save_session()
+
+            return count
 
         return 0
 

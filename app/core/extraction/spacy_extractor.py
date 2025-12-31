@@ -83,32 +83,52 @@ class SpacyFeatureExtractor:
             logger.error(f"Ошибка правил категорий: {e}")
             return {}
 
-    def extract_semantic_data(self, title: str, description: str = "") -> Dict[str, Any]:
+    def extract_semantic_data(self, title: str, description: str = "", price: int = 0) -> Dict[str, Any]:
         if not title:
             return self._empty_result()
 
         clean_title = re.sub(r'[^\w\s\-\.]', ' ', title.lower())
         doc = self.nlp(clean_title)
-
         tokens = [t for t in doc if not t.is_stop and not t.is_punct and len(t.text) > 1]
         lemmas = [t.lemma_.lower() for t in tokens]
 
         # 1. Detect Category (with description peeking)
-        category = self._detect_category(lemmas, description)
+        category = self._detect_category(lemmas, title, description, price)
 
         # 2. Extract Brands
         brands = self._extract_brands(lemmas)
-        
+
         # 3. Extract Series/Model
         model_info = self._extract_series_and_model(lemmas, category)
 
         # 4. Features
         features = self._extract_features_nlp(doc, lemmas)
 
-        # 5. Keys
+        # === 5. СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ СБОРОК ===
+        if category == 'PC_BUILD':
+            components = self._extract_build_components(title, description)
+
+            # Формируем clean_name из компонентов
+            if components:
+                parts = []
+                if components.get('cpu'):
+                    parts.append(f"CPU: {components['cpu'][0]}")
+                if components.get('gpu'):
+                    parts.append(f"GPU: {components['gpu'][0]}")
+                if components.get('ram'):
+                    parts.append(f"RAM: {components['ram'][0]}")
+
+                clean_name = " | ".join(parts) if parts else "PC Build"
+            else:
+                clean_name = "PC Build (Generic)"
+
+            features['components'] = components
+        else:
+            clean_name = self._generate_clean_name(category, brands, model_info)
+
+        # 6. Keys
         product_key = self._generate_product_key(category, brands, model_info, lemmas)
         cluster_key = self._generate_cluster_key(category, brands, model_info)
-        clean_name = self._generate_clean_name(category, brands, model_info)
 
         return {
             'category': category,
@@ -122,73 +142,109 @@ class SpacyFeatureExtractor:
             'raw_tokens': lemmas
         }
 
-    def _detect_category(self, lemmas: List[str], description: str = "") -> str:
+    def _detect_category(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> str:
         """
-        Определяет категорию с учетом title и (опционально) начала description.
-        Применяет систему штрафов за запрещенные слова.
+        Умное определение категории с разделением весов и жесткими банами.
         """
-        best_category = "MISC"
-        max_score = 0
-        
-        # Анализируем заголовок
-        scores = self._score_lemmas(lemmas)
-        
-        # Если победитель не очевидный или это GPU/CPU (где часто путают с ноутбуками),
-        # заглядываем в описание
-        top_cat = max(scores, key=scores.get) if scores else "MISC"
-        
-        if description and len(description) > 10:
-            # Peek first 200 chars
-            desc_peek = description[:250].lower()
-            # Простая токенизация для скорости
-            desc_tokens = re.findall(r'\w+', desc_peek)
-            
-            # Считаем очки по описанию с весом 0.5 (оно менее важно, чем заголовок)
-            desc_scores = self._score_lemmas(desc_tokens, weight_multiplier=0.5)
-            
-            # Суммируем
-            for cat, sc in desc_scores.items():
-                scores[cat] = scores.get(cat, 0) + sc
+        raw_text = (raw_title + " " + description[:100]).lower()
+        scores = {}
 
-        # Финальный выбор
-        # Приоритет LAPTOP/PC_BUILD при равных очках
-        for cat, score in scores.items():
-            if score > max_score:
-                max_score = score
-                best_category = cat
-            elif score == max_score and score > 0:
-                # Разрешение конфликтов
-                if cat in ['LAPTOP', 'PC_BUILD'] and best_category in ['GPU', 'CPU', 'MOTHERBOARD']:
-                    best_category = cat
+        for cat_name, rules in self.category_rules.items():
+            strong_keys = rules.get("strong_keywords", [])
+            weak_keys = rules.get("weak_keywords", [])
+            banned_keys = rules.get("banned_keywords", [])
+            base_priority = rules.get("priority", 10)
+
+            current_score = 0
+            is_banned = False
+
+            # 1. Проверка на БАН (Hard Ban)
+            for ban_word in banned_keys:
+                # Проверяем в леммах И в сыром тексте для надежности
+                if ban_word in lemmas or ban_word in raw_text:
+                    # Исключение: если это "скупка", но категория ACCESSORY или SERVICE - не баним
+                    # Но пока просто жесткий бан
+                    is_banned = True
+                    break
+            
+            if is_banned:
+                continue
+
+            # 2. Сильные ключи (Strong Keywords) - дают много очков
+            for key in strong_keys:
+                is_match = False
+                if " " in key:
+                    if key in raw_text: is_match = True
+                elif key in lemmas:
+                    is_match = True
+                
+                if is_match:
+                    # УСИЛЕНИЕ ДЛЯ СУЩНОСТЕЙ
+                    if cat_name in ['LAPTOP', 'PC_BUILD', 'MONITOR']:
+                        current_score += 300  # Было 100. Теперь Ноутбук перевесит 3 упоминания процессора
+                    else:
+                        current_score += 100
+
+            # 3. Слабые ключи (Weak Keywords) - дают мало очков, только как поддержка
+            for key in weak_keys:
+                if key in lemmas:
+                    current_score += 5
+
+            if current_score > 0:
+                # Умножаем на базовый приоритет категории, чтобы LAPTOP (100) побеждал GPU (50) при прочих равных
+                scores[cat_name] = current_score + base_priority
+
+        # 4. Эвристика цены (Price Heuristics)
+        scores = self._apply_price_heuristics(scores, price)
+
+        if not scores:
+            return "MISC"
+
+        # Сортировка по убыванию очков
+        best_category = max(scores, key=scores.get)
+        
+        # 5. Разрешение конфликтов (Tie Breaking)
+        # Если очки равны или близки, используем специфическую логику
+        if scores.get('PC_BUILD', 0) > 50 and scores.get('PC_BUILD') == scores.get('CASE'):
+             return 'PC_BUILD' # Приоритет ПК над корпусом
 
         return best_category
 
-    def _score_lemmas(self, lemmas: List[str], weight_multiplier: float = 1.0) -> Dict[str, float]:
-        scores = {}
-        
-        for cat_name, rules in self.category_rules.items():
-            keywords = rules.get("keywords", [])
-            banned = rules.get("banned_keywords", [])
-            priority = rules.get("priority", 1)
+    def _apply_price_heuristics(self, scores: Dict[str, float], price: int) -> Dict[str, float]:
+        """
+        Корректировка очков на основе цены.
+        Помогает отсеять коробки и аксессуары от реальных товаров.
+        """
+        if price <= 0:
+            return scores
+
+        # Если цена очень низкая (< 1500 руб), это вряд ли рабочий ноутбук или современная видеокарта
+        if price < 1500:
+            if 'LAPTOP' in scores:
+                scores['LAPTOP'] -= 200 # Штраф, скорее всего это запчасть или батарея
+            if 'PC_BUILD' in scores:
+                scores['PC_BUILD'] -= 200
             
-            current_score = 0
+            # А вот для аксессуаров, кулеров и старых GPU это нормальная цена
+            if 'ACCESSORY' in scores:
+                scores['ACCESSORY'] += 50
+            if 'COOLING' in scores:
+                scores['COOLING'] += 50
             
-            # Плюсуем за ключевые слова
-            for lemma in lemmas:
-                if lemma in keywords:
-                    current_score += (1 * priority * weight_multiplier)
-                # Бонус за точные модели
-                if cat_name == 'LAPTOP' and lemma in self.VENDORS:
-                    current_score += 0.5 # Бренд в ноутбуке повышает шанс
-            
-            # Минусуем за запрещенные слова (сильный штраф)
-            for lemma in lemmas:
-                if lemma in banned:
-                    current_score -= 50 # Мгновенная дисквалификация
-            
-            if current_score > 0:
-                scores[cat_name] = current_score
-                
+            # Для GPU ставим под сомнение, но не убиваем полностью (затычки бывают дешевыми)
+            # Но если есть ACCESSORY, даем ему преимущество
+            if 'GPU' in scores and 'ACCESSORY' in scores:
+                scores['GPU'] -= 50
+
+        # Если цена очень высокая (> 20 000 руб), это вряд ли просто кулер
+        if price > 20000:
+            if 'COOLING' in scores:
+                scores['COOLING'] -= 50
+            if 'ACCESSORY' in scores:
+                scores['ACCESSORY'] -= 50
+            if 'CASE' in scores:
+                scores['CASE'] -= 20
+
         return scores
 
     def _extract_brands(self, lemmas: List[str]) -> Dict[str, str]:
@@ -272,46 +328,119 @@ class SpacyFeatureExtractor:
                 break
         return features
 
-    def _generate_product_key(self, category: str, brands: Dict, model_info: Dict, lemmas: List[str]) -> str:
-        key_parts = [category.lower()]
-        
-        # ЛОГИКА БРЕНДОВ:
-        # Для CPU/GPU/MOTHERBOARD приоритет Chip Maker (Intel, Nvidia)
-        # Для остального - Vendor (Asus, Acer)
-        primary_brand = None
-        
-        if category in ['GPU', 'CPU', 'MOTHERBOARD']:
-            primary_brand = brands.get('chip') or brands.get('vendor')
-            # Защита от дурака: Если категория CPU, а бренд Acer -> это ошибка.
-            if category == 'CPU' and primary_brand in self.VENDORS and primary_brand not in self.CHIP_MAKERS:
-                primary_brand = None # Сбрасываем, чтобы не плодить cpu_acer
-        else:
-            primary_brand = brands.get('vendor') or brands.get('chip')
-            
-        if primary_brand:
-            key_parts.append(primary_brand)
-            
-        if model_info.get('full_model'):
-            key_parts.append(model_info['full_model'])
-        else:
-            # Fallback
-            fallback_tokens = []
-            for lemma in lemmas:
-                if (lemma not in self.CHIP_MAKERS and 
-                    lemma not in self.VENDORS and 
-                    lemma not in self.NOISE_WORDS and
-                    lemma != category.lower() and
-                    len(lemma) > 2):
-                    fallback_tokens.append(lemma)
-            
-            if fallback_tokens:
-                key_parts.extend(fallback_tokens[:2])
-            else:
-                key_parts.append("unknown")
+    def _extract_build_components(self, title: str, description: str) -> Dict[str, List[str]]:
+        """
+        Извлекает компоненты из описания сборки.
+        Возвращает dict с найденными GPU, CPU, RAM и т.д.
+        """
+        if not description or len(description) < 20:
+            return {}
 
-        raw_key = "_".join(key_parts)
-        clean_key = re.sub(r'[^a-z0-9_]', '', raw_key)
-        return clean_key
+        # Объединяем title + первые 500 символов description
+        text = f"{title}. {description[:500]}".lower()
+
+        components = {
+            'gpu': [],
+            'cpu': [],
+            'ram': [],
+            'storage': []
+        }
+
+        # GPU паттерны
+        gpu_patterns = [
+            r'\b(rtx|gtx|rx|arc)\s*(\d{4}(?:\s?ti|super|xt|xtx)?)\b',
+            r'\b(geforce|radeon|nvidia|amd)\s+(rtx|gtx|rx)?\s*(\d{4}(?:\s?ti)?)\b'
+        ]
+
+        for pattern in gpu_patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                gpu_str = ' '.join(filter(None, match)).upper()
+                if gpu_str and gpu_str not in components['gpu']:
+                    components['gpu'].append(gpu_str)
+
+        # CPU паттерны
+        cpu_patterns = [
+            r'\b(ryzen|core)\s+([i579])\s*[-\s]*(\d{4,5}[a-z]{0,3})\b',
+            r'\b(i[3579])\s*[-\s]*(\d{4,5}[kf]{0,2})\b',
+            r'\b(r[3579])\s+(\d{4}[x]?)\b'
+        ]
+
+        for pattern in cpu_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                cpu_str = ' '.join(filter(None, match)).upper()
+                if cpu_str and cpu_str not in components['cpu']:
+                    components['cpu'].append(cpu_str)
+
+        # RAM
+        ram_patterns = [r'\b(\d+)\s*(?:gb|гб)\s+(?:ram|озу|памяти)\b']
+        for pattern in ram_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                components['ram'].append(f"{match}GB")
+
+        # Storage
+        storage_patterns = [r'\b(\d+)\s*(?:gb|tb|гб|тб)\s+(?:ssd|hdd|nvme)\b']
+        for pattern in storage_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                components['storage'].append(match.upper())
+
+        return {k: v for k, v in components.items() if v}
+
+    def _generate_product_key(self, category: str, brands: Dict, model_info: Dict, lemmas: List[str]) -> str:
+        """
+        Генерирует уникальный ключ продукта.
+        """
+        cat_lower = category.lower()
+
+        # === СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ СБОРОК ===
+        if cat_lower == 'pc_build':
+            # Для сборок не создаем детальный ключ, т.к. это набор компонентов
+            # Вместо этого - общий ключ по назначению
+
+            # Определяем тип сборки
+            build_type = 'generic'
+
+            if any(w in lemmas for w in ['игровой', 'gaming', 'геймерский', 'game']):
+                build_type = 'gaming'
+            elif any(w in lemmas for w in ['офисный', 'office', 'работа', 'учеба']):
+                build_type = 'office'
+            elif any(w in lemmas for w in ['рабочая', 'workstation', 'профессиональный']):
+                build_type = 'workstation'
+            elif any(w in lemmas for w in ['mini', 'мини', 'компактный', 'малый']):
+                build_type = 'mini'
+
+            return f"pc_build_{build_type}"
+
+        # === ДЛЯ ОСТАЛЬНЫХ КАТЕГОРИЙ - СТАРАЯ ЛОГИКА ===
+        vendor = brands.get('vendor', '')
+        chip = brands.get('chip', '')
+
+        # Приоритет: chip > vendor
+        brand_part = chip if chip else vendor
+
+        # Модель
+        model_part = model_info.get('short_model', '')
+
+        if not brand_part and not model_part:
+            return f"{cat_lower}_unknown"
+
+        # Формируем ключ
+        parts = [cat_lower]
+        if brand_part:
+            parts.append(brand_part.lower())
+        if model_part:
+            parts.append(model_part.lower())
+
+        key = '_'.join(parts)
+
+        # Очистка
+        key = re.sub(r'[^\w_]', '', key)
+        key = re.sub(r'_+', '_', key)
+
+        return key.strip('_') or f"{cat_lower}_unknown"
 
     def _generate_cluster_key(self, category: str, brands: Dict, model_info: Dict) -> str:
         parts = [category.lower()]
@@ -346,3 +475,172 @@ class SpacyFeatureExtractor:
             'clean_name': 'Unknown',
             'features': {}
         }
+    
+    ### DEBUG
+    def extract_semantic_data_with_debug(self, title: str, description: str = "", price: int = 0) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Версия extract_semantic_data с промежуточными данными для диагностики.
+        """
+        if not title:
+            return self._empty_result(), {}
+
+        # Подготовка текста как в основном методе
+        clean_title = re.sub(r'[^\w\s\-\.]', ' ', title.lower())
+        doc = self.nlp(clean_title)
+        tokens = [t for t in doc if not t.is_stop and not t.is_punct and len(t.text) > 1]
+        lemmas = [t.lemma_.lower() for t in tokens]
+        
+        # Сырой текст для поиска фраз
+        raw_text_search = (title + " " + description[:100]).lower()
+
+        # Debug данные
+        debug_info = {
+            'lemmas': lemmas,
+            'category_scores': {},
+            'matched_keywords': [], # Сюда запишем, какие слова сработали
+            'banned_trigger': [],   # Сюда запишем, из-за чего категорию забанило
+            'brands_found': {},
+            'model_patterns': []
+        }
+
+        # 1. Detect Category (вызываем обновленный метод с price)
+        category, scores = self._detect_category_with_scores(lemmas, title, description, price)
+        debug_info['category_scores'] = scores
+
+        # 2. Extract Brands
+        brands = self._extract_brands(lemmas)
+        debug_info['brands_found'] = brands
+
+        # 3. Extract Series/Model
+        model_info = self._extract_series_and_model(lemmas, category)
+
+        # 4. Features
+        features = self._extract_features_nlp(doc, lemmas)
+
+        # 5. Сборки
+        if category == 'PC_BUILD':
+            components = self._extract_build_components(title, description)
+            features['components'] = components
+            debug_info['components'] = components
+            
+            if components:
+                parts = []
+                if components.get('cpu'): parts.append(f"CPU: {components['cpu'][0]}")
+                if components.get('gpu'): parts.append(f"GPU: {components['gpu'][0]}")
+                if components.get('ram'): parts.append(f"RAM: {components['ram'][0]}")
+                clean_name = " | ".join(parts) if parts else "PC Build"
+            else:
+                clean_name = "PC Build (Generic)"
+        else:
+            clean_name = self._generate_clean_name(category, brands, model_info)
+
+        # 6. Keys
+        product_key = self._generate_product_key(category, brands, model_info, lemmas)
+        cluster_key = self._generate_cluster_key(category, brands, model_info)
+
+        # --- Сбор DEBUG информации о ключевых словах ---
+        for cat_name, rules in self.category_rules.items():
+            # Проверяем сильные ключи
+            for key in rules.get("strong_keywords", []):
+                if " " in key:
+                    if key in raw_text_search:
+                        debug_info['matched_keywords'].append(f"{cat_name} [STRONG]: '{key}'")
+                elif key in lemmas:
+                    debug_info['matched_keywords'].append(f"{cat_name} [STRONG]: '{key}'")
+            
+            # Проверяем слабые ключи
+            for key in rules.get("weak_keywords", []):
+                if key in lemmas:
+                    debug_info['matched_keywords'].append(f"{cat_name} [WEAK]: '{key}'")
+            
+            # Проверяем баны
+            for key in rules.get("banned_keywords", []):
+                if key in lemmas or key in raw_text_search:
+                    debug_info['banned_trigger'].append(f"{cat_name} BANNED by: '{key}'")
+
+        semantic_data = {
+            'category': category,
+            'product_key': product_key,
+            'cluster_key': cluster_key,
+            'entity_type': 'PRODUCT',
+            'clean_name': clean_name,
+            'brand': brands.get('vendor') or brands.get('chip') or '',
+            'model': model_info.get('full_model', ''),
+            'features': features,
+            'raw_tokens': lemmas
+        }
+
+        return semantic_data, debug_info
+
+    def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
+        """
+        Версия детектора, возвращающая победителя и таблицу очков для отладки.
+        Полностью дублирует логику _detect_category.
+        """
+        raw_text = (raw_title + " " + description[:100]).lower()
+        scores = {}
+
+        for cat_name, rules in self.category_rules.items():
+            strong_keys = rules.get("strong_keywords", [])
+            weak_keys = rules.get("weak_keywords", [])
+            banned_keys = rules.get("banned_keywords", [])
+            base_priority = rules.get("priority", 10)
+
+            current_score = 0
+            is_banned = False
+
+            # 1. Проверка на БАН
+            for ban_word in banned_keys:
+                if ban_word in lemmas or ban_word in raw_text:
+                    is_banned = True
+                    # Для дебага можно записать отрицательный скор, чтобы видеть бан
+                    scores[cat_name] = -999.0 
+                    break
+            
+            if is_banned:
+                continue
+
+            # 2. Сильные ключи (+100)
+            for key in strong_keys:
+                is_match = False
+                if " " in key:
+                    if key in raw_text: is_match = True
+                elif key in lemmas:
+                    is_match = True
+                
+                if is_match:
+                    # УСИЛЕНИЕ ДЛЯ СУЩНОСТЕЙ
+                    if cat_name in ['LAPTOP', 'PC_BUILD', 'MONITOR']:
+                        current_score += 300  # Было 100. Теперь Ноутбук перевесит 3 упоминания процессора
+                    else:
+                        current_score += 100
+
+            # 3. Слабые ключи (+5)
+            for key in weak_keys:
+                if key in lemmas:
+                    current_score += 5
+
+            if current_score > 0:
+                scores[cat_name] = current_score + base_priority
+
+        # 4. Эвристика цены
+        scores = self._apply_price_heuristics(scores, price)
+
+        if not scores:
+            # Если все по нулям, проверяем, нет ли "забаненных" категорий для отчетности
+            # Если нет даже забаненных, возвращаем пустой MISC
+            return "MISC", scores
+
+        # Ищем победителя (исключая забаненных с -999)
+        valid_scores = {k: v for k, v in scores.items() if v > -100}
+        
+        if not valid_scores:
+            best_category = "MISC"
+        else:
+            best_category = max(valid_scores, key=valid_scores.get)
+            
+            # 5. Разрешение конфликтов (Tie Breaking)
+            if valid_scores.get('PC_BUILD', 0) > 50 and valid_scores.get('PC_BUILD') == valid_scores.get('CASE'):
+                 best_category = 'PC_BUILD'
+
+        return best_category, scores
