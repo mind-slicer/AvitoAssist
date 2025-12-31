@@ -4,6 +4,7 @@ models/
 data/
 icons/
 results/
+diagnostic_logs/
 
 app_settings.json
 AvitoAssist.spec
