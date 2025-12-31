@@ -14,49 +14,46 @@ class SmartChunkDetector:
         to_create = []
 
         try:
-            # 1. Загружаем свежие данные
             rows = memory_manager.raw_data.get_items(limit=3000)
             if not rows:
                 return []
 
-            # Статистика
-            cluster_stats = defaultdict(int)        # cluster_key -> count
-            product_stats = defaultdict(list)       # product_key -> list of prices
-            product_to_cluster = {}                 # product_key -> cluster_key
+            cluster_stats = defaultdict(int)
+            product_stats = defaultdict(list)
             
-            # Словари для красивых названий
+            # Для сохранения красивых имен
             cluster_display_names = {}
             product_display_names = {}
 
-            # 2. Проход по данным и группировка
             for row in rows:
                 title = row.get('title', '')
                 price = row.get('price', 0)
                 
-                # Используем новый универсальный FeatureExtractor
-                semantic = FeatureExtractor.extract_semantic_data(title)
-                
+                # Safe integer conversion
+                try:
+                    price_int = int(price)
+                except (ValueError, TypeError):
+                    price_int = 0
+
+                # ВАЖНО: Теперь передаем цену для улучшения точности экстрактора
+                semantic = FeatureExtractor.extract_semantic_data(title, description="", price=price_int)
+
                 p_key = semantic['product_key']
                 c_key = semantic['cluster_key']
                 entity_type = semantic['entity_type']
                 clean_name = semantic['clean_name']
 
-                # Игнорируем мусорные цены для статистики (но учитываем товар в количестве)
-                valid_price = price > 100
+                valid_price = price_int > 100
 
-                # Агрегация по Кластерам (Нейро-БД)
                 if c_key:
                     cluster_stats[c_key] += 1
-                    # Сохраняем имя для заголовка (берем самое короткое или чистое)
                     if c_key not in cluster_display_names:
                         cluster_display_names[c_key] = clean_name
-                
-                # Агрегация по Продуктам
+
                 if p_key and entity_type == 'PRODUCT':
                     if valid_price:
-                        product_stats[p_key].append(price)
-                    
-                    product_to_cluster[p_key] = c_key
+                        product_stats[p_key].append(price_int)
+
                     if p_key not in product_display_names:
                         product_display_names[p_key] = clean_name
 

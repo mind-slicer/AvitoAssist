@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QTimer
 from app.ui.styles import Components, Palette, Typography, Spacing
+from app.core.diagnostic_logger import get_diagnostic_logger
 from app.config import AI_CTX_SIZE, MODELS_DIR, DEFAULT_MODEL_NAME, BASE_APP_DIR
 
 class CollapsibleBox(QWidget):
@@ -570,10 +571,14 @@ class SettingsDialog(QDialog):
         
         self.parser_debug_check = QCheckBox("Логи парсера (техническая информация)")
         self.parser_debug_check.setStyleSheet(Components.styled_checkbox())
+
+        self.raw_data_diag_check = QCheckBox("Подробные логи БД (semantic analysis)")
+        self.raw_data_diag_check.setStyleSheet(Components.styled_checkbox())
         
         debug_group.addWidget(self.debug_mode_check)
         debug_group.addWidget(self.ai_debug_check)
         debug_group.addWidget(self.parser_debug_check)
+        debug_group.addWidget(self.raw_data_diag_check)
         layout.addLayout(debug_group)
         
         # Зона опасности
@@ -849,6 +854,7 @@ class SettingsDialog(QDialog):
         self.debug_mode_check.setChecked(self.current_settings.get("debug_mode", False))
         self.ai_debug_check.setChecked(self.current_settings.get("ai_debug", False))
         self.parser_debug_check.setChecked(self.current_settings.get("parser_debug", False))
+        self.raw_data_diag_check.setChecked(self.current_settings.get("enable_raw_data_diagnostics", False))
     
     def _on_apply(self):
         # Собираем новые настройки
@@ -862,14 +868,14 @@ class SettingsDialog(QDialog):
             "debug_mode": self.debug_mode_check.isChecked(),
             "ai_debug": self.ai_debug_check.isChecked(),
             "parser_debug": self.parser_debug_check.isChecked(),
+            "enable_raw_data_diagnostics": self.raw_data_diag_check.isChecked(),
             "telegram_token": self.tg_token_input.text().strip(),
             "telegram_chat_id": self.tg_chat_id_input.text().strip(),
             "telegram_check_interval": self.tg_interval_spin.value()
         }
 
-        # ВАЖНО: Мы сохраняем старые настройки парсера (которые удалили из UI),
-        # чтобы они не исчезли из конфига, если они там были.
-        # Просто копируем их из self.current_settings в new_settings
+        get_diagnostic_logger().enabled = new_settings["enable_raw_data_diagnostics"]
+
         preserved_keys = ["request_delay", "max_retries", "page_timeout"]
         for key in preserved_keys:
             if key in self.current_settings:

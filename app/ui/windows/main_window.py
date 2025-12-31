@@ -14,6 +14,7 @@ from app.core.controller import ParserController
 from app.core.memory import MemoryManager
 from app.core.telegram_notifier import TelegramNotifier
 from app.core.tracker import AdTracker
+from app.core.diagnostic_logger import get_diagnostic_logger
 from app.config import BASE_APP_DIR, RESULTS_DIR
 from app.ui.widgets.ai_memory_panel import AIMemoryPanel
 from app.core.ai.chunk_cultivation import ChunkCultivationManager
@@ -1801,7 +1802,10 @@ class MainWindow(QWidget):
                 else:
                     logger.warning(f"Модель не найдена по пути: {model_path}. Сброс.")
                     settings["ai_model_path"] = ""
-                    
+
+        diag_enabled = settings.get("enable_raw_data_diagnostics", False)
+        get_diagnostic_logger().enabled = diag_enabled
+
         return settings
         
     def _save_settings(self):

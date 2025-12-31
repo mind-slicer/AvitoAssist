@@ -3,7 +3,7 @@ import json
 import os
 import re
 import threading
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
@@ -84,53 +84,88 @@ class SpacyFeatureExtractor:
             return {}
 
     def extract_semantic_data(self, title: str, description: str = "", price: int = 0) -> Dict[str, Any]:
-        if not title:
-            return self._empty_result()
+        """
+        Чистый метод для продакшена. Вызывает полный анализ, но возвращает только результат.
+        """
+        result, _ = self.extract_semantic_data_with_debug(title, description, price)
+        return result
 
+    def extract_semantic_data_with_debug(self, title: str, description: str = "", price: int = 0) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Единственный метод, содержащий логику парсинга.
+        Возвращает (semantic_data, debug_info).
+        """
+        if not title:
+            return self._empty_result(), {}
+
+        # 1. Предобработка
         clean_title = re.sub(r'[^\w\s\-\.]', ' ', title.lower())
         doc = self.nlp(clean_title)
         tokens = [t for t in doc if not t.is_stop and not t.is_punct and len(t.text) > 1]
         lemmas = [t.lemma_.lower() for t in tokens]
+        
+        # Подготовка текста для поиска ключевых слов (заголовок + начало описания)
+        raw_text_search = (title + " " + description[:100]).lower()
 
-        # 1. Detect Category (with description peeking)
-        category = self._detect_category(lemmas, title, description, price)
+        debug_info = {
+            'lemmas': lemmas,
+            'category_scores': {},
+            'matched_keywords': [],
+            'banned_trigger': [],
+            'brands_found': {},
+            'model_patterns': []
+        }
 
-        # 2. Extract Brands
+        # 2. Определение категории
+        category, scores = self._detect_category_with_scores(lemmas, title, description, price)
+        debug_info['category_scores'] = scores
+
+        # 3. Извлечение брендов
         brands = self._extract_brands(lemmas)
+        debug_info['brands_found'] = brands
 
-        # 3. Extract Series/Model
+        # 4. Извлечение модели
         model_info = self._extract_series_and_model(lemmas, category)
 
-        # 4. Features
+        # 5. Извлечение характеристик
         features = self._extract_features_nlp(doc, lemmas)
 
-        # === 5. СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ СБОРОК ===
+        # 6. Специфика PC_BUILD
         if category == 'PC_BUILD':
             components = self._extract_build_components(title, description)
+            features['components'] = components
+            debug_info['components'] = components
 
-            # Формируем clean_name из компонентов
             if components:
                 parts = []
-                if components.get('cpu'):
-                    parts.append(f"CPU: {components['cpu'][0]}")
-                if components.get('gpu'):
-                    parts.append(f"GPU: {components['gpu'][0]}")
-                if components.get('ram'):
-                    parts.append(f"RAM: {components['ram'][0]}")
-
+                if components.get('cpu'): parts.append(f"CPU: {components['cpu'][0]}")
+                if components.get('gpu'): parts.append(f"GPU: {components['gpu'][0]}")
+                if components.get('ram'): parts.append(f"RAM: {components['ram'][0]}")
                 clean_name = " | ".join(parts) if parts else "PC Build"
             else:
                 clean_name = "PC Build (Generic)"
-
-            features['components'] = components
         else:
             clean_name = self._generate_clean_name(category, brands, model_info)
 
-        # 6. Keys
+        # 7. Генерация ключей
         product_key = self._generate_product_key(category, brands, model_info, lemmas)
         cluster_key = self._generate_cluster_key(category, brands, model_info)
 
-        return {
+        # 8. Сбор отладочной информации о сработавших правилах (для логов)
+        if hasattr(self, 'category_rules'):
+            for cat_name, rules in self.category_rules.items():
+                for key in rules.get("strong_keywords", []):
+                    if " " in key:
+                        if key in raw_text_search:
+                            debug_info['matched_keywords'].append(f"{cat_name} [STRONG]: '{key}'")
+                    elif key in lemmas:
+                        debug_info['matched_keywords'].append(f"{cat_name} [STRONG]: '{key}'")
+                
+                for key in rules.get("banned_keywords", []):
+                    if key in lemmas or key in raw_text_search:
+                        debug_info['banned_trigger'].append(f"{cat_name} BANNED by: '{key}'")
+
+        semantic_data = {
             'category': category,
             'product_key': product_key,
             'cluster_key': cluster_key,
@@ -142,9 +177,12 @@ class SpacyFeatureExtractor:
             'raw_tokens': lemmas
         }
 
-    def _detect_category(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> str:
+        return semantic_data, debug_info
+
+    def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
         """
-        Умное определение категории с разделением весов и жесткими банами.
+        Версия детектора, возвращающая победителя и таблицу очков для отладки.
+        Полностью дублирует логику _detect_category.
         """
         raw_text = (raw_title + " " + description[:100]).lower()
         scores = {}
@@ -158,19 +196,18 @@ class SpacyFeatureExtractor:
             current_score = 0
             is_banned = False
 
-            # 1. Проверка на БАН (Hard Ban)
+            # 1. Проверка на БАН
             for ban_word in banned_keys:
-                # Проверяем в леммах И в сыром тексте для надежности
                 if ban_word in lemmas or ban_word in raw_text:
-                    # Исключение: если это "скупка", но категория ACCESSORY или SERVICE - не баним
-                    # Но пока просто жесткий бан
                     is_banned = True
+                    # Для дебага можно записать отрицательный скор, чтобы видеть бан
+                    scores[cat_name] = -999.0 
                     break
             
             if is_banned:
                 continue
 
-            # 2. Сильные ключи (Strong Keywords) - дают много очков
+            # 2. Сильные ключи (+100)
             for key in strong_keys:
                 is_match = False
                 if " " in key:
@@ -185,30 +222,35 @@ class SpacyFeatureExtractor:
                     else:
                         current_score += 100
 
-            # 3. Слабые ключи (Weak Keywords) - дают мало очков, только как поддержка
+            # 3. Слабые ключи (+5)
             for key in weak_keys:
                 if key in lemmas:
                     current_score += 5
 
             if current_score > 0:
-                # Умножаем на базовый приоритет категории, чтобы LAPTOP (100) побеждал GPU (50) при прочих равных
                 scores[cat_name] = current_score + base_priority
 
-        # 4. Эвристика цены (Price Heuristics)
+        # 4. Эвристика цены
         scores = self._apply_price_heuristics(scores, price)
 
         if not scores:
-            return "MISC"
+            # Если все по нулям, проверяем, нет ли "забаненных" категорий для отчетности
+            # Если нет даже забаненных, возвращаем пустой MISC
+            return "MISC", scores
 
-        # Сортировка по убыванию очков
-        best_category = max(scores, key=scores.get)
+        # Ищем победителя (исключая забаненных с -999)
+        valid_scores = {k: v for k, v in scores.items() if v > -100}
         
-        # 5. Разрешение конфликтов (Tie Breaking)
-        # Если очки равны или близки, используем специфическую логику
-        if scores.get('PC_BUILD', 0) > 50 and scores.get('PC_BUILD') == scores.get('CASE'):
-             return 'PC_BUILD' # Приоритет ПК над корпусом
+        if not valid_scores:
+            best_category = "MISC"
+        else:
+            best_category = max(valid_scores, key=valid_scores.get)
+            
+            # 5. Разрешение конфликтов (Tie Breaking)
+            if valid_scores.get('PC_BUILD', 0) > 50 and valid_scores.get('PC_BUILD') == valid_scores.get('CASE'):
+                 best_category = 'PC_BUILD'
 
-        return best_category
+        return best_category, scores
 
     def _apply_price_heuristics(self, scores: Dict[str, float], price: int) -> Dict[str, float]:
         """
@@ -475,172 +517,3 @@ class SpacyFeatureExtractor:
             'clean_name': 'Unknown',
             'features': {}
         }
-    
-    ### DEBUG
-    def extract_semantic_data_with_debug(self, title: str, description: str = "", price: int = 0) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Версия extract_semantic_data с промежуточными данными для диагностики.
-        """
-        if not title:
-            return self._empty_result(), {}
-
-        # Подготовка текста как в основном методе
-        clean_title = re.sub(r'[^\w\s\-\.]', ' ', title.lower())
-        doc = self.nlp(clean_title)
-        tokens = [t for t in doc if not t.is_stop and not t.is_punct and len(t.text) > 1]
-        lemmas = [t.lemma_.lower() for t in tokens]
-        
-        # Сырой текст для поиска фраз
-        raw_text_search = (title + " " + description[:100]).lower()
-
-        # Debug данные
-        debug_info = {
-            'lemmas': lemmas,
-            'category_scores': {},
-            'matched_keywords': [], # Сюда запишем, какие слова сработали
-            'banned_trigger': [],   # Сюда запишем, из-за чего категорию забанило
-            'brands_found': {},
-            'model_patterns': []
-        }
-
-        # 1. Detect Category (вызываем обновленный метод с price)
-        category, scores = self._detect_category_with_scores(lemmas, title, description, price)
-        debug_info['category_scores'] = scores
-
-        # 2. Extract Brands
-        brands = self._extract_brands(lemmas)
-        debug_info['brands_found'] = brands
-
-        # 3. Extract Series/Model
-        model_info = self._extract_series_and_model(lemmas, category)
-
-        # 4. Features
-        features = self._extract_features_nlp(doc, lemmas)
-
-        # 5. Сборки
-        if category == 'PC_BUILD':
-            components = self._extract_build_components(title, description)
-            features['components'] = components
-            debug_info['components'] = components
-            
-            if components:
-                parts = []
-                if components.get('cpu'): parts.append(f"CPU: {components['cpu'][0]}")
-                if components.get('gpu'): parts.append(f"GPU: {components['gpu'][0]}")
-                if components.get('ram'): parts.append(f"RAM: {components['ram'][0]}")
-                clean_name = " | ".join(parts) if parts else "PC Build"
-            else:
-                clean_name = "PC Build (Generic)"
-        else:
-            clean_name = self._generate_clean_name(category, brands, model_info)
-
-        # 6. Keys
-        product_key = self._generate_product_key(category, brands, model_info, lemmas)
-        cluster_key = self._generate_cluster_key(category, brands, model_info)
-
-        # --- Сбор DEBUG информации о ключевых словах ---
-        for cat_name, rules in self.category_rules.items():
-            # Проверяем сильные ключи
-            for key in rules.get("strong_keywords", []):
-                if " " in key:
-                    if key in raw_text_search:
-                        debug_info['matched_keywords'].append(f"{cat_name} [STRONG]: '{key}'")
-                elif key in lemmas:
-                    debug_info['matched_keywords'].append(f"{cat_name} [STRONG]: '{key}'")
-            
-            # Проверяем слабые ключи
-            for key in rules.get("weak_keywords", []):
-                if key in lemmas:
-                    debug_info['matched_keywords'].append(f"{cat_name} [WEAK]: '{key}'")
-            
-            # Проверяем баны
-            for key in rules.get("banned_keywords", []):
-                if key in lemmas or key in raw_text_search:
-                    debug_info['banned_trigger'].append(f"{cat_name} BANNED by: '{key}'")
-
-        semantic_data = {
-            'category': category,
-            'product_key': product_key,
-            'cluster_key': cluster_key,
-            'entity_type': 'PRODUCT',
-            'clean_name': clean_name,
-            'brand': brands.get('vendor') or brands.get('chip') or '',
-            'model': model_info.get('full_model', ''),
-            'features': features,
-            'raw_tokens': lemmas
-        }
-
-        return semantic_data, debug_info
-
-    def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
-        """
-        Версия детектора, возвращающая победителя и таблицу очков для отладки.
-        Полностью дублирует логику _detect_category.
-        """
-        raw_text = (raw_title + " " + description[:100]).lower()
-        scores = {}
-
-        for cat_name, rules in self.category_rules.items():
-            strong_keys = rules.get("strong_keywords", [])
-            weak_keys = rules.get("weak_keywords", [])
-            banned_keys = rules.get("banned_keywords", [])
-            base_priority = rules.get("priority", 10)
-
-            current_score = 0
-            is_banned = False
-
-            # 1. Проверка на БАН
-            for ban_word in banned_keys:
-                if ban_word in lemmas or ban_word in raw_text:
-                    is_banned = True
-                    # Для дебага можно записать отрицательный скор, чтобы видеть бан
-                    scores[cat_name] = -999.0 
-                    break
-            
-            if is_banned:
-                continue
-
-            # 2. Сильные ключи (+100)
-            for key in strong_keys:
-                is_match = False
-                if " " in key:
-                    if key in raw_text: is_match = True
-                elif key in lemmas:
-                    is_match = True
-                
-                if is_match:
-                    # УСИЛЕНИЕ ДЛЯ СУЩНОСТЕЙ
-                    if cat_name in ['LAPTOP', 'PC_BUILD', 'MONITOR']:
-                        current_score += 300  # Было 100. Теперь Ноутбук перевесит 3 упоминания процессора
-                    else:
-                        current_score += 100
-
-            # 3. Слабые ключи (+5)
-            for key in weak_keys:
-                if key in lemmas:
-                    current_score += 5
-
-            if current_score > 0:
-                scores[cat_name] = current_score + base_priority
-
-        # 4. Эвристика цены
-        scores = self._apply_price_heuristics(scores, price)
-
-        if not scores:
-            # Если все по нулям, проверяем, нет ли "забаненных" категорий для отчетности
-            # Если нет даже забаненных, возвращаем пустой MISC
-            return "MISC", scores
-
-        # Ищем победителя (исключая забаненных с -999)
-        valid_scores = {k: v for k, v in scores.items() if v > -100}
-        
-        if not valid_scores:
-            best_category = "MISC"
-        else:
-            best_category = max(valid_scores, key=valid_scores.get)
-            
-            # 5. Разрешение конфликтов (Tie Breaking)
-            if valid_scores.get('PC_BUILD', 0) > 50 and valid_scores.get('PC_BUILD') == valid_scores.get('CASE'):
-                 best_category = 'PC_BUILD'
-
-        return best_category, scores

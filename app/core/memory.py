@@ -5,18 +5,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.core.text_utils import FeatureExtractor
 from app.core.memory.raw_data_manager import RawDataManager
 from app.core.memory.knowledge_manager import KnowledgeManager
+from app.core.diagnostic_logger import get_diagnostic_logger
 from app.core.log_manager import logger
 from app.config import BASE_APP_DIR
 
 
 class MemoryManager:
-    """
-    Unified access point for all memory storage operations.
-    Combines raw items storage and AI knowledge management.
-    """
-
     def __init__(self):
-        # Initialize both managers
         self.raw_data = RawDataManager()
         self.knowledge = KnowledgeManager()
         self.raw_data.cleanup_old_actions(keep_last=500)
@@ -24,95 +19,17 @@ class MemoryManager:
 
     # === Delegated methods for raw data ===
 
-    #def add_items_bulk(self, items: List[Dict]) -> int:
-    #    if not items:
-    #        return 0
-#
-    #    prepared_data = []
-#
-    #    import os
-    #    max_workers = min(4, os.cpu_count() or 1, len(items))
-#
-    #    logger.info(f"NLP обработка {len(items)} элементов в {max_workers} потоков...")
-#
-    #    try:
-    #        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    #            # Запускаем все задачи
-    #            future_to_item = {
-    #                executor.submit(
-    #                    FeatureExtractor.generate_product_key,
-    #                    item.get('title', '')
-    #                ): item
-    #                for item in items
-    #            }
-#
-    #            # Собираем результаты по мере готовности
-    #            for future in as_completed(future_to_item):
-    #                item = future_to_item[future]
-    #                try:
-    #                    product_key = future.result()
-    #                    category = product_key.split('_')[0] if '_' in product_key else 'misc'
-#
-    #                    prepared_data.append({
-    #                        'item': item,
-    #                        'categories': [category],
-    #                        'product_keys': [product_key]
-    #                    })
-    #                except Exception as e:
-    #                    logger.error(f"NLP error for item '{item.get('title', '')[:50]}': {e}")
-    #                    # Fallback: добавляем без обработки
-    #                    prepared_data.append({
-    #                        'item': item,
-    #                        'categories': ['misc'],
-    #                        'product_keys': ['misc_unknown']
-    #                    })
-#
-    #    except Exception as e:
-    #        logger.error(f"Parallel NLP failed, falling back to sequential: {e}")
-    #        # Fallback на последовательную обработку
-    #        for item in items:
-    #            try:
-    #                product_key = FeatureExtractor.generate_product_key(item.get('title', ''))
-    #                category = product_key.split('_')[0] if '_' in product_key else 'misc'
-    #                prepared_data.append({
-    #                    'item': item,
-    #                    'categories': [category],
-    #                    'product_keys': [product_key]
-    #                })
-    #            except Exception as e:
-    #                logger.error(f"NLP error: {e}")
-    #                prepared_data.append({
-    #                    'item': item,
-    #                    'categories': ['misc'],
-    #                    'product_keys': ['misc_unknown']
-    #                })
-#
-    #    # === МАССОВАЯ ВСТАВКА В БД ===
-    #    if prepared_data:
-    #        return self.raw_data.add_raw_items_bulk(prepared_data)
-#
-    #    return 0
-
     def add_items_bulk(self, items: List[Dict]) -> int:
-        """
-        Подготавливает данные (NLP) параллельно и сохраняет их пачкой.
-        """
         if not items:
             return 0
 
-        # === ВКЛЮЧАЕМ ДИАГНОСТИКУ ===
-        from app.core.diagnostic_logger import get_diagnostic_logger
-        diag = get_diagnostic_logger()
+        diag = get_diagnostic_logger() 
+        FeatureExtractor.extract_semantic_data("")
 
-        # Инициализируем extractor
-        from app.core.extraction.spacy_extractor import SpacyFeatureExtractor
-        extractor = SpacyFeatureExtractor()
-
-        # Проверка готовности
         import time
         timeout = 30
         start = time.time()
-        while not hasattr(extractor, 'nlp'):
+        while not FeatureExtractor.is_model_ready():
             if time.time() - start > timeout:
                 logger.error("NLP модель не загрузилась за 30 секунд!")
                 return 0
@@ -124,10 +41,8 @@ class MemoryManager:
 
         logger.info(f"NLP обработка {len(items)} элементов в {max_workers} потоков...")
 
-        # === ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА С ДИАГНОСТИКОЙ ===
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Helper для безопасного получения цены
                 def get_price_safe(itm):
                     try:
                         p = itm.get('price')
@@ -135,70 +50,99 @@ class MemoryManager:
                     except (ValueError, TypeError):
                         return 0
 
-                # Используем версию с debug данными
                 future_to_item = {
                     executor.submit(
-                        extractor.extract_semantic_data_with_debug,
+                        FeatureExtractor.extract_semantic_data_with_debug,
                         item.get('title', ''),
                         item.get('description', ''),
-                        get_price_safe(item)  # <--- ИСПРАВЛЕНИЕ: Передаем цену
+                        get_price_safe(item)
                     ): item
                     for item in items
                 }
 
                 for future in as_completed(future_to_item):
-                    item = future_to_item[future]
+                    original_item = future_to_item[future]
                     try:
                         semantic_data, debug_data = future.result()
-                        # Защита от кривого product_key
-                        p_key = semantic_data.get('product_key', 'misc_unknown')
-                        category = p_key.split('_')[0] if '_' in p_key else 'misc'
+                        item_for_db = original_item.copy()
+                        item_for_db['semantic_data'] = semantic_data
 
-                        # Добавляем semantic_data в item
-                        item['semantic_data'] = semantic_data
+                        prepared_data.append({'item': item_for_db})
 
-                        prepared_data.append({
-                            'item': item,
-                            'categories': [category],
-                            'product_keys': [p_key]
-                        })
-
-                        # === ЛОГИРУЕМ В ДИАГНОСТИКУ ===
                         if diag.enabled:
                             diag.log_item_processing(
-                                original_item=item,
+                                original_item=original_item,
                                 semantic_data=semantic_data,
                                 intermediate_data=debug_data
                             )
 
                     except Exception as e:
-                        logger.error(f"NLP error for item '{item.get('title', '')[:50]}': {e}")
-                        prepared_data.append({
-                            'item': item,
-                            'categories': ['misc'],
-                            'product_keys': ['misc_unknown']
-                        })
+                        logger.error(f"NLP error for item '{original_item.get('title', '')[:50]}': {e}")
+                        item_for_db = original_item.copy()
+                        item_for_db['semantic_data'] = {
+                            'category': 'MISC', 'product_key': 'misc_unknown',
+                            'cluster_key': 'misc_general', 'entity_type': 'PRODUCT',
+                            'clean_name': 'Unknown', 'brand': '', 'model': '',
+                            'features': {}, 'raw_tokens': []
+                        }
+                        prepared_data.append({'item': item_for_db})
 
         except Exception as e:
-            logger.error(f"Parallel NLP failed: {e}")
+            logger.error(f"Parallel NLP failed: {e}", exc_info=True)
             return 0
 
-        # Вставка в БД
         if prepared_data:
             count = self.raw_data.add_raw_items_bulk(prepared_data)
-
-            # === СОХРАНЯЕМ ДИАГНОСТИКУ ===
             if diag.enabled:
                 diag.save_session()
-
             return count
 
         return 0
 
-    def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
-                     product_keys: Optional[List[str]] = None) -> int:
-        """Add raw item with categories and product keys."""
-        return self.raw_data.add_raw_item(item, categories, product_keys)
+    def add_item(self, item: Dict) -> bool:
+        diag = get_diagnostic_logger()
+        FeatureExtractor.extract_semantic_data("")
+        original_item = item.copy()
+
+        price_safe = 0
+        try:
+            p = item.get('price')
+            if p is not None:
+                price_safe = int(p)
+        except (ValueError, TypeError):
+            pass
+
+        # Выполняем семантический анализ
+        semantic_data, debug_data = FeatureExtractor.extract_semantic_data_with_debug(
+            item.get('title', ''),
+            item.get('description', ''),
+            price_safe
+        )
+        item_for_db = item.copy() # Копируем, чтобы не менять исходный item
+        item_for_db['semantic_data'] = semantic_data # Добавляем семантические данные
+
+        if diag.enabled:
+            diag.log_item_processing(
+                original_item=original_item,
+                semantic_data=semantic_data,
+                intermediate_data=debug_data,
+                db_result={'status': 'processing'}
+            )
+
+        # Вызываем RawDataManager.add_raw_item с обновленной сигнатурой
+        result = self.raw_data.add_raw_item(item_for_db)
+
+        # Обновляем диагностический лог финальным результатом БД
+        if diag.enabled:
+            diag.log_item_processing(
+                original_item=original_item,
+                semantic_data=semantic_data, # Повторно используем ранее полученные семантические данные
+                intermediate_data=debug_data,
+                db_result={'status': str(result), 'item_id': result.item_id, 'product_id': semantic_data.get('product_key')}
+            )
+            diag.save_session() # Сохраняем после каждого элемента при одиночном добавлении
+
+        return result.status in ['created', 'updated']
 
     def get_raw_items(self, category: Optional[str] = None,
                       product_key: Optional[str] = None,
@@ -318,26 +262,6 @@ class MemoryManager:
         return self.knowledge.get_rag_status()
 
     # === Legacy/statistics methods (for backward compatibility) ===
-
-    def add_item(self, item: Dict) -> bool:
-        """
-        Возвращает True, если элемент был добавлен или обновлен.
-        """
-        title = item.get('title', '')
-        
-        # Умная генерация ключа
-        product_key = FeatureExtractor.generate_product_key(title)
-        
-        # В качестве категории берем первое слово из ключа или 'unknown'
-        category = product_key.split('_')[0] if '_' in product_key else 'misc'
-
-        status = self.raw_data.add_raw_item(
-            item, 
-            categories=[category], 
-            product_keys=[product_key]
-        )
-        
-        return status in ['created', 'updated']
 
     def get_stats(self) -> Dict:
         """Get combined stats."""

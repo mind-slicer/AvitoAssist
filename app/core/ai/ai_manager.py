@@ -458,20 +458,19 @@ class AIManager(QObject):
         if not self.memory_manager:
             return
 
-        product_key = context.get('product_key')
-        category = context.get('category')
+        product_key = context.get('product_key') # Это может быть использовано внутри add_item для контекста, но сам item должен содержать semantic_data
+        category = context.get('category') # Аналогично
 
         saved_count = 0
         for item in items:
             try:
-                self.memory_manager.add_raw_item(
-                    item=item,
-                    categories=[category] if category else None,
-                    product_keys=[product_key] if product_key else None
-                )
+                # Теперь вызываем унифицированный метод add_item,
+                # который сам выполнит семантический анализ и логирование.
+                # Больше не нужно передавать categories и product_keys отдельно.
+                self.memory_manager.add_item(item=item)
                 saved_count += 1
             except Exception as e:
-                logger.dev(f"Failed to save item to raw_data: {e}", level="DEBUG")
+                logger.dev(f"Failed to save item to raw_data: {e}", level="DEBUG", exc_info=True)
 
         if saved_count > 0:
             logger.info(f"Сохранено {saved_count} items в базу для культивации", token="ai-mem")

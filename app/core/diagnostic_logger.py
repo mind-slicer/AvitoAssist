@@ -1,32 +1,29 @@
-"""
-Diagnostic Logger для отладки категоризации и извлечения продуктов.
-Записывает детальную информацию о процессе обработки каждого элемента.
-"""
-
 import json
 import os
+import threading
 from datetime import datetime
-from typing import Dict, List, Optional
-from app.config import BASE_APP_DIR
+from typing import Dict, Optional
+from app.config import BASE_APP_DIR, ENABLE_RAW_DATA_DIAGNOSTICS
 from app.core.log_manager import logger
 
 class DiagnosticLogger:
-    """
-    Логирует процесс обработки товаров для диагностики.
-    """
-    
-    def __init__(self, enabled: bool = True):
-        self.enabled = enabled
-        self.session_data = []
-        self.session_start = datetime.now()
-        
-        # Путь к файлу лога
-        self.log_dir = os.path.join(BASE_APP_DIR, "diagnostic_logs")
-        os.makedirs(self.log_dir, exist_ok=True)
-        
-        timestamp = self.session_start.strftime("%Y%m%d_%H%M%S")
-        self.log_file = os.path.join(self.log_dir, f"diagnostic_{timestamp}.json")
-        self.readable_file = os.path.join(self.log_dir, f"diagnostic_{timestamp}.txt")
+    _instance = None
+    _lock = threading.Lock()
+    _initialized = False
+
+    def __init__(self, enabled: Optional[bool] = None):
+        if not DiagnosticLogger._initialized:
+            self.enabled = ENABLE_RAW_DATA_DIAGNOSTICS if enabled is None else enabled
+            self.session_data = []
+            self.session_start = datetime.now()
+            self.log_dir = os.path.join(BASE_APP_DIR, "diagnostic_logs")
+            os.makedirs(self.log_dir, exist_ok=True)
+            timestamp = self.session_start.strftime("%Y%m%d_%H%M%S")
+            self.log_file = os.path.join(self.log_dir, f"diagnostic_{timestamp}.json")
+            self.readable_file = os.path.join(self.log_dir, f"diagnostic_{timestamp}.txt")
+            DiagnosticLogger._initialized = True
+        elif enabled is not None:
+            self.enabled = enabled
     
     def log_item_processing(self, 
                            original_item: Dict,
@@ -155,29 +152,24 @@ class DiagnosticLogger:
         self.session_start = datetime.now()
 
 
-# Глобальный экземпляр
 _diagnostic_logger = None
 
 def get_diagnostic_logger(enabled: bool = True) -> DiagnosticLogger:
-    """Получить глобальный экземпляр логгера."""
     global _diagnostic_logger
     if _diagnostic_logger is None:
         _diagnostic_logger = DiagnosticLogger(enabled=enabled)
     return _diagnostic_logger
 
 def enable_diagnostics():
-    """Включить диагностику."""
-    logger = get_diagnostic_logger(enabled=True)
+    logger = get_diagnostic_logger()
     logger.enabled = True
     logger.clear_session()
     return logger
 
 def disable_diagnostics():
-    """Выключить диагностику."""
     logger = get_diagnostic_logger()
     logger.enabled = False
 
 def save_diagnostics():
-    """Сохранить накопленные диагностические данные."""
     logger = get_diagnostic_logger()
     logger.save_session()

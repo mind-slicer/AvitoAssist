@@ -1,5 +1,5 @@
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 
 from app.core.extraction.spacy_extractor import SpacyFeatureExtractor
 
@@ -135,29 +135,30 @@ defect_filter = SmartDefectFilter()
 
 
 class FeatureExtractor:
-    """
-    Фасад для SpacyFeatureExtractor.
-    Очищен от легаси-регулярок.
-    """
+    @staticmethod
+    def extract_semantic_data(title: str, description: str = "", price: int = 0) -> Dict[str, Any]:
+        """
+        Извлекает семантические данные.
+        Теперь принимает description и price для полной совместимости с логикой экстрактора.
+        """
+        # Используем метод с дебагом и отбрасываем дебаг-инфо, чтобы гарантировать 100% идентичность логики
+        result, _ = SpacyFeatureExtractor().extract_semantic_data_with_debug(title, description, price)
+        return result
 
     @staticmethod
-    def extract_semantic_data(title: str) -> Dict[str, Any]:
-        return SpacyFeatureExtractor().extract_semantic_data(title)
-
-    @staticmethod
-    def generate_product_key(title: str) -> str:
-        return SpacyFeatureExtractor().extract_semantic_data(title)['product_key']
-
-    @staticmethod
-    def extract_features(text: str) -> Dict[str, str]:
-        data = SpacyFeatureExtractor().extract_semantic_data(text)
-        return data.get('features', {})
+    def extract_semantic_data_with_debug(title: str, description: str = "", price: int = 0) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Прокси для метода с отладочной информацией."""
+        return SpacyFeatureExtractor().extract_semantic_data_with_debug(title, description, price)
 
     @staticmethod
     def normalize_for_hash(text: str) -> List[str]:
         if not text: return []
         text = re.sub(r'[^\w\s]', '', text.lower())
         return text.split()
+    
+    @staticmethod
+    def is_model_ready() -> bool:
+        return hasattr(SpacyFeatureExtractor(), 'nlp')
 
 
 class TextMatcher:

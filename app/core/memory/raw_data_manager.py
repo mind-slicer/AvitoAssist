@@ -292,7 +292,7 @@ class RawDataManager:
             new_sellers = set()
 
             for entry in items_with_meta:
-                item = entry['item']
+                item = entry['item'] # Предполагаем, что 'item' уже содержит все необходимые данные, включая semantic_data
                 city_str = item.get('city', '').strip()
                 seller_str = item.get('seller_id', '').strip()
 
@@ -324,29 +324,21 @@ class RawDataManager:
                     seller_cache[link_id] = seller_id
 
             for entry in items_with_meta:
-                item = entry['item']
-                cats = entry.get('categories')
-                p_keys = entry.get('product_keys')
+                item = entry['item'] # Получаем элемент, который должен содержать semantic_data
 
-                city_str = item.get('city', '').strip()
-                seller_str = item.get('seller_id', '').strip()
+                # Кэшируем ID города и продавца, чтобы избежать повторных запросов к БД в add_raw_item
+                item['_city_id_cached'] = city_cache.get(item.get('city', '').strip())
+                item['_seller_id_cached'] = seller_cache.get(item.get('seller_id', '').strip())
 
-                item['_city_id_cached'] = city_cache.get(city_str)
-                item['_seller_id_cached'] = seller_cache.get(seller_str)
-
-                self.add_raw_item(
-                    item,
-                    categories=cats,
-                    product_keys=p_keys,
-                    external_cursor=cursor
-                )
+                # Вызываем add_raw_item с обновленной сигнатурой
+                self.add_raw_item(item, external_cursor=cursor)
                 count += 1
 
             conn.commit()
             self._stats_cache.invalidate()
 
         except Exception as e:
-            logger.error(f"Bulk insert failed: {e}")
+            logger.error(f"Bulk insert failed: {e}", exc_info=True)
             conn.rollback()
             count = 0
         finally:
@@ -354,9 +346,7 @@ class RawDataManager:
 
         return count
 
-    def add_raw_item(self, item: Dict, categories: Optional[List[str]] = None,
-                     product_keys: Optional[List[str]] = None,
-                     external_cursor: sqlite3.Cursor = None) -> AddItemResult:
+    def add_raw_item(self, item: Dict, external_cursor: sqlite3.Cursor = None) -> AddItemResult:
         own_connection = external_cursor is None
         conn = None
         try:
@@ -384,39 +374,30 @@ class RawDataManager:
                 seller_db_id = item.pop('_seller_id_cached')
             else:
                 seller_db_id = self.get_or_create_seller(seller_str, cursor)
-            
-            product_id = None
 
+            product_id = None
             semantic = item.get('semantic_data')
-            if semantic and semantic.get('product_key'):
-                p_key = semantic['product_key']
+            if semantic:
+                p_key = semantic.get('product_key', 'misc_unknown')
                 cat_name = semantic.get('category', 'MISC')
                 brand = semantic.get('brand')
                 model = semantic.get('model')
                 clean_name = semantic.get('clean_name')
 
+                cat_id = self.get_or_create_category(cat_name, cursor)
+
                 cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
                 p_row = cursor.fetchone()
                 if p_row:
                     product_id = p_row[0]
                 else:
-                    cat_id = self.get_or_create_category(cat_name, cursor)
                     cursor.execute("""
                         INSERT INTO products (key, display_name, brand, model, category_id)
                         VALUES (?, ?, ?, ?, ?)
                     """, (p_key, clean_name, brand, model, cat_id))
                     product_id = cursor.lastrowid
-            elif product_keys and len(product_keys) > 0:
-                p_key = product_keys[0]
-                cat_name = categories[0] if categories else 'MISC'
-                cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
-                p_row = cursor.fetchone()
-                if p_row:
-                    product_id = p_row[0]
-                else:
-                    cat_id = self.get_or_create_category(cat_name, cursor)
-                    cursor.execute("INSERT INTO products (key, category_id) VALUES (?, ?)", (p_key, cat_id))
-                    product_id = cursor.lastrowid
+            else:
+                logger.warning(f"Элемент '{title}' ({ad_id}) добавлен без 'semantic_data'! Обратитесь к разработчику...")
 
             cursor.execute("""
                 SELECT id, price FROM raw_items WHERE ad_id = ?
@@ -439,16 +420,29 @@ class RawDataManager:
 
                     cursor.execute("""
                         UPDATE raw_items SET
-                            price = ?, views = ?, analyzed_at = ?,
+                            title = ?, price = ?, description = ?, condition = ?,
+                            views = ?, date_text = ?, link = ?, analyzed_at = ?,
                             city_id = ?, seller_table_id = ?, product_id = ?
                         WHERE id = ?
                     """, (
-                        price, item.get('views', 0), current_time,
+                        title, price, item.get('description'), item.get('condition'),
+                        item.get('views', 0), item.get('date_text'), item.get('link'),
+                        current_time,
                         city_id, seller_db_id, product_id,
                         raw_item_id
                     ))
                     status = "updated"
                 else:
+                    cursor.execute("""
+                        UPDATE raw_items SET
+                            analyzed_at = ?, views = ?,
+                            city_id = ?, seller_table_id = ?, product_id = ?
+                        WHERE id = ?
+                    """, (
+                        current_time, item.get('views', 0),
+                        city_id, seller_db_id, product_id,
+                        raw_item_id
+                    ))
                     status = "skipped"
 
                 result = AddItemResult(raw_item_id, status, price_changed)
@@ -456,13 +450,13 @@ class RawDataManager:
                 cursor.execute("""
                     INSERT INTO raw_items (
                         ad_id, title, price, description, condition,
-                        views, date_text, link, analyzed_at,
+                        views, date_text, link, analyzed_at, created_at,
                         city_id, seller_table_id, product_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     ad_id, title, price, item.get('description'), item.get('condition'),
                     item.get('views'), item.get('date_text'), item.get('link'),
-                    current_time,
+                    current_time, current_time,
                     city_id, seller_db_id, product_id
                 ))
                 raw_item_id = cursor.lastrowid
@@ -484,7 +478,7 @@ class RawDataManager:
             return result
 
         except Exception as e:
-            logger.error(f"DB Error in add_raw_item: {e}")
+            logger.error(f"DB Error in add_raw_item: {e}", exc_info=True)
             if own_connection and conn:
                 conn.rollback()
             return AddItemResult(-1, "error", False)
@@ -541,6 +535,41 @@ class RawDataManager:
 
             cursor.execute(query, params)
             return [self._item_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_raw_items_count(self, category: Optional[str] = None,
+                            product_key: Optional[str] = None) -> int:
+        """
+        Возвращает количество сырых элементов в базе данных,
+        опционально фильтруя по категории или ключу продукта.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT COUNT(ri.id)
+                FROM raw_items ri
+                LEFT JOIN products prod ON ri.product_id = prod.id
+                LEFT JOIN categories c ON prod.category_id = c.id
+                WHERE 1=1
+            """
+            params = []
+
+            if category:
+                query += " AND c.name = ?"
+                params.append(category)
+
+            if product_key:
+                query += " AND prod.key = ?"
+                params.append(product_key)
+
+            cursor.execute(query, params)
+            count = cursor.fetchone()[0]
+            return count if count is not None else 0
+        except Exception as e:
+            logger.error(f"Error getting raw items count: {e}", exc_info=True)
+            return 0
         finally:
             conn.close()
 
