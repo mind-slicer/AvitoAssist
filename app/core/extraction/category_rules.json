@@ -5,17 +5,17 @@
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
       "alienware", "matebook", "magicbook", "predator", "helios", "nitro 5", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
-      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "msi gl", "msi gp", 
-      "msi ge", "msi gs", "msi gt", "msi gf", "katana", "sword", "crosshair", 
-      "bravo", "alpha", "delta", "thunderobot", "machenike", "mechrevolution", "gigabyte g5", "gigabyte aorus"
+      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", 
+      "katana", "sword", "crosshair", "bravo", "alpha", "delta", 
+      "thunderobot", "machenike", "mechrevolution", "gigabyte g5", "gigabyte aorus"
     ],
     "weak_keywords": [
       "intel", "core", "ryzen", "nvidia", "geforce", "radeon", "144hz", "ips", "oled", "fhd", "2k"
     ],
     "banned_keywords": [
-      "разбор", "запчасти", "запчасть", "матрица", "клавиатура", "топкейс", 
-      "поддон", "рамка", "петли", "шлейф", "кулер", "вентилятор", "аккумулятор", 
-      "батарея", "блок питания", "зарядка", "коробка", "упаковка", "накладка", "ремонт", "скупка"
+      "матрица", "клавиатура", "топкейс", "поддон", "рамка", "петли", "шлейф", 
+      "кулер", "вентилятор", "аккумулятор", "батарея", "блок питания", "зарядка", 
+      "коробка", "упаковка", "накладка", "скупка"
     ],
     "priority": 100
   },
@@ -47,7 +47,7 @@
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "компьютер", "сборка", "райзер", "riser", 
       "переходник", "кабель", "кулер", "вентилятор", "охлаждение", "кожух", 
-      "бэкплейт", "коробка", "упаковка", "держатель", "подставка", "скупка", "ремонт", "куплю"
+      "бэкплейт", "коробка", "упаковка", "держатель", "подставка", "скупка", "куплю"
     ],
     "priority": 50
   },
@@ -76,7 +76,7 @@
       "socket", "сокет", "чипсет", "ddr4", "ddr5", "atx", "matx", "itx", "wifi", "msi mag", "asus rog", "gigabyte aorus"
     ],
     "banned_keywords": [
-      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "неисправная", "донор", "коробка"
+      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "коробка"
     ],
     "priority": 30
   },
@@ -146,7 +146,7 @@
       "144hz", "165hz", "240hz", "1ms", "ips", "va", "tn", "oled", "fhd", "2k", "4k", "qhd", "uhd", "curved", "изогнутый"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "моноблок", "разбит", "запчасти", "матрица", "кронштейн", "кабель"
+      "ноутбук", "laptop", "моноблок", "кронштейн", "кабель"
     ],
     "priority": 45
   },

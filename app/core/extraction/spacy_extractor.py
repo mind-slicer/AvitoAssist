@@ -182,9 +182,14 @@ class SpacyFeatureExtractor:
     def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
         """
         Версия детектора, возвращающая победителя и таблицу очков для отладки.
-        Полностью дублирует логику _detect_category.
+        Исправлена проблема подстрок и агрессивного бана.
         """
-        raw_text = (raw_title + " " + description[:100]).lower()
+        # Объединяем, но проверяем title приоритетнее
+        raw_text_full = (raw_title + " " + description[:200]).lower()
+        
+        # Предварительно компилируем леммы в set для O(1) поиска
+        lemmas_set = set(lemmas)
+        
         scores = {}
 
         for cat_name, rules in self.category_rules.items():
@@ -196,35 +201,43 @@ class SpacyFeatureExtractor:
             current_score = 0
             is_banned = False
 
-            # 1. Проверка на БАН
+            # 1. Проверка на БАН (СТРОГАЯ)
             for ban_word in banned_keys:
-                if ban_word in lemmas or ban_word in raw_text:
-                    is_banned = True
-                    # Для дебага можно записать отрицательный скор, чтобы видеть бан
-                    scores[cat_name] = -999.0 
-                    break
+                # Используем поиск по токенам для одиночных слов
+                if " " not in ban_word:
+                    if ban_word in lemmas_set:
+                        is_banned = True
+                        break
+                else:
+                    # Для фраз используем regex, чтобы не цеплять части слов
+                    if re.search(r'(?<!\w)' + re.escape(ban_word) + r'(?!\w)', raw_text_full):
+                        is_banned = True
+                        break
             
             if is_banned:
+                scores[cat_name] = -999.0 
                 continue
 
             # 2. Сильные ключи (+100)
             for key in strong_keys:
                 is_match = False
                 if " " in key:
-                    if key in raw_text: is_match = True
-                elif key in lemmas:
+                    # ВАЖНО: Regex search для фраз с границами слов!
+                    # Это лечит "msi ge" внутри "geforce"
+                    if re.search(r'(?<!\w)' + re.escape(key) + r'(?!\w)', raw_text_full):
+                        is_match = True
+                elif key in lemmas_set:
                     is_match = True
                 
                 if is_match:
-                    # УСИЛЕНИЕ ДЛЯ СУЩНОСТЕЙ
                     if cat_name in ['LAPTOP', 'PC_BUILD', 'MONITOR']:
-                        current_score += 300  # Было 100. Теперь Ноутбук перевесит 3 упоминания процессора
+                        current_score += 300 
                     else:
                         current_score += 100
 
             # 3. Слабые ключи (+5)
             for key in weak_keys:
-                if key in lemmas:
+                if key in lemmas_set:
                     current_score += 5
 
             if current_score > 0:
@@ -234,11 +247,9 @@ class SpacyFeatureExtractor:
         scores = self._apply_price_heuristics(scores, price)
 
         if not scores:
-            # Если все по нулям, проверяем, нет ли "забаненных" категорий для отчетности
-            # Если нет даже забаненных, возвращаем пустой MISC
             return "MISC", scores
 
-        # Ищем победителя (исключая забаненных с -999)
+        # Ищем победителя
         valid_scores = {k: v for k, v in scores.items() if v > -100}
         
         if not valid_scores:
@@ -246,7 +257,7 @@ class SpacyFeatureExtractor:
         else:
             best_category = max(valid_scores, key=valid_scores.get)
             
-            # 5. Разрешение конфликтов (Tie Breaking)
+            # Tie Breaking
             if valid_scores.get('PC_BUILD', 0) > 50 and valid_scores.get('PC_BUILD') == valid_scores.get('CASE'):
                  best_category = 'PC_BUILD'
 
@@ -255,37 +266,37 @@ class SpacyFeatureExtractor:
     def _apply_price_heuristics(self, scores: Dict[str, float], price: int) -> Dict[str, float]:
         """
         Корректировка очков на основе цены.
-        Помогает отсеять коробки и аксессуары от реальных товаров.
+        ЖЕСТКАЯ фильтрация мусора.
         """
         if price <= 0:
             return scores
 
-        # Если цена очень низкая (< 1500 руб), это вряд ли рабочий ноутбук или современная видеокарта
+        # Если цена < 1500 руб, это НЕ МОЖЕТ БЫТЬ рабочий ноутбук или ПК
         if price < 1500:
             if 'LAPTOP' in scores:
-                scores['LAPTOP'] -= 200 # Штраф, скорее всего это запчасть или батарея
+                # HARD KILL: Обнуляем счет, чтобы другие категории (ACCESSORY/MISC) выиграли
+                scores['LAPTOP'] = -500.0 
             if 'PC_BUILD' in scores:
-                scores['PC_BUILD'] -= 200
+                scores['PC_BUILD'] = -500.0
             
-            # А вот для аксессуаров, кулеров и старых GPU это нормальная цена
+            # Аксессуары и охлаждение получают буст
             if 'ACCESSORY' in scores:
-                scores['ACCESSORY'] += 50
+                scores['ACCESSORY'] += 200 # Был 50, стал 200, чтобы перебить остатки
             if 'COOLING' in scores:
-                scores['COOLING'] += 50
+                scores['COOLING'] += 100
             
-            # Для GPU ставим под сомнение, но не убиваем полностью (затычки бывают дешевыми)
-            # Но если есть ACCESSORY, даем ему преимущество
-            if 'GPU' in scores and 'ACCESSORY' in scores:
-                scores['GPU'] -= 50
+            # GPU за 500р - это либо труп (нужен condition), либо заглушка
+            # Не убиваем полностью, но снижаем приоритет перед ACCESSORY
+            if 'GPU' in scores:
+                 # Если это ретро-карта, она может стоить 500р, но ACCESSORY все равно вероятнее
+                 scores['GPU'] -= 50
 
-        # Если цена очень высокая (> 20 000 руб), это вряд ли просто кулер
-        if price > 20000:
+        # Если цена очень высокая (> 25 000 руб), это вряд ли просто кулер
+        if price > 25000:
             if 'COOLING' in scores:
-                scores['COOLING'] -= 50
+                scores['COOLING'] -= 100
             if 'ACCESSORY' in scores:
-                scores['ACCESSORY'] -= 50
-            if 'CASE' in scores:
-                scores['CASE'] -= 20
+                scores['ACCESSORY'] -= 100
 
         return scores
 
@@ -362,12 +373,23 @@ class SpacyFeatureExtractor:
         condition_keywords = {
             'new': ['новый', 'запечатать', 'new', 'пломба', 'магазин'],
             'used': ['бу', 'б/у', 'использовать'],
-            'ideal': ['идеал', 'отличный', 'ideal']
+            'ideal': ['идеал', 'отличный', 'ideal'],
+            'for_parts': ['запчасти', 'разбор', 'неисправн', 'донор', 'труп', 'ремонт', 'артефакт', 'отвал']
         }
+        
+        found_cond = False
         for state, keys in condition_keywords.items():
             if any(k in lemmas for k in keys):
                 features['condition'] = state
+                found_cond = True
                 break
+        
+        # Если не нашли по леммам, ищем фразы для "на запчасти" в сыром тексте (для надежности)
+        if not found_cond:
+             raw = doc.text.lower()
+             if 'на запчасти' in raw or 'под восстановление' in raw:
+                 features['condition'] = 'for_parts'
+
         return features
 
     def _extract_build_components(self, title: str, description: str) -> Dict[str, List[str]]:
@@ -434,17 +456,12 @@ class SpacyFeatureExtractor:
     def _generate_product_key(self, category: str, brands: Dict, model_info: Dict, lemmas: List[str]) -> str:
         """
         Генерирует уникальный ключ продукта.
+        Улучшено восстановление бренда по серии.
         """
         cat_lower = category.lower()
 
-        # === СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ СБОРОК ===
         if cat_lower == 'pc_build':
-            # Для сборок не создаем детальный ключ, т.к. это набор компонентов
-            # Вместо этого - общий ключ по назначению
-
-            # Определяем тип сборки
             build_type = 'generic'
-
             if any(w in lemmas for w in ['игровой', 'gaming', 'геймерский', 'game']):
                 build_type = 'gaming'
             elif any(w in lemmas for w in ['офисный', 'office', 'работа', 'учеба']):
@@ -453,18 +470,30 @@ class SpacyFeatureExtractor:
                 build_type = 'workstation'
             elif any(w in lemmas for w in ['mini', 'мини', 'компактный', 'малый']):
                 build_type = 'mini'
-
             return f"pc_build_{build_type}"
 
-        # === ДЛЯ ОСТАЛЬНЫХ КАТЕГОРИЙ - СТАРАЯ ЛОГИКА ===
         vendor = brands.get('vendor', '')
         chip = brands.get('chip', '')
+        series = model_info.get('series', '')
 
-        # Приоритет: chip > vendor
+        # Fallback: Если нет бренда, но есть серия, пытаемся угадать бренд
+        if not chip and not vendor and series:
+            if series in ['rtx', 'gtx', 'geforce', 'titan']:
+                chip = 'nvidia'
+            elif series in ['rx', 'radeon']:
+                chip = 'amd'
+            elif series in ['core', 'pentium', 'celeron', 'xeon', 'arc']:
+                chip = 'intel'
+            elif series in ['ryzen', 'athlon', 'threadripper', 'epyc']:
+                chip = 'amd'
+
+        # Приоритет: chip > vendor (для железа)
         brand_part = chip if chip else vendor
 
         # Модель
-        model_part = model_info.get('short_model', '')
+        model_part = model_info.get('model', '') # Используем только цифровую часть для ключа, чтобы меньше дублей
+        if not model_part:
+             model_part = model_info.get('series', '')
 
         if not brand_part and not model_part:
             return f"{cat_lower}_unknown"
@@ -477,8 +506,6 @@ class SpacyFeatureExtractor:
             parts.append(model_part.lower())
 
         key = '_'.join(parts)
-
-        # Очистка
         key = re.sub(r'[^\w_]', '', key)
         key = re.sub(r'_+', '_', key)
 
