@@ -5,19 +5,16 @@
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
       "alienware", "matebook", "magicbook", "predator", "helios", "nitro 5", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
-      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", 
+      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "prime", 
       "katana", "sword", "crosshair", "bravo", "alpha", "delta", 
-      "thunderobot", "machenike", "mechrevolution", "gigabyte g5", "gigabyte aorus"
+      "thunderobot", "machenike", "machcreator", "mechrevolution", "gigabyte g5", "gigabyte aorus",
+      "13.3\"", "13.3", "14\"", "14", "15.4\"", "15.4", "15.6\"", "15.6", "16\"", "16", "16.1\"", "16.1", "17.3\"", "17.3"
     ],
     "weak_keywords": [
-      "intel", "core", "ryzen", "nvidia", "geforce", "radeon", "144hz", "ips", "oled", "fhd", "2k"
+      "intel", "core", "ryzen", "nvidia", "geforce", "radeon", "n100", "n200", "144hz", "ips", "oled", "fhd", "2k", "16gb", "512gb"
     ],
-    "banned_keywords": [
-      "матрица", "клавиатура", "топкейс", "поддон", "рамка", "петли", "шлейф", 
-      "кулер", "вентилятор", "аккумулятор", "батарея", "блок питания", "зарядка", 
-      "коробка", "упаковка", "накладка", "скупка"
-    ],
-    "priority": 100
+    "banned_keywords": [],
+    "priority": 120
   },
   "PC_BUILD": {
     "strong_keywords": [
@@ -28,28 +25,20 @@
     "weak_keywords": [
       "корпус", "case", "rgb", "tower", "win10", "win11"
     ],
-    "banned_keywords": [
-      "видеокарта", "процессор", "материнская", "оперативная", "блок питания", 
-      "кулер", "вентилятор", "монитор", "ноутбук", "скупка", "выкуп", "куплю", 
-      "аренда", "настройка", "ремонт", "обслуживание", "установка", "комплект", "связка"
-    ],
+    "banned_keywords": ["ноутбук", "laptop", "видеокарт", "материнск плат", "процессор отдельн"],
     "priority": 95
   },
   "GPU": {
     "strong_keywords": [
       "видеокарта", "gpu", "graphics card", "видеоадаптер", "видюха", 
-      "rtx", "gtx", "rx", "arc", "quadro", "tesla", "titan", 
+      "rtx", "gtx", "rx", "arc", "hd", "quadro", "tesla", "titan", 
       "geforce", "radeon", "sapphire", "palit", "zotac", "powercolor", "inno3d", "kfa2"
     ],
     "weak_keywords": [
-      "nvidia", "amd", "intel", "gddr6", "gddr6x", "gddr5", "hbm", "pci-e", "gaming oc", "ventus", "eagle"
+      "nvidia", "amd", "intel", "gddr7", "gddr6", "gddr6x", "gddr5", "hbm", "pci-e", "gaming oc", "ventus", "eagle"
     ],
-    "banned_keywords": [
-      "ноутбук", "laptop", "системный", "компьютер", "сборка", "райзер", "riser", 
-      "переходник", "кабель", "кулер", "вентилятор", "охлаждение", "кожух", 
-      "бэкплейт", "коробка", "упаковка", "держатель", "подставка", "скупка", "куплю"
-    ],
-    "priority": 50
+    "banned_keywords": ["ноутбук", "laptop", "материнск", "процессор", "блок питания", "райзер", "кулер вентилятор"],
+    "priority": 45
   },
   "CPU": {
     "strong_keywords": [
@@ -62,13 +51,14 @@
     ],
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "компьютер", "сборка", "материнская", 
-      "плата", "комплект", "кулер", "вентилятор", "скупка"
+      "плата", "комплект", "кулер", "вентилятор", "скупка", 
+      "macbook", "inspiron", "aspire", "ideapad", "zenbook"
     ],
     "priority": 40
   },
   "MOTHERBOARD": {
     "strong_keywords": [
-      "материнская", "плата", "motherboard", "mainboard", "mobo", "материнка", "мать",
+      "материнская", "плата", "motherboard", "mainboard", "mobo", "материнка", "мать", "матплата",
       "z790", "z690", "b760", "b660", "h610", "x670", "b650", "x570", "b550", "b450", 
       "a520", "a320", "lga1700", "lga1200", "am4", "am5", "x99", "x79"
     ],
@@ -165,8 +155,8 @@
   },
   "ACCESSORY": {
     "strong_keywords": [
-      "райзер", "riser", "переходник", "кабель", "шлейф", "мост", "sli bridge", 
-      "crossfire", "коробка", "упаковка", "держатель", "подставка", "кронштейн", 
+      "коробка", "райзер", "riser", "переходник", "кабель", "шлейф", "мост", "sli bridge", 
+      "crossfire", "box only", "пустая коробка", "упаковка", "держатель", "подставка", "кронштейн", 
       "термопаста", "термопрокладки", "винтики", "крепление", "заглушка", "салазки",
       "док станция", "хаб", "usb hub", "контроллер", "пульт"
     ],

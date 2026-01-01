@@ -4,6 +4,7 @@ import os
 import re
 import hashlib
 import time
+import threading
 from typing import List, Dict, Optional
 from datetime import datetime
 from collections import Counter
@@ -48,12 +49,15 @@ class AddItemResult:
 
 
 class RawDataManager:
-    SCHEMA_VERSION = 6
+    SCHEMA_VERSION = 7
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or os.path.join(BASE_APP_DIR, self.DB_FILENAME)
         self._stats_cache = StatisticsCache(ttl_seconds=60)
+        self._city_cache = {}
+        self._seller_cache = {}
+        self._cache_lock = threading.Lock()
         self._ensure_db_exists()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -67,6 +71,7 @@ class RawDataManager:
         conn.execute("PRAGMA temp_store = MEMORY")
         
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 10000")
         return conn
 
     def _ensure_db_exists(self):
@@ -75,7 +80,7 @@ class RawDataManager:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
             if cursor.fetchone() is None:
-                logger.info("Creating fresh PURE v5 database schema")
+                logger.info("Creating fresh PURE v7 database schema")
                 cursor.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY DEFAULT 1)")
                 cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (self.SCHEMA_VERSION,))
                 self._create_all_tables(cursor)
@@ -181,6 +186,7 @@ class RawDataManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_item_date ON price_history(raw_item_id, recorded_at DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_category_brand ON products(category_id, brand, display_name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_valid_prices ON raw_items(price, city_id) WHERE price > 0")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id_analyzed ON raw_items(ad_id, analyzed_at DESC)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
         if from_version < 2:
@@ -219,34 +225,53 @@ class RawDataManager:
             except Exception: pass
         if from_version < 6:
             try:
-                # Новые индексы
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_item_date ON price_history(raw_item_id, recorded_at DESC)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_category_brand ON products(category_id, brand, display_name)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_valid_prices ON raw_items(price, city_id) WHERE price > 0")
                 
-                # Опционально: удаление raw_data (можно оставить для совместимости)
-                # cursor.execute("ALTER TABLE raw_items DROP COLUMN raw_data")  # SQLite не поддерживает DROP COLUMN напрямую
                 logger.info("Схема обновлена до v6: новые индексы добавлены, raw_data deprecated")
             except Exception as e:
                 logger.error(f"Migration to v6 failed: {e}")
+        if from_version < 7:
+            try:
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id_analyzed ON raw_items(ad_id, analyzed_at DESC)")
+                logger.info("Миграция v7: добавлен composite index на (ad_id, analyzed_at)")
+            except Exception as e:
+                logger.error(f"Migration to v7 failed: {e}")
 
     def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
-        if not name: return None
-        clean_name = name.strip()
-        cursor.execute("SELECT id FROM cities WHERE name = ?", (clean_name,))
+        with self._cache_lock:
+            if name in self._city_cache:
+                return self._city_cache[name]
+
+        cursor.execute("SELECT id FROM cities WHERE name = ?", (name,))
         row = cursor.fetchone()
-        if row: return row[0]
-        cursor.execute("INSERT INTO cities (name) VALUES (?)", (clean_name,))
-        return cursor.lastrowid
+        if row:
+            res = row[0]
+        else:
+            cursor.execute("INSERT INTO cities (name) VALUES (?)", (name,))
+            res = cursor.lastrowid
+
+        with self._cache_lock:
+            self._city_cache[name] = res
+        return res
 
     def get_or_create_seller(self, seller_id_str: str, cursor: sqlite3.Cursor) -> int:
-        if not seller_id_str: return None
-        clean_id = seller_id_str.strip()
-        cursor.execute("SELECT id FROM sellers WHERE seller_link_id = ?", (clean_id,))
+        with self._cache_lock:
+            if seller_id_str in self._seller_cache:
+                return self._seller_cache[seller_id_str]
+
+        cursor.execute("SELECT id FROM sellers WHERE seller_link_id = ?", (seller_id_str,))
         row = cursor.fetchone()
-        if row: return row[0]
-        cursor.execute("INSERT INTO sellers (seller_link_id) VALUES (?)", (clean_id,))
-        return cursor.lastrowid
+        if row:
+            res = row[0]
+        else:
+            cursor.execute("INSERT INTO sellers (seller_link_id) VALUES (?)", (seller_id_str,))
+            res = cursor.lastrowid
+
+        with self._cache_lock:
+            self._seller_cache[seller_id_str] = res
+        return res
 
     def get_or_create_category(self, name: str, cursor: sqlite3.Cursor = None) -> int:
         own_cursor = cursor is None
@@ -278,12 +303,15 @@ class RawDataManager:
         try:
             cursor.execute("BEGIN TRANSACTION")
 
-            city_cache = {}
+            # Загружаем кэши с блокировкой
+            with self._cache_lock:
+                city_cache = self._city_cache.copy()
+                seller_cache = self._seller_cache.copy()
+
             cursor.execute("SELECT name, id FROM cities")
             for name, city_id in cursor.fetchall():
                 city_cache[name] = city_id
 
-            seller_cache = {}
             cursor.execute("SELECT seller_link_id, id FROM sellers")
             for link_id, seller_id in cursor.fetchall():
                 seller_cache[link_id] = seller_id
@@ -291,8 +319,26 @@ class RawDataManager:
             new_cities = set()
             new_sellers = set()
 
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверка дублей внутри батча
+            seen_ad_ids = set()
+            unique_items = []
+
             for entry in items_with_meta:
-                item = entry['item'] # Предполагаем, что 'item' уже содержит все необходимые данные, включая semantic_data
+                item = entry['item']
+                ad_id = str(item.get('id') or item.get('ad_id') or self._extract_ad_id(item.get('link', '')) or "")
+
+                if not ad_id:
+                    unique_str = f"{item.get('title')}_{item.get('seller_id')}_{item.get('city')}"
+                    ad_id = hashlib.md5(unique_str.encode('utf-8')).hexdigest()
+
+                # Пропускаем дубли в батче
+                if ad_id in seen_ad_ids:
+                    logger.warning(f"Дубль в батче (ad_id={ad_id[:8]}...), пропущен")
+                    continue
+                
+                seen_ad_ids.add(ad_id)
+                unique_items.append(entry)
+
                 city_str = item.get('city', '').strip()
                 seller_str = item.get('seller_id', '').strip()
 
@@ -323,19 +369,23 @@ class RawDataManager:
                 for link_id, seller_id in cursor.fetchall():
                     seller_cache[link_id] = seller_id
 
-            for entry in items_with_meta:
-                item = entry['item'] # Получаем элемент, который должен содержать semantic_data
+            # Обновляем глобальные кэши
+            with self._cache_lock:
+                self._city_cache.update(city_cache)
+                self._seller_cache.update(seller_cache)
 
-                # Кэшируем ID города и продавца, чтобы избежать повторных запросов к БД в add_raw_item
+            for entry in unique_items:
+                item = entry['item']
                 item['_city_id_cached'] = city_cache.get(item.get('city', '').strip())
                 item['_seller_id_cached'] = seller_cache.get(item.get('seller_id', '').strip())
 
-                # Вызываем add_raw_item с обновленной сигнатурой
-                self.add_raw_item(item, external_cursor=cursor)
-                count += 1
+                result = self.add_raw_item(item, external_cursor=cursor)
+                if result.status in ('created', 'updated'):
+                    count += 1
 
             conn.commit()
             self._stats_cache.invalidate()
+            logger.success(f"Bulk insert: добавлено {count}/{len(unique_items)} уникальных элементов")
 
         except Exception as e:
             logger.error(f"Bulk insert failed: {e}", exc_info=True)
@@ -349,6 +399,7 @@ class RawDataManager:
     def add_raw_item(self, item: Dict, external_cursor: sqlite3.Cursor = None) -> AddItemResult:
         own_connection = external_cursor is None
         conn = None
+
         try:
             if own_connection:
                 conn = self._get_connection()
@@ -370,6 +421,7 @@ class RawDataManager:
                 city_id = item.pop('_city_id_cached')
             else:
                 city_id = self.get_or_create_city(city_str, cursor)
+
             if '_seller_id_cached' in item:
                 seller_db_id = item.pop('_seller_id_cached')
             else:
@@ -377,40 +429,57 @@ class RawDataManager:
 
             product_id = None
             semantic = item.get('semantic_data')
-            if semantic:
-                p_key = semantic.get('product_key', 'misc_unknown')
-                cat_name = semantic.get('category', 'MISC')
-                brand = semantic.get('brand')
-                model = semantic.get('model')
-                clean_name = semantic.get('clean_name')
 
-                cat_id = self.get_or_create_category(cat_name, cursor)
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Блокируем элементы без semantic_data
+            if not semantic:
+                logger.error(f"Элемент '{title}' ({ad_id}) добавлен БЕЗ 'semantic_data'! БЛОКИРОВАН.")
+                return AddItemResult(-1, "error", False)
 
-                cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
-                p_row = cursor.fetchone()
-                if p_row:
-                    product_id = p_row[0]
-                else:
-                    cursor.execute("""
-                        INSERT INTO products (key, display_name, brand, model, category_id)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (p_key, clean_name, brand, model, cat_id))
-                    product_id = cursor.lastrowid
+            p_key = semantic.get('product_key', 'misc_unknown')
+            cat_name = semantic.get('category', 'MISC')
+            brand = semantic.get('brand')
+            model = semantic.get('model')
+            clean_name = semantic.get('clean_name')
+
+            cat_id = self.get_or_create_category(cat_name, cursor)
+
+            cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
+            p_row = cursor.fetchone()
+            if p_row:
+                product_id = p_row[0]
             else:
-                logger.warning(f"Элемент '{title}' ({ad_id}) добавлен без 'semantic_data'! Обратитесь к разработчику...")
+                cursor.execute("""
+                    INSERT INTO products (key, display_name, brand, model, category_id)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (p_key, clean_name, brand, model, cat_id))
+                product_id = cursor.lastrowid
 
+            # Используем новый composite index
             cursor.execute("""
-                SELECT id, price FROM raw_items WHERE ad_id = ?
+                SELECT id, price, analyzed_at FROM raw_items WHERE ad_id = ?
+                ORDER BY analyzed_at DESC LIMIT 1
             """, (ad_id,))
             existing = cursor.fetchone()
 
+            from datetime import datetime, timedelta
             current_time = datetime.now().isoformat()
 
             if existing:
                 raw_item_id = existing[0]
                 old_price = existing[1]
+                last_analyzed = existing[2]
 
-                price_changed = (old_price != price and price > 0)
+                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Не обновляем, если обновлялось менее 60 секунд назад
+                if last_analyzed:
+                    try:
+                        last_dt = datetime.fromisoformat(last_analyzed)
+                        if datetime.now() - last_dt < timedelta(seconds=60):
+                            return AddItemResult(raw_item_id, "skipped_recent", False)
+                    except:
+                        pass
+                    
+                price_diff_percent = abs(old_price - price) / old_price if old_price > 0 else 0
+                price_changed = (price_diff_percent >= 0.01 and price > 0)
 
                 if price_changed:
                     cursor.execute("""
@@ -420,9 +489,9 @@ class RawDataManager:
 
                     cursor.execute("""
                         UPDATE raw_items SET
-                            title = ?, price = ?, description = ?, condition = ?,
-                            views = ?, date_text = ?, link = ?, analyzed_at = ?,
-                            city_id = ?, seller_table_id = ?, product_id = ?
+                        title = ?, price = ?, description = ?, condition = ?,
+                        views = ?, date_text = ?, link = ?, analyzed_at = ?,
+                        city_id = ?, seller_table_id = ?, product_id = ?
                         WHERE id = ?
                     """, (
                         title, price, item.get('description'), item.get('condition'),
@@ -435,8 +504,8 @@ class RawDataManager:
                 else:
                     cursor.execute("""
                         UPDATE raw_items SET
-                            analyzed_at = ?, views = ?,
-                            city_id = ?, seller_table_id = ?, product_id = ?
+                        analyzed_at = ?, views = ?,
+                        city_id = ?, seller_table_id = ?, product_id = ?
                         WHERE id = ?
                     """, (
                         current_time, item.get('views', 0),
@@ -449,9 +518,9 @@ class RawDataManager:
             else:
                 cursor.execute("""
                     INSERT INTO raw_items (
-                        ad_id, title, price, description, condition,
-                        views, date_text, link, analyzed_at, created_at,
-                        city_id, seller_table_id, product_id
+                    ad_id, title, price, description, condition,
+                    views, date_text, link, analyzed_at, created_at,
+                    city_id, seller_table_id, product_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     ad_id, title, price, item.get('description'), item.get('condition'),
@@ -651,6 +720,19 @@ class RawDataManager:
                     if w not in stop_words:
                         word_counter[w] += 1
             return [w for w, count in word_counter.most_common(limit)]
+        finally:
+            conn.close()
+
+    def cleanup_old_data(self, days=180):
+        """Удаление старой истории цен [file:4]."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM price_history WHERE recorded_at < date('now', ?)", 
+                (f'-{days} days',)
+            )
+            conn.commit()
         finally:
             conn.close()
 

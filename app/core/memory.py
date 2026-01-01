@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -15,15 +16,14 @@ class MemoryManager:
         self.raw_data = RawDataManager()
         self.knowledge = KnowledgeManager()
         self.raw_data.cleanup_old_actions(keep_last=500)
+        self._processing_lock = threading.Lock()
         logger.success("MemoryManager initialized with persistent storage")
-
-    # === Delegated methods for raw data ===
 
     def add_items_bulk(self, items: List[Dict]) -> int:
         if not items:
             return 0
 
-        diag = get_diagnostic_logger() 
+        diag = get_diagnostic_logger()
         FeatureExtractor.extract_semantic_data("")
 
         import time
@@ -35,75 +35,103 @@ class MemoryManager:
                 return 0
             time.sleep(0.1)
 
-        prepared_data = []
-        import os
-        max_workers = min(4, os.cpu_count() or 1, len(items))
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обработка батчами по 500 элементов
+        BATCH_SIZE = 500
+        total_added = 0
+        
+        for batch_start in range(0, len(items), BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, len(items))
+            batch = items[batch_start:batch_end]
+            
+            logger.info(f"Обработка батча {batch_start+1}-{batch_end} из {len(items)}")
+            
+            prepared_data = []
+            import os
+            max_workers = min(4, os.cpu_count() or 1, len(batch))
+            
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    def get_price_safe(itm):
+                        try:
+                            p = itm.get('price')
+                            return int(p) if p is not None else 0
+                        except (ValueError, TypeError):
+                            return 0
 
-        logger.info(f"NLP обработка {len(items)} элементов в {max_workers} потоков...")
+                    future_to_item = {
+                        executor.submit(
+                            FeatureExtractor.extract_semantic_data_with_debug,
+                            item.get('title', ''),
+                            item.get('description', ''),
+                            get_price_safe(item)
+                        ): item
+                        for item in batch
+                    }
 
-        try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                def get_price_safe(itm):
-                    try:
-                        p = itm.get('price')
-                        return int(p) if p is not None else 0
-                    except (ValueError, TypeError):
-                        return 0
+                    failed_count = 0
+                    for future in as_completed(future_to_item):
+                        original_item = future_to_item[future]
+                        try:
+                            semantic_data, debug_data = future.result()
+                            
+                            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Валидация перед добавлением
+                            if not self._validate_semantic_data(semantic_data, original_item.get('title', '')):
+                                # Retry NLP один раз
+                                logger.info(f"Retry NLP для: '{original_item.get('title', '')[:50]}'")
+                                try:
+                                    semantic_data, debug_data = FeatureExtractor.extract_semantic_data_with_debug(
+                                        original_item.get('title', ''),
+                                        original_item.get('description', ''),
+                                        get_price_safe(original_item)
+                                    )
+                                    if not self._validate_semantic_data(semantic_data, original_item.get('title', '')):
+                                        logger.error(f"Retry не помог для: '{original_item.get('title', '')[:30]}'")
+                                        failed_count += 1
+                                        continue
+                                except Exception as retry_e:
+                                    logger.error(f"Retry NLP failed: {retry_e}")
+                                    failed_count += 1
+                                    continue
+                            
+                            item_for_db = original_item.copy()
+                            item_for_db['semantic_data'] = semantic_data
+                            prepared_data.append({'item': item_for_db})
 
-                future_to_item = {
-                    executor.submit(
-                        FeatureExtractor.extract_semantic_data_with_debug,
-                        item.get('title', ''),
-                        item.get('description', ''),
-                        get_price_safe(item)
-                    ): item
-                    for item in items
-                }
+                            if diag.enabled:
+                                diag.log_item_processing(
+                                    original_item=original_item,
+                                    semantic_data=semantic_data,
+                                    intermediate_data=debug_data
+                                )
+                        except Exception as e:
+                            logger.error(f"NLP error for item '{original_item.get('title', '')[:50]}': {e}")
+                            failed_count += 1
+                            # НЕ добавляем fallback - пропускаем элемент
 
-                for future in as_completed(future_to_item):
-                    original_item = future_to_item[future]
-                    try:
-                        semantic_data, debug_data = future.result()
-                        item_for_db = original_item.copy()
-                        item_for_db['semantic_data'] = semantic_data
+                    # Предупреждение, если много ошибок
+                    if failed_count > len(batch) * 0.3:  # Более 30% ошибок
+                        logger.error(f"КРИТИЧЕСКАЯ СИТУАЦИЯ: {failed_count}/{len(batch)} элементов упали с ошибкой NLP!")
+                        
+            except Exception as e:
+                logger.error(f"Parallel NLP failed для батча: {e}", exc_info=True)
+                continue
 
-                        prepared_data.append({'item': item_for_db})
+            if prepared_data:
+                count = self.raw_data.add_raw_items_bulk(prepared_data)
+                total_added += count
+                logger.success(f"Батч {batch_start+1}-{batch_end}: добавлено {count} элементов")
+                
+                if diag.enabled:
+                    diag.save_session()
 
-                        if diag.enabled:
-                            diag.log_item_processing(
-                                original_item=original_item,
-                                semantic_data=semantic_data,
-                                intermediate_data=debug_data
-                            )
-
-                    except Exception as e:
-                        logger.error(f"NLP error for item '{original_item.get('title', '')[:50]}': {e}")
-                        item_for_db = original_item.copy()
-                        item_for_db['semantic_data'] = {
-                            'category': 'MISC', 'product_key': 'misc_unknown',
-                            'cluster_key': 'misc_general', 'entity_type': 'PRODUCT',
-                            'clean_name': 'Unknown', 'brand': '', 'model': '',
-                            'features': {}, 'raw_tokens': []
-                        }
-                        prepared_data.append({'item': item_for_db})
-
-        except Exception as e:
-            logger.error(f"Parallel NLP failed: {e}", exc_info=True)
-            return 0
-
-        if prepared_data:
-            count = self.raw_data.add_raw_items_bulk(prepared_data)
-            if diag.enabled:
-                diag.save_session()
-            return count
-
-        return 0
+        logger.success(f"Всего добавлено: {total_added}/{len(items)} элементов")
+        return total_added
 
     def add_item(self, item: Dict) -> bool:
         diag = get_diagnostic_logger()
         FeatureExtractor.extract_semantic_data("")
-        original_item = item.copy()
 
+        original_item = item.copy()
         price_safe = 0
         try:
             p = item.get('price')
@@ -112,14 +140,35 @@ class MemoryManager:
         except (ValueError, TypeError):
             pass
 
-        # Выполняем семантический анализ
-        semantic_data, debug_data = FeatureExtractor.extract_semantic_data_with_debug(
-            item.get('title', ''),
-            item.get('description', ''),
-            price_safe
-        )
-        item_for_db = item.copy() # Копируем, чтобы не менять исходный item
-        item_for_db['semantic_data'] = semantic_data # Добавляем семантические данные
+        # Выполняем семантический анализ с retry
+        max_retries = 2
+        semantic_data = None
+        debug_data = None
+        
+        for attempt in range(max_retries):
+            try:
+                semantic_data, debug_data = FeatureExtractor.extract_semantic_data_with_debug(
+                    item.get('title', ''),
+                    item.get('description', ''),
+                    price_safe
+                )
+                
+                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Валидация
+                if self._validate_semantic_data(semantic_data, item.get('title', '')):
+                    break
+                else:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Попытка {attempt+1}/{max_retries} не прошла валидацию")
+                    else:
+                        logger.error(f"Не удалось получить валидный semantic_data для: '{item.get('title', '')[:50]}'")
+                        return False
+            except Exception as e:
+                logger.error(f"NLP error (attempt {attempt+1}): {e}")
+                if attempt == max_retries - 1:
+                    return False
+
+        item_for_db = item.copy()
+        item_for_db['semantic_data'] = semantic_data
 
         if diag.enabled:
             diag.log_item_processing(
@@ -129,18 +178,16 @@ class MemoryManager:
                 db_result={'status': 'processing'}
             )
 
-        # Вызываем RawDataManager.add_raw_item с обновленной сигнатурой
         result = self.raw_data.add_raw_item(item_for_db)
 
-        # Обновляем диагностический лог финальным результатом БД
         if diag.enabled:
             diag.log_item_processing(
                 original_item=original_item,
-                semantic_data=semantic_data, # Повторно используем ранее полученные семантические данные
+                semantic_data=semantic_data,
                 intermediate_data=debug_data,
                 db_result={'status': str(result), 'item_id': result.item_id, 'product_id': semantic_data.get('product_key')}
             )
-            diag.save_session() # Сохраняем после каждого элемента при одиночном добавлении
+            diag.save_session()
 
         return result.status in ['created', 'updated']
 
@@ -194,7 +241,34 @@ class MemoryManager:
         """Get raw data statistics."""
         return self.raw_data.get_statistics()
 
-    # === Delegated methods for knowledge ===
+    def _validate_semantic_data(self, semantic_data: Dict, item_title: str) -> bool:
+        if not semantic_data:
+            logger.warning(f"Пустой semantic_data для элемента: '{item_title[:50]}'")
+            return False
+        
+        required_fields = ['category', 'product_key', 'entity_type', 'clean_name']
+        for field in required_fields:
+            if field not in semantic_data or not semantic_data[field]:
+                logger.warning(f"Отсутствует поле '{field}' в semantic_data для: '{item_title[:50]}'")
+                return False
+        
+        # Проверка, что это не fallback-значения
+        if semantic_data['category'] == 'MISC' and semantic_data['product_key'] == 'misc_unknown':
+            critical_categories = ['GPU', 'CPU', 'LAPTOP', 'MOTHERBOARD', 'RAM']
+            if semantic_data['category'] in critical_categories:
+                model = semantic_data.get('features', {}).get('model', '') or semantic_data.get('model', '')
+                brand = semantic_data.get('brand', '')
+
+                # Если нет ни бренда, ни модели - блокируем
+                if not model and not brand:
+                    logger.warning(f"Элемент '{item_title[:50]}' категории {semantic_data['category']} без бренда и модели. БЛОКИРОВАН.")
+                    return False
+        
+        if len(semantic_data['product_key']) < 5:  # Например, "gpu_" = 4 символа
+            logger.warning(f"Элемент '{item_title[:50]}' имеет слишком короткий product_key: '{semantic_data['product_key']}'")
+            return False
+
+        return True
 
     def add_knowledge(self, chunk_type: str, chunk_key: str, title: str,
                       content: Optional[Dict] = None, status: str = 'PENDING',
@@ -251,8 +325,6 @@ class MemoryManager:
         """Get knowledge statistics."""
         return self.knowledge.get_statistics()
 
-    # === RAG methods ===
-
     def get_rag_context_for_item(self, title: str) -> Optional[Dict]:
         """Get RAG context for item."""
         return self.knowledge.get_rag_context_for_item(title)
@@ -260,8 +332,6 @@ class MemoryManager:
     def get_rag_status(self) -> Dict:
         """Get RAG status."""
         return self.knowledge.get_rag_status()
-
-    # === Legacy/statistics methods (for backward compatibility) ===
 
     def get_stats(self) -> Dict:
         """Get combined stats."""
@@ -281,8 +351,6 @@ class MemoryManager:
         """Find similar items (for cultivation prompts)."""
         return self.raw_data.get_items_for_product_key(chunk_key)[:limit]
 
-    # === Export/Import ===
-
     def export_all(self, base_dir: str = BASE_APP_DIR):
         """Export all data to JSON files."""
         raw_path = os.path.join(base_dir, "export_raw_data.json")
@@ -301,8 +369,6 @@ class MemoryManager:
             self.raw_data.import_from_json(raw_path, clear_first)
         if knowledge_path and os.path.exists(knowledge_path):
             self.knowledge.import_from_json(knowledge_path, clear_first)
-
-    # === Reset ===
 
     def reset_all(self):
         """Reset all data."""
