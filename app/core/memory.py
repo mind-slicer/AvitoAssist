@@ -242,31 +242,117 @@ class MemoryManager:
         return self.raw_data.get_statistics()
 
     def _validate_semantic_data(self, semantic_data: Dict, item_title: str) -> bool:
+        """
+        РАСШИРЕННАЯ ВАЛИДАЦИЯ для ФАЗЫ 1.
+        Проверяет не только обязательные поля, но и качество данных.
+
+        КЛЮЧЕВЫЕ ПРОВЕРКИ:
+        1. Product Key не должен быть пустым или одна категория
+        2. Product Key не должен заканчиваться на подчёркивание
+        3. MISC категория только для неуверенных случаев
+        4. Критические категории должны иметь либо бренд, либо модель
+        5. Clean Name не должен быть generic
+        6. ACCESSORY может быть без бренда/модели, но не без clean_name
+        7. Product Key должен быть достаточно информативным (min 5 символов)
+        """
+
         if not semantic_data:
             logger.warning(f"Пустой semantic_data для элемента: '{item_title[:50]}'")
             return False
-        
+
         required_fields = ['category', 'product_key', 'entity_type', 'clean_name']
         for field in required_fields:
             if field not in semantic_data or not semantic_data[field]:
                 logger.warning(f"Отсутствует поле '{field}' в semantic_data для: '{item_title[:50]}'")
                 return False
-        
-        # Проверка, что это не fallback-значения
-        if semantic_data['category'] == 'MISC' and semantic_data['product_key'] == 'misc_unknown':
-            critical_categories = ['GPU', 'CPU', 'LAPTOP', 'MOTHERBOARD', 'RAM']
-            if semantic_data['category'] in critical_categories:
-                model = semantic_data.get('features', {}).get('model', '') or semantic_data.get('model', '')
-                brand = semantic_data.get('brand', '')
 
-                # Если нет ни бренда, ни модели - блокируем
-                if not model and not brand:
-                    logger.warning(f"Элемент '{item_title[:50]}' категории {semantic_data['category']} без бренда и модели. БЛОКИРОВАН.")
-                    return False
-        
-        if len(semantic_data['product_key']) < 5:  # Например, "gpu_" = 4 символа
-            logger.warning(f"Элемент '{item_title[:50]}' имеет слишком короткий product_key: '{semantic_data['product_key']}'")
+        category = semantic_data.get('category', '')
+        product_key = semantic_data.get('product_key', '')
+        model = semantic_data.get('model', '') or semantic_data.get('features', {}).get('model', '')
+        brand = semantic_data.get('brand', '')
+        clean_name = semantic_data.get('clean_name', '')
+
+        # ✅ НОВОЕ: Проверка 1 - Product Key не должен быть пустой или одна категория
+        if not product_key or product_key == category.lower():
+            logger.warning(
+                f"Элемент '{item_title[:50]}' имеет невалидный product_key: '{product_key}' "
+                f"(равен категории или пуст)"
+            )
             return False
+
+        # ✅ НОВОЕ: Проверка 2 - Product Key не должен заканчиваться на подчёркивание
+        if product_key.endswith('_') or product_key.startswith('_'):
+            logger.warning(
+                f"Элемент '{item_title[:50]}' имеет некорректный product_key: '{product_key}' "
+                f"(starts/ends with _)"
+            )
+            return False
+
+        # ✅ НОВОЕ: Проверка 3 - MISC категория только для неуверенных случаев
+        if category == 'MISC' and product_key == 'misc_unknown':
+            # Если это явно не MISC по заголовку - это ошибка
+            if len(item_title) > 15 and not any(
+                word in item_title.lower() for word in ['прочее', 'разное', 'другое', 'misc']
+            ):
+                logger.warning(
+                    f"Элемент '{item_title[:50]}' неправильно категоризирован как MISC_UNKNOWN"
+                )
+                return False
+
+        # ✅ НОВОЕ: Проверка 4 - Критические категории должны иметь либо бренд, либо модель
+        critical_categories = ['GPU', 'CPU', 'LAPTOP', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU']
+        if category in critical_categories:
+            if not model and not brand:
+                logger.warning(
+                    f"Элемент '{item_title[:50]}' (категория {category}) без бренда И модели. "
+                    f"БЛОКИРОВАН."
+                )
+                return False
+
+            # ✅ НОВОЕ: Убедимся, что clean_name не просто категория
+            if clean_name == category or clean_name == f"{category} (Unknown Model)":
+                logger.warning(
+                    f"Элемент '{item_title[:50]}' имеет generic clean_name: '{clean_name}' "
+                    f"(категория = {category})"
+                )
+                return False
+
+        # ✅ НОВОЕ: Проверка 5 - ACCESSORY может быть без бренда/модели, но не без clean_name
+        if category == 'ACCESSORY':
+            if clean_name.startswith('ACCESSORY (') and 'UNKNOWN' in clean_name.upper():
+                logger.warning(
+                    f"Элемент '{item_title[:50]}' (ACCESSORY) имеет невалидный clean_name: "
+                    f"'{clean_name}'"
+                )
+                return False
+
+        # ✅ НОВОЕ: Проверка 6 - Product Key должен быть достаточно информативным (min 5 символов)
+        if len(product_key) < 5:
+            # Исключение: accessory_009s, accessory_x16 - это OK (5+ символов)
+            # Но accessory_ - это NOT OK
+            if category not in ['ACCESSORY', 'SERVICE']:
+                logger.warning(
+                    f"Элемент '{item_title[:50]}' имеет слишком короткий product_key: "
+                    f"'{product_key}' (длина: {len(product_key)})"
+                )
+                return False
+            else:
+                # Даже для ACCESSORY/SERVICE, если ключ = "accessory_" - это плохо
+                if product_key.endswith('_') or product_key.count('_') == 1:
+                    logger.warning(
+                        f"Элемент '{item_title[:50]}' (категория {category}) имеет пустой "
+                        f"product_key суффикс: '{product_key}'"
+                    )
+                    return False
+
+        # ✅ НОВОЕ: Проверка 7 - Product Key содержит хешевый суффикс для fallback
+        # Если product_key содержит hash (_unknown_xxxxx), это OK, но лучше бы этого не было
+        if '_unknown_' in product_key:
+            # Допускаем, но логируем как warning для отладки
+            logger.info(
+                f"Элемент '{item_title[:50]}' использует hash-based product_key: '{product_key}' "
+                f"(это нормально для неопознанных товаров)"
+            )
 
         return True
 

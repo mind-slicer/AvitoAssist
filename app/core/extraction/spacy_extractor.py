@@ -127,6 +127,27 @@ class SpacyFeatureExtractor:
 
         # 4. Извлечение модели
         model_info = self._extract_series_and_model(lemmas, category)
+        if not model_info['full_model']:
+            # Ищем паттерны вида: PCE164P, X16, 009S, VER014, и т.д.
+            model_patterns = [
+                r'\b([A-Z]{0,3}\d{2,4}[A-Z]{0,3})\b',  # PCE164P, VER016, X16, 009S
+                r'\b(VER\d{3}[A-Z]{0,5})\b',            # VER014, VER016PLUS
+                r'\b(REV[\s\.]?\d+\.\d+)\b',            # REV1.00, REV.1.0
+            ]
+
+            for pattern in model_patterns:
+                match = re.search(pattern, title.upper())
+                if match:
+                    extracted_model = match.group(1).replace(' ', '').replace('.', '')
+                    # Если модель достаточно значимая (> 3 символов)
+                    if len(extracted_model) > 3:
+                        model_info['full_model'] = extracted_model.lower()
+                        # Пробуем найти серию для этой модели
+                        for keyword in self.SERIES_KEYWORDS:
+                            if keyword in lemmas:
+                                model_info['series'] = keyword
+                                break
+                        break
 
         # 5. Извлечение характеристик
         features = self._extract_features_nlp(doc, lemmas)
@@ -166,14 +187,28 @@ class SpacyFeatureExtractor:
                     if key in lemmas or key in raw_text_search:
                         debug_info['banned_trigger'].append(f"{cat_name} BANNED by: '{key}'")
 
+        brand_final = brands.get('vendor') or brands.get('chip') or ''
+        if not brand_final and model_info.get('series'):
+            series = model_info['series'].lower()
+            if series in ['rtx', 'gtx', 'geforce', 'titan', 'quadro']:
+                brand_final = 'nvidia'
+            elif series in ['rx', 'radeon']:
+                brand_final = 'amd'
+            elif series in ['core', 'pentium', 'celeron', 'xeon', 'arc']:
+                brand_final = 'intel'
+            elif series in ['ryzen', 'athlon', 'threadripper', 'epyc']:
+                brand_final = 'amd'
+
+        model_final = model_info.get('full_model', '')
+
         semantic_data = {
             'category': category,
             'product_key': product_key,
             'cluster_key': cluster_key,
-            'entity_type': 'PRODUCT',
+            'entity_type': 'ENTITY_TYPE',
             'clean_name': clean_name,
-            'brand': brands.get('vendor') or brands.get('chip') or '',
-            'model': model_info.get('full_model', ''),
+            'brand': brand_final,  # ✅ Теперь с fallback
+            'model': model_final,   # ✅ С fallback из regex
             'features': features,
             'raw_tokens': lemmas
         }
@@ -431,65 +466,38 @@ class SpacyFeatureExtractor:
 
         return brands
 
-    def _extract_series_and_model(self, lemmas: List[str], category: str) -> Dict[str, str]:
-        info = {'series': '', 'model': '', 'full_model': ''}
+    def _extract_series_and_model(self, lemmas: List[str], category: str) -> Dict:
+        """
+        Извлечение серии и модели из лемм + regex fallback.
 
-        used_indices = set()
-        banned_series = set()
+        УЛУЧШЕНИЯ:
+        1. Расширенный regex для типов: 009s, x16, pce164p, 4090, 3060ti
+        """
+        series = ""
+        model = ""
+        full_model = ""
 
-        if category == 'LAPTOP':
-            banned_series = {'rtx', 'gtx', 'rx', 'ryzen', 'core', 'intel', 'amd', 'geforce', 'radeon'}
-
-        # Поиск серии
-        series_idx = -1
-        for i, lemma in enumerate(lemmas):
-            if lemma in self.SERIES_KEYWORDS:
-                if lemma in banned_series:
-                    continue
-                info['series'] = lemma
-                series_idx = i
-                used_indices.add(i)
+        # ✅ НОВОЕ: Сначала пытаемся найти в SERIES_KEYWORDS
+        for keyword in self.SERIES_KEYWORDS:
+            if keyword in lemmas:
+                series = keyword
                 break
+            
+        # ✅ НОВОЕ: Ищет номер модели (XXXX, XXXXxx, и т.д.)
+        for lemma in lemmas:
+            # Расширенный regex для типов: 009s, x16, pce164p, 4090, 3060ti
+            if re.match(r'^[a-z]*\d{2,5}[a-z]{0,4}$', lemma):
+                model = lemma
+                break
+            
+        if series and model:
+            full_model = f"{series}{model}".upper()
+        elif series:
+            full_model = series.upper()
+        elif model:
+            full_model = model.upper()
 
-        # Поиск модели (цифры)
-        model_parts = []
-        start_search = series_idx + 1 if series_idx != -1 else 0
-
-        for i in range(start_search, len(lemmas)):
-            token = lemmas[i]
-            if i in used_indices or token in self.NOISE_WORDS:
-                continue
-
-            # Паттерн модели
-            if re.search(r'\d', token):
-                if any(x in token for x in ['gb', 'mb', 'tb', 'mhz', 'v', 'w']):
-                    continue
-
-                model_parts.append(token)
-                used_indices.add(i)
-
-                # Суффиксы (Ti, K, H, U)
-                if i + 1 < len(lemmas):
-                    next_token = lemmas[i+1]
-                    if next_token in self.MODEL_SUFFIXES:
-                        model_parts.append(next_token)
-                        used_indices.add(i+1)
-
-                if len(model_parts) >= 1:
-                    if token in ['3', '5', '7', '9'] and len(token) == 1:
-                        continue
-                    break
-
-        info['model'] = "".join(model_parts)
-
-        parts = []
-        if info['series']:
-            parts.append(info['series'])
-        if info['model']:
-            parts.append(info['model'])
-        info['full_model'] = "".join(parts)
-
-        return info
+        return {'series': series, 'model': model, 'full_model': full_model}
 
     def _extract_features_nlp(self, doc, lemmas: List[str]) -> Dict[str, str]:
         features = {}
@@ -588,7 +596,13 @@ class SpacyFeatureExtractor:
         """
         ИСПРАВЛЕННАЯ генерация product_key.
         Решает проблему коллизий и улучшает fallback.
+
+        КЛЮЧЕВЫЕ УЛУЧШЕНИЯ:
+        1. Фильтрует пустые части перед join
+        2. Более строгая проверка на пустоту
+        3. Improved fallback через lemmas и hash
         """
+
         cat_lower = category.lower()
 
         if cat_lower == 'pc_build':
@@ -626,56 +640,54 @@ class SpacyFeatureExtractor:
         if not model_part:
             model_part = model_info.get('series', '')
 
-        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенный fallback
-        # Если нет бренда И модели, пытаемся создать уникальный ключ из лемм
-        if not brand_part and not model_part:
-            # Ищем первое существенное слово (не из NOISE_WORDS)
-            significant_word = None
-            for lemma in lemmas[:10]:  # Проверяем первые 10 лемм (было 5)
-                if lemma not in self.NOISE_WORDS and len(lemma) > 2:  # Было > 3
-                    # НОВОЕ: Пропускаем чистые числа
-                    if not lemma.isdigit():
-                        significant_word = lemma
-                        break
-                    
-            if significant_word:
-                normalized = re.sub(r'[^a-z0-9]', '', significant_word.lower())
-                return f"{cat_lower}_{normalized}"
-            else:
-                # Абсолютный fallback - добавляем хеш для уникальности
-                import hashlib
-                hash_suffix = hashlib.md5(''.join(lemmas[:5]).encode()).hexdigest()[:6]
-                return f"{cat_lower}_unknown_{hash_suffix}"
-
         # Формируем ключ
         parts = [cat_lower]
-        
+
         if brand_part:
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Нормализация с сохранением разделителей
-            # Заменяем все не-буквенно-цифровые символы на пустоту, но сначала заменяем разделители на _
+            # ✅ НОВОЕ: Нормализация бренда с проверкой на пустоту
             normalized_brand = re.sub(r'[-\s]+', '_', brand_part.lower())
             normalized_brand = re.sub(r'[^a-z0-9_]', '', normalized_brand)
             normalized_brand = re.sub(r'_+', '_', normalized_brand).strip('_')
-            parts.append(normalized_brand)
+            # ✅ НОВОЕ: Фильтруем пустые строки
+            if normalized_brand:
+                parts.append(normalized_brand)
 
         if model_part:
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Нормализация модели с сохранением суффиксов
-            # "RTX 4090 Ti" -> "rtx4090ti", "RTX-4090" -> "rtx4090"
-            # Сначала убираем пробелы и дефисы
+            # ✅ НОВОЕ: Нормализация модели с проверкой на пустоту
             normalized_model = re.sub(r'[\s-]+', '', model_part.lower())
-            # Затем убираем все остальное кроме букв и цифр
             normalized_model = re.sub(r'[^a-z0-9]', '', normalized_model)
-            parts.append(normalized_model)
+            # ✅ НОВОЕ: Фильтруем пустые строки
+            if normalized_model:
+                parts.append(normalized_model)
+
+        # ✅ НОВОЕ: Фильтруем пустые parts перед join
+        parts = [p for p in parts if p]  # Убираем пустые элементы
 
         key = '_'.join(parts)
         key = re.sub(r'[^\w_]', '', key)
         key = re.sub(r'_+', '_', key)
 
-        if key.endswith('_'):
+        # ✅ НОВОЕ: Более строгая проверка на пустоту
+        if not key or key == cat_lower or len(key.split('_')[-1]) < 2:
             if cat_lower in ['service', 'accessory', 'misc']:
                 import hashlib
-                title_hash = hashlib.md5(' '.join(lemmas[:5]).encode()).hexdigest()[:6]
+                title_hash = hashlib.md5(''.join(lemmas[:5]).encode()).hexdigest()[:6]
                 key = f"{cat_lower}_{title_hash}"
+            else:
+                # Для других категорий: берём первое значимое слово из лемм
+                found_key = False
+                for lemma in lemmas:
+                    if lemma not in self.NOISE_WORDS and len(lemma) > 2 and not lemma.isdigit():
+                        normalized = re.sub(r'[^a-z0-9]', '', lemma.lower())
+                        if normalized:
+                            key = f"{cat_lower}_{normalized}"
+                            found_key = True
+                            break
+                # Если всё ещё не найдено - используем hash
+                if not found_key:
+                    import hashlib
+                    hash_suffix = hashlib.md5(''.join(lemmas[:5]).encode()).hexdigest()[:6]
+                    key = f"{cat_lower}_unknown_{hash_suffix}"
 
         return key.strip('_') or f"{cat_lower}_item"
 

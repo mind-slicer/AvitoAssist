@@ -25,31 +25,36 @@ class DiagnosticLogger:
         elif enabled is not None:
             self.enabled = enabled
     
-    def log_item_processing(self, 
+    def log_item_processing(self,
                            original_item: Dict,
                            semantic_data: Dict,
                            db_result: Optional[Dict] = None,
                            intermediate_data: Optional[Dict] = None):
-        """
-        Логирует обработку одного элемента.
-        
-        Args:
-            original_item: Исходные данные (title, description, price и т.д.)
-            semantic_data: Результат extract_semantic_data()
-            db_result: Результат записи в БД (product_id, category_id, status)
-            intermediate_data: Промежуточные данные (scores, lemmas и т.д.)
-        """
+
         if not self.enabled:
             return
+
+        # 1. ОПРЕДЕЛЕНИЕ ВАЖНОСТИ: Логируем подробно, если это начало, ошибка или неизвестная категория
+        is_error = db_result and db_result.get('status') == 'error'
+        is_misc = semantic_data.get('category') == 'MISC' or semantic_data.get('product_key', '').startswith('misc')
+        is_start_of_batch = len(self.session_data) < 10
         
+        is_verbose = is_error or is_misc or is_start_of_batch
+
+        # 2. АГРЕССИВНОЕ СОКРАЩЕНИЕ ДЛЯ ВСЕХ
+        desc = original_item.get('description', '')
+        short_desc = (desc[:50] + '... [TRUNCATED]') if desc and len(desc) > 50 else desc
+        
+        # 3. ПОДГОТОВКА ДАННЫХ
         entry = {
             'timestamp': datetime.now().isoformat(),
             'input': {
                 'title': original_item.get('title', ''),
-                'description': original_item.get('description', '')[:300] if original_item.get('description') else '',
+                'description': short_desc, 
                 'price': original_item.get('price', 0),
-                'city': original_item.get('city', ''),
-                'link': original_item.get('link', '')
+                # Убираем city и link для экономии, если они не критичны для логики парсинга
+                # 'city': original_item.get('city', ''), 
+                # 'link': original_item.get('link', '') 
             },
             'semantic_analysis': {
                 'category': semantic_data.get('category', 'UNKNOWN'),
@@ -59,13 +64,22 @@ class DiagnosticLogger:
                 'brand': semantic_data.get('brand', ''),
                 'model': semantic_data.get('model', ''),
                 'entity_type': semantic_data.get('entity_type', ''),
-                'features': semantic_data.get('features', {}),
-                'raw_tokens': semantic_data.get('raw_tokens', [])[:20]  # Первые 20 токенов
+                # features оставляем, они маленькие и важны
+                'features': semantic_data.get('features', {}), 
             },
-            'intermediate': intermediate_data or {},
             'database': db_result or {}
         }
-        
+
+        # 4. УСЛОВНОЕ ДОБАВЛЕНИЕ ТЯЖЕЛЫХ ДАННЫХ
+        if is_verbose:
+            entry['semantic_analysis']['raw_tokens'] = semantic_data.get('raw_tokens', [])[:15]
+            entry['intermediate'] = intermediate_data or {}
+            entry['debug_note'] = "FULL_LOG"
+        else:
+            # Для успешных стандартных элементов убираем шум
+            entry['semantic_analysis']['raw_tokens'] = [] 
+            entry['intermediate'] = "OK (Hidden to save space)"
+
         self.session_data.append(entry)
     
     def save_session(self):
