@@ -31,7 +31,8 @@ class SpacyFeatureExtractor:
         'macbook', 'air', 'pro', 'legion', 'vivobook', 'zenbook', 'rog', 'tuf', 'strix',
         'ideapad', 'thinkpad', 'nitro', 'predator', 'alienware', 'xps', 'latitude',
         'inspiron', 'omen', 'victus', 'pavilion', 'envy', 'matebook', 'magicbook',
-        'playstation', 'xbox', 'nintendo', 'cosmos', 'gf', 'katana', 'sword', 'pulse'
+        'playstation', 'xbox', 'nintendo', 'cosmos', 'gf', 'katana', 'sword', 'pulse',
+        'agp', 's3', 'tnt2', 'riva', 'rage', 'voodoo', 'matrox'
     }
 
     NOISE_WORDS = {
@@ -216,30 +217,36 @@ class SpacyFeatureExtractor:
         return semantic_data, debug_info
 
     def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
-        """
-        VERSION 5 (GOLD MASTER):
-        1. Service Enforcement: 'Скупка' теперь жестко банит категории железа (GPU/CPU).
-        2. Absolute Desktop Guard: Слово 'видеокарта' в заголовке мгновенно убивает LAPTOP.
-        3. Accessory Boost: Если найден модификатор (райзер), ACCESSORY побеждает даже без сильных ключей.
-        """
         raw_text_full = (raw_title + " " + description[:200]).lower()
         lemmas_set = set(lemmas)
         scores = {}
 
-        # 1. Списки ключевых слов
+        # 1. Списки ключевых слов (расширенные)
         hardware_cats = {'GPU', 'CPU', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU', 'LAPTOP', 'PC_BUILD', 'MONITOR', 'CASE'}
         
         accessory_modifiers = {
             'коробка', 'box', 'упаковка', 'держатель', 'подставка', 'кронштейн', 'стойка',
             'кабель', 'шлейф', 'переходник', 'удлинитель', 'мост', 'bridge', 'райзер', 'riser',
+            'винты', 'крепление', 'заглушка', 'салазки', 'трафарет'
+        }
+        
+        cooling_modifiers = {
             'кулер', 'cooler', 'fan', 'вентилятор', 'радиатор', 'кожух', 'вертушка', 'охлаждение',
-            'термопрокладки', 'термопаста', 'винты', 'крепление'
+            'термопрокладки', 'термопаста', 'сжо', 'сво'
         }
         
         service_modifiers = {
             'скупка', 'выкуп', 'куплю', 'покупка', 'обмен', 'ремонт', 'диагностика', 
             'trade-in', 'трейд-ин', 'настройка', 'чистка', 'обслуживание', 'мастер', 'услуги',
-            'трафарет', 'прогар', 'отвал', 'аренда', 'прокат'
+            'прогар', 'отвал', 'аренда', 'прокат', 'установка'
+        }
+
+        # Явные маркеры ноутбуков
+        laptop_markers = {
+            'inbook', 'matebook', 'zenbook', 'vivobook', 'ideapad', 'thinkpad', 'macbook', 
+            'legion', 'nitro', 'predator', 'tuf', 'rog', 'inspiron', 'latitude', 'precision',
+            'pavilion', 'omen', 'victus', 'envy', 'katana', 'sword', 'crosshair', 'pulse',
+            'notebook', 'ultrabook', 'laptop', 'нетбук', 'лэптоп', 'ноутбук', 'ультрабук'
         }
 
         # 2. Базовый подсчет (Standard Scoring)
@@ -286,78 +293,91 @@ class SpacyFeatureExtractor:
 
             if current_score > 0:
                 scores[cat_name] = current_score + base_priority
-            elif cat_name == 'SERVICE': # Service has default priority
+            elif cat_name == 'SERVICE': 
                 scores[cat_name] = base_priority
 
         # 3. Price Heuristics
         scores = self._apply_price_heuristics(scores, price, lemmas_set, raw_text_full)
 
-        # 4. CONFLICT RESOLUTION (The "Brain" of the logic)
+        # 4. CONFLICT RESOLUTION (FIXED)
         
         has_accessory_mod = not accessory_modifiers.isdisjoint(lemmas_set)
+        has_cooling_mod = not cooling_modifiers.isdisjoint(lemmas_set)
         has_service_mod = not service_modifiers.isdisjoint(lemmas_set)
         
-        # A. ACCESSORY GUARD: Если есть "Коробка/Райзер" -> Убиваем железо, бустим аксессуары
+        # A. LAPTOP vs COMPONENT FIX (Critical)
+        # Если найдены явные маркеры ноутбука -> убиваем категории компонентов
+        if not laptop_markers.isdisjoint(lemmas_set):
+            for cat in ['GPU', 'CPU', 'MOTHERBOARD', 'PSU', 'CASE']:
+                scores[cat] = -2000.0
+            # Бустим LAPTOP, если он был найден
+            if scores.get('LAPTOP', 0) > -100:
+                scores['LAPTOP'] = scores.get('LAPTOP', 0) + 500.0
+
+        # B. COOLING SEPARATION
+        if has_cooling_mod:
+            # Убиваем SERVICE для кулеров, если нет слов "ремонт/замена"
+            if 'ремонт' not in lemmas_set and 'замена' not in lemmas_set:
+                scores['SERVICE'] = -500.0
+            
+            # Бустим COOLING
+            scores['COOLING'] = scores.get('COOLING', 0) + 300.0
+            
+            # Снижаем вес железа (это запчасть)
+            for cat in ['GPU', 'CPU', 'LAPTOP']:
+                if scores.get(cat, 0) > 0: scores[cat] -= 400.0
+
+        # C. ACCESSORY GUARD
         if has_accessory_mod:
             for cat in hardware_cats:
                 if cat not in ['COOLING', 'CASE', 'MONITOR']: 
                     if scores.get(cat, 0) > 0: scores[cat] -= 500.0
             
-            # Force enable ACCESSORY if it was weak
-            if scores.get('ACCESSORY', -1000) < 100:
-                scores['ACCESSORY'] = 200.0
-            else:
-                scores['ACCESSORY'] += 200.0
-
-        # B. SERVICE GUARD: Если есть "Скупка/Ремонт" -> Убиваем ВСЁ железо
-        if has_service_mod:
-            for cat in hardware_cats:
-                # Разрешаем "запчасти" для некоторых категорий, но скупка убивает всё
-                if 'скупка' in lemmas_set or 'куплю' in lemmas_set or 'выкуп' in lemmas_set:
-                    scores[cat] = -1000.0
+            # Особая проверка для "Коробка" - проверяем цену
+            if 'коробка' in lemmas_set and price > 5000:
+                # Скорее всего это "Видеокарта (в коробке)", а не "Коробка от видеокарты"
+                # Возвращаем баллы GPU
+                if scores.get('GPU', -1000) == -1000.0: 
+                     # Восстанавливаем, если было убито
+                     pass 
                 else:
-                    # Для "ремонта" просто сильно снижаем
-                    if scores.get(cat, 0) > 0: scores[cat] -= 400.0
-            
-            scores['SERVICE'] = scores.get('SERVICE', 0) + 300.0
+                     # Отменяем штраф
+                     if scores.get('GPU', 0) > 0: scores['GPU'] += 500.0
+            else:
+                scores['ACCESSORY'] = scores.get('ACCESSORY', 0) + 300.0
 
-        # C. REVERSE SERVICE TRAP: Если найдено железо, и НЕТ слов сервиса -> Убиваем SERVICE
-        # (Спасает дешевые видеокарты от попадания в Service)
-        is_hardware_strong = any(scores.get(c, 0) > 20 for c in hardware_cats)
-        if is_hardware_strong and not has_service_mod:
-            scores['SERVICE'] = -500.0
+        # D. SERVICE GUARD (RELAXED)
+        # Если есть слова скупки, но также есть явная модель железа, это может быть продажа
+        if has_service_mod:
+            # Если заголовок начинается со "Скупка" или "Куплю" - это точно сервис
+            first_word = lemmas[0] if lemmas else ""
+            if first_word in ['скупка', 'куплю', 'выкуп', 'ремонт', 'аренда']:
+                for cat in hardware_cats:
+                    scores[cat] = -1000.0
+                scores['SERVICE'] = 1000.0
+            else:
+                # Это продажа с упоминанием трейд-ина/скупки
+                # Если найдено железо с высоким скором -> убиваем SERVICE
+                max_hw_score = max([scores.get(c, 0) for c in hardware_cats], default=0)
+                if max_hw_score > 150:
+                    scores['SERVICE'] = -500.0
+                else:
+                    # Иначе это скорее всего услуга
+                    scores['SERVICE'] += 200.0
 
-        # D. ABSOLUTE DESKTOP GUARD: "Видеокарта" != "Ноутбук"
-        # Если слово "видеокарта" есть в заголовке, это НЕ ноутбук. Точка.
-        if 'видеокарта' in lemmas_set or 'videocard' in lemmas_set:
-            scores['LAPTOP'] = -1000.0
-            # Также бустим GPU, если он был сомнителен
+        # E. RETRO HARDWARE FIX
+        # Если найдено слово 'agp' или 'pci' (старое), но нет категорий -> бустим GPU/ACCESSORY
+        if 'agp' in lemmas_set or 'isa' in lemmas_set:
+            if scores.get('GPU', 0) < 50:
+                scores['GPU'] = 150.0 # Принудительно ставим как GPU
+            if scores.get('SERVICE', 0) > 0:
+                scores['SERVICE'] = -500.0 # Это не услуга
+
+        # F. ABSOLUTE DESKTOP GUARD
+        if 'видеокарта' in lemmas_set or 'videocard' in lemmas_set or 'gpu' in lemmas_set:
+            scores['LAPTOP'] = -2000.0
             if scores.get('GPU', 0) > -100:
-                scores['GPU'] += 50.0
-
-        # E. LAPTOP vs GPU TIE-BREAKER
-        # Если все еще спорно (например MSI Gaming X), проверяем контекст
-        if scores.get('LAPTOP', 0) > 0 and scores.get('GPU', 0) > 0:
-            diff = abs(scores['LAPTOP'] - scores['GPU'])
-            if diff < 150:
-                # Если есть явные признаки ноута (экран, батарея...)
-                if re.search(r'\b(1[3-7])[\.,]\d["\']?', raw_title): 
-                    scores['GPU'] -= 500.0
-                # Если есть явные признаки GPU (GB, GDDR) и нет слова "ноутбук"
-                elif 'gddr' in raw_text_full and 'ноутбук' not in lemmas_set:
-                    scores['LAPTOP'] -= 500.0
-
-        # F. LAPTOP vs CPU TIE-BREAKER
-        # Если побеждает CPU, но есть признаки ноутбука (экран, батарея, вендор ноута)
-        if scores.get('CPU', 0) > scores.get('LAPTOP', 0) and scores.get('LAPTOP', 0) > 0:
-            # Если есть размер экрана (15.6, 17.3 и т.д.) - это точно ноут, а не проц
-            if re.search(r'\b(1[3-7])[\.,]\d["\']?', raw_title):
-                scores['CPU'] -= 500.0
-            # Если цена слишком высока для старого проца (> 15000), и это не топовый i9/Ryzen9
-            elif price > 15000 and 'i9' not in lemmas_set and 'threadripper' not in lemmas_set:
-                 # Эвристика: дорогой "i5" без слов "процессор" часто оказывается ноутбуком
-                 if 'процессор' not in lemmas_set and 'cpu' not in lemmas_set:
-                     scores['LAPTOP'] += 100.0
+                scores['GPU'] += 100.0
 
         # 5. Final Selection
         valid_scores = {k: v for k, v in scores.items() if v > -500}

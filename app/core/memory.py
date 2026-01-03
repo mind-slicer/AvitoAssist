@@ -302,7 +302,10 @@ class MemoryManager:
         # ✅ НОВОЕ: Проверка 4 - Критические категории должны иметь либо бренд, либо модель
         critical_categories = ['GPU', 'CPU', 'LAPTOP', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU']
         if category in critical_categories:
-            if not model and not brand:
+            # Исключение для Ретро-GPU (они часто без бренда, просто модель чипа)
+            is_retro = any(x in clean_name.lower() for x in ['agp', 'pci', 'isa', 's3', 'trident', 'sis'])
+            
+            if not model and not brand and not is_retro:
                 logger.warning(
                     f"Элемент '{item_title[:50]}' (категория {category}) без бренда И модели. "
                     f"БЛОКИРОВАН."
@@ -319,6 +322,17 @@ class MemoryManager:
 
         # ✅ НОВОЕ: Проверка 5 - ACCESSORY может быть без бренда/модели, но не без clean_name
         if category == 'ACCESSORY':
+            bad_keys = ['accessory_nvidia', 'accessory_amd', 'accessory_asus', 'accessory_msi', 'accessory_gigabyte']
+            if product_key in bad_keys:
+                # Пытаемся уточнить ключ, если clean_name содержит больше инфо
+                if len(clean_name) > 10:
+                     # Разрешаем, но логируем
+                     pass
+                else:
+                     # Слишком мусорный элемент (просто "кабель nvidia")
+                     logger.info(f"Skipping generic accessory: {product_key}")
+                     return False
+            
             if clean_name.startswith('ACCESSORY (') and 'UNKNOWN' in clean_name.upper():
                 logger.warning(
                     f"Элемент '{item_title[:50]}' (ACCESSORY) имеет невалидный clean_name: "

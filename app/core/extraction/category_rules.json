@@ -1,19 +1,22 @@
 {
   "LAPTOP": {
     "strong_keywords": [
-      "ноутбук", "laptop", "ultrabook", "netbook", "macbook", "макбук", "лэптоп",
+      "ноутбук", "ультрабук", "laptop", "ultrabook", "netbook", "macbook", "макбук", "лэптоп",
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
       "alienware", "matebook", "magicbook", "predator", "helios", "nitro 5", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
       "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "prime", 
       "katana", "sword", "crosshair", "bravo", "alpha", "delta", 
       "thunderobot", "machenike", "machcreator", "mechrevolution", "gigabyte g5", "gigabyte aorus",
-      "13.3\"", "13.3", "14\"", "14", "15.4\"", "15.4", "15.6\"", "15.6", "16\"", "16", "16.1\"", "16.1", "17.3\"", "17.3"
+      "inbook", "megabook", "osio", "infinix", "tecno", "chuwi", "hasee", "maibenben"
     ],
     "weak_keywords": [
-      "intel", "core", "ryzen", "nvidia", "geforce", "radeon", "n100", "n200", "144hz", "ips", "oled", "fhd", "2k", "16gb", "512gb"
+      "intel", "core", "ryzen", "nvidia", "geforce", "radeon", "n100", "n200", "144hz", "ips", "oled", "fhd", "2k", "16gb", "512gb", "15.6", "17.3", "14.0", "16.0"
     ],
-    "banned_keywords": [],
+    "banned_keywords": [
+      "видеокарта", "gpu", "desktop", "системный блок", "моноблок", "запчасти на", "разбор", "матрица", "клавиатура для",
+      "palit", "sapphire", "zotac", "inno3d", "gainward", "pny", "colorful", "powercolor", "evga", "kfa2", "gddr"
+    ],
     "priority": 120
   },
   "PC_BUILD": {
@@ -23,21 +26,25 @@
       "неттоп", "workstation", "сервер", "готовый пк"
     ],
     "weak_keywords": [
-      "корпус", "case", "rgb", "tower", "win10", "win11"
+      "корпус", "case", "rgb", "tower", "win10", "win11", "i5", "i7", "ryzen", "rtx", "gtx"
     ],
-    "banned_keywords": ["ноутбук", "laptop", "видеокарт", "материнск плат", "процессор отдельн"],
+    "banned_keywords": [
+      "ноутбук", "laptop", "видеокарт", "материнск плат", "процессор отдельн", "экран", "монитор", "inbook", "matebook",
+      "palit", "sapphire", "zotac", "gddr6", "gddr5", "gddr6x", "192bit", "256bit", "термопаста"
+    ],
     "priority": 95
   },
   "GPU": {
     "strong_keywords": [
       "видеокарта", "gpu", "graphics card", "видеоадаптер", "видюха", 
       "rtx", "gtx", "rx", "arc", "hd", "quadro", "tesla", "titan", 
-      "geforce", "radeon", "sapphire", "palit", "zotac", "powercolor", "inno3d", "kfa2"
+      "geforce", "radeon", "sapphire", "palit", "zotac", "powercolor", "inno3d", "kfa2",
+      "agp", "pci-e", "isa", "voodoo", "riva", "tnt2", "s3 trio", "3dfx", "matrox", "rage pro"
     ],
     "weak_keywords": [
-      "nvidia", "amd", "intel", "gddr7", "gddr6", "gddr6x", "gddr5", "hbm", "pci-e", "gaming oc", "ventus", "eagle"
+      "nvidia", "amd", "intel", "gddr7", "gddr6", "gddr6x", "gddr5", "hbm", "gaming oc", "ventus", "eagle", "jetstream", "gamerock"
     ],
-    "banned_keywords": ["ноутбук", "laptop", "материнск", "процессор", "блок питания", "райзер", "кулер вентилятор"],
+    "banned_keywords": ["ноутбук", "laptop", "материнск", "процессор", "блок питания", "райзер", "кулер", "вентилятор", "охлаждение", "радиатор", "inbook", "matebook"],
     "priority": 45
   },
   "CPU": {
@@ -52,7 +59,7 @@
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "компьютер", "сборка", "материнская", 
       "плата", "комплект", "кулер", "вентилятор", "скупка", 
-      "macbook", "inspiron", "aspire", "ideapad", "zenbook"
+      "macbook", "inspiron", "aspire", "ideapad", "zenbook", "inbook", "matebook", "видеокарта"
     ],
     "priority": 40
   },
@@ -66,7 +73,7 @@
       "socket", "сокет", "чипсет", "ddr4", "ddr5", "atx", "matx", "itx", "wifi", "msi mag", "asus rog", "gigabyte aorus"
     ],
     "banned_keywords": [
-      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "коробка"
+      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "коробка", "inbook"
     ],
     "priority": 30
   },
@@ -117,13 +124,13 @@
     "strong_keywords": [
       "кулер", "вентилятор", "fan", "cooler", "радиатор", "сво", "сжо", "водянка", 
       "water cooling", "aio", "башня", "вертушка", "термопаста", "lga1700 крепление",
-      "deepcool ak", "deepcool ag", "id-cooling"
+      "deepcool ak", "deepcool ag", "id-cooling", "охлаждение", "кожух"
     ],
     "weak_keywords": [
       "120mm", "140mm", "rgb", "argb", "pwm", "4pin", "3pin"
     ],
     "banned_keywords": [
-      "видеокарта", "процессор", "ноутбук", "системный", "блок питания"
+      "видеокарта", "процессор", "ноутбук", "системный", "блок питания", "корпус", "gddr", "gb gddr"
     ],
     "priority": 20
   },
@@ -149,7 +156,7 @@
       "mesh", "glass", "tempered", "midi", "full", "mini", "стекло", "сетка", "белый", "черный"
     ],
     "banned_keywords": [
-      "системный блок", "сборка", "игровой пк", "компьютер", "ноутбук", "телефон"
+      "системный блок", "сборка", "игровой пк", "компьютер", "ноутбук", "телефон", "планшет"
     ],
     "priority": 15
   },
@@ -158,7 +165,7 @@
       "коробка", "райзер", "riser", "переходник", "кабель", "шлейф", "мост", "sli bridge", 
       "crossfire", "box only", "пустая коробка", "упаковка", "держатель", "подставка", "кронштейн", 
       "термопаста", "термопрокладки", "винтики", "крепление", "заглушка", "салазки",
-      "док станция", "хаб", "usb hub", "контроллер", "пульт"
+      "док станция", "хаб", "usb hub", "контроллер", "пульт", "трафарет", "удлинитель"
     ],
     "weak_keywords": [
       "для", "видеокарты", "блока", "питания", "монитора", "hdmi", "displayport", "vga", "dvi"

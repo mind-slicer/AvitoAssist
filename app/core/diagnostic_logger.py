@@ -43,7 +43,7 @@ class DiagnosticLogger:
 
         # 2. АГРЕССИВНОЕ СОКРАЩЕНИЕ ДЛЯ ВСЕХ
         desc = original_item.get('description', '')
-        short_desc = (desc[:50] + '... [TRUNCATED]') if desc and len(desc) > 50 else desc
+        short_desc = (desc[:200] + '... [TRUNCATED]') if desc and len(desc) > 200 else desc
         
         # 3. ПОДГОТОВКА ДАННЫХ
         entry = {
@@ -52,9 +52,6 @@ class DiagnosticLogger:
                 'title': original_item.get('title', ''),
                 'description': short_desc, 
                 'price': original_item.get('price', 0),
-                # Убираем city и link для экономии, если они не критичны для логики парсинга
-                # 'city': original_item.get('city', ''), 
-                # 'link': original_item.get('link', '') 
             },
             'semantic_analysis': {
                 'category': semantic_data.get('category', 'UNKNOWN'),
@@ -64,7 +61,6 @@ class DiagnosticLogger:
                 'brand': semantic_data.get('brand', ''),
                 'model': semantic_data.get('model', ''),
                 'entity_type': semantic_data.get('entity_type', ''),
-                # features оставляем, они маленькие и важны
                 'features': semantic_data.get('features', {}), 
             },
             'database': db_result or {}
