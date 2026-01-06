@@ -13,18 +13,19 @@
     "strong_keywords": [
       "ноутбук", "ноутбуки", "ультрабук", "нетбук", "laptop", "ultrabook", "macbook", "макбук",
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
-      "alienware", "matebook", "magicbook", "predator", "helios", "nitro 5", 
+      "alienware", "matebook", "magicbook", "helios", "nitro 5", "nitro", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
       "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "thunderobot", "machenike",
       "inbook", "megabook", "maibenben", "chuwi", "hasee", "vostro", "inspiron", "precision", 
-      "expertbook", "proart", "hunter v700", "stealth", "leopard", "katana", "gf63", "gf65", "gf66", "gl65"
+      "expertbook", "hunter v700", "stealth", "leopard", "katana", "gf63", "gf65", "gf66", "gl65",
+      "dell", "acer", "lenovo", "honor", "huawei", "msi gaming"
     ],
     "weak_keywords": [
       "intel", "core", "ryzen", "144hz", "ips", "oled", "15.6", "17.3", "14.0", "13.3", "16.1", "экран"
     ],
     "banned_keywords": [
       "разбор", "запчасти", "матрица", "клавиатура", "топкейс", "поддон", "рамка", "петли", "шлейф", "аккумулятор", "батарея",
-      "материнская плата", "кулер", "вентилятор", "зарядка", "блок питания", "коробка"
+      "материнская плата", "кулер", "вентилятор", "зарядка", "блок питания", "коробка", "видеокарта"
     ],
     "priority": 500
   },
@@ -56,7 +57,7 @@
     "banned_keywords": [
       "ноутбук", "laptop", "видеокарта", "экран", "inbook", "matebook", "разбор", "запчасти",
       "palit", "sapphire", "zotac", "gddr6", "gddr5", "gddr6x", "термопаста", "кулер", "вентилятор",
-      "блок питания", "psu", "коробка", "корпус", "case"
+      "блок питания", "psu", "коробка", "корпус", "case", "rtx", "gtx", "rx", "apple imac"
     ],
     "priority": 400
   },
@@ -182,13 +183,13 @@
     ],
     "banned_keywords": [
       "ноутбук", "системный", "блок питания", "корпус", "gddr", "gb gddr", 
-      "видеокарта", "gpu", "geforce", "radeon", "rtx", "gtx", "rx"
+      "видеокарта", "видеокарты", "gpu", "geforce", "radeon", "rtx", "gtx", "rx"
     ],
     "priority": 40
   },
   "ACCESSORY": {
     "strong_keywords": [
-      "райзер", "райзера", "riser", "переходник", "кабель", "шлейф", "мост", "sli bridge", 
+      "райзер", "райзера", "riser", "переходник", "кабель", "шлейф", "мост", 
       "crossfire", "box only", "пустая коробка", "упаковка", "держатель", "подставка", "кронштейн", 
       "термопаста", "термопрокладки", "винтики", "крепление", "заглушка", "салазки",
       "док станция", "хаб", "usb hub", "контроллер", "пульт", "трафарет", "удлинитель",

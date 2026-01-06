@@ -211,8 +211,29 @@ class SpacyFeatureExtractor:
         if not rent_keywords.isdisjoint(lemmas_set):
             return 'SERVICE', {'SERVICE': 1000.0}
 
-        # --- PHASE 2: HIGH-LEVEL CONTAINER DETECTOR ---
+        # --- PHASE 2: GPU/ACC FORCED START ---
+        clean_start = raw_title.strip().lower()
+        gpu_starters = ('видеокарта', 'videocard', 'gpu', 'видюха')
+        
+        # Если начинается с "Видеокарта...", это точно не Ноутбук, не Сборка и не Монитор
+        if clean_start.startswith(gpu_starters):
+            # Но проверяем, не на запчасти ли это (тогда Condition For Parts, но категория все равно GPU)
+            # Или это "Видеокарта... кулер" (тогда Cooling)
+            if 'кулер' in clean_start or 'вентилятор' in clean_start:
+                 return 'COOLING', {'COOLING': 2000.0}
+            return 'GPU', {'GPU': 2000.0}
+
+        # --- PHASE 3: HIGH-LEVEL CONTAINER DETECTOR ---
         # 1. Laptop
+        # TRINITY CHECK: Brand + CPU + GPU = Laptop (e.g. "Lenovo i5 RTX 2060")
+        laptop_brands = {'asus', 'acer', 'hp', 'dell', 'lenovo', 'msi', 'honor', 'huawei', 'thunderobot', 'machenike', 'maibenben'}
+        has_laptop_brand = not laptop_brands.isdisjoint(lemmas_set)
+        has_cpu_kw = any(x in lemmas_set for x in ['core', 'ryzen', 'i5', 'i7', 'i3', 'intel', 'amd'])
+        has_gpu_kw = any(x in lemmas_set for x in ['rtx', 'gtx', 'geforce'])
+        
+        if has_laptop_brand and has_cpu_kw and has_gpu_kw:
+             return 'LAPTOP', {'LAPTOP': 1500.0}
+
         laptop_strong = self.category_rules['LAPTOP']['strong_keywords']
         if any(kw in lemmas_set for kw in laptop_strong) or any(kw in raw_text_full for kw in laptop_strong if len(kw)>4):
             # Guard: check for spare parts
@@ -228,39 +249,32 @@ class SpacyFeatureExtractor:
         # 2. Monitor
         monitor_strong = self.category_rules['MONITOR']['strong_keywords']
         if any(kw in lemmas_set for kw in monitor_strong):
-             # Guard: broken/matrix
              if 'матрица' not in lemmas_set and 'разбита' not in lemmas_set:
                  return 'MONITOR', {'MONITOR': 1000.0}
 
-        # 3. PC Build (System Unit)
-        # Check specific strong phrases
+        # 3. PC Build
         pc_strong = self.category_rules['PC_BUILD']['strong_keywords']
         if any(kw in raw_text_full for kw in pc_strong):
             return 'PC_BUILD', {'PC_BUILD': 1000.0}
         
-        # --- PHASE 3: MODIFIER / START-OF-STRING DETECTOR ---
-        clean_start = raw_title.strip().lower()
+        # --- PHASE 4: MODIFIER / START-OF-STRING DETECTOR ---
         
         # 1. Accessory Starters
-        # "Коробка", "Держатель", "Кабель"
         acc_starters = ('коробка', 'держатель', 'кабель', 'крепление', 'подставка', 'переходник', 'райзер', 'планка', 'мост', 'шлейф', 'заглушка', 'винты')
         if clean_start.startswith(acc_starters):
             return 'ACCESSORY', {'ACCESSORY': 2000.0}
             
         # 2. Cooling Starters
-        # "Кулер", "Вентилятор", "Радиатор"
         cool_starters = ('кулер', 'вентилятор', 'радиатор', 'охлаждение', 'сво', 'водянка')
         if clean_start.startswith(cool_starters):
             return 'COOLING', {'COOLING': 2000.0}
 
-        # --- PHASE 4: BUNDLE / COMBO DETECTOR ---
-        # "Kit i5 + mobo"
+        # --- PHASE 5: BUNDLE / COMBO DETECTOR ---
         is_bundle = self._detect_bundle(lemmas_set, raw_title)
         if is_bundle:
             return 'PC_BUILD', {'PC_BUILD': 800.0}
 
-        # --- PHASE 5: COMPONENT SCORING (The "Iron" Phase) ---
-        # Calculate scores ONLY for hardware components
+        # --- PHASE 6: COMPONENT SCORING (The "Iron" Phase) ---
         hardware_cats = ['GPU', 'CPU', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU', 'CASE', 'COOLING', 'ACCESSORY']
         
         for cat_name in hardware_cats:
@@ -283,8 +297,12 @@ class SpacyFeatureExtractor:
             # Scoring
             score = 0
             for kw in strong_keys:
-                if kw in lemmas_set or (len(kw) > 3 and kw in raw_text_full):
+                # Strong score if in TITLE
+                if kw in lemmas_set:
                     score += 100
+                # Weak score if ONLY in DESCRIPTION
+                elif len(kw) > 3 and kw in raw_text_full:
+                    score += 20
             
             # Special logic for old GPUs (GT 220, etc)
             if cat_name == 'GPU' and score > 0:
@@ -293,9 +311,9 @@ class SpacyFeatureExtractor:
             if score > 0:
                 scores[cat_name] = score + base_priority
 
-        # --- PHASE 6: FINAL CONFLICT RESOLUTION ---
+        # --- PHASE 7: FINAL CONFLICT RESOLUTION ---
         
-        # 1. GPU PROTECTION: If GPU is found, Cooling and Accessory (if not triggered by Phase 3) die.
+        # 1. GPU PROTECTION: If GPU is found, Cooling and Accessory die.
         if scores.get('GPU', 0) > 0:
              scores['COOLING'] = -1000.0
              scores['ACCESSORY'] = -1000.0
