@@ -145,7 +145,7 @@ class DatabaseTab(QWidget):
         self.raw_items_table.horizontalHeader().setStretchLastSection(True)
         self.raw_items_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.raw_items_table.setStyleSheet(self._get_table_style())
-        self.raw_items_table.itemClicked.connect(self._on_raw_item_clicked)
+        self.raw_items_table.currentItemChanged.connect(self._on_raw_item_selection_changed)
         self.table_tabs.addTab(self.raw_items_table, "📦 Сырые данные")
         
         self.knowledge_table = QTableWidget()
@@ -154,7 +154,7 @@ class DatabaseTab(QWidget):
         self.knowledge_table.horizontalHeader().setStretchLastSection(True)
         self.knowledge_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.knowledge_table.setStyleSheet(self._get_table_style())
-        self.knowledge_table.itemClicked.connect(self._on_knowledge_clicked)
+        self.knowledge_table.currentItemChanged.connect(self._on_knowledge_selection_changed)
         self.table_tabs.addTab(self.knowledge_table, "🧠 Знания ИИ")
         
         center_layout.addWidget(self.table_tabs)
@@ -439,20 +439,38 @@ class DatabaseTab(QWidget):
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
     
-    def _on_raw_item_clicked(self, item):
-        """Handle raw item click."""
-        data = item.data(Qt.ItemDataRole.UserRole)
-        self._show_details(data, 'raw_item')
-        self.delete_btn.setEnabled(True)
-        self.cultivate_btn.setEnabled(False)
+    def _on_raw_item_selection_changed(self, current, previous):
+        """Handle raw item selection change (mouse or keyboard)."""
+        if not current:
+            return
+        
+        # Получаем данные из первой колонки текущей строки
+        row = current.row()
+        id_item = self.raw_items_table.item(row, 0)
+        
+        if id_item:
+            data = id_item.data(Qt.ItemDataRole.UserRole)
+            if data:
+                self._show_details(data, 'raw_item')
+                self.delete_btn.setEnabled(True)
+                self.cultivate_btn.setEnabled(False)
     
-    def _on_knowledge_clicked(self, item):
-        """Handle knowledge chunk click."""
-        data = item.data(Qt.ItemDataRole.UserRole)
-        self._show_details(data, 'knowledge')
-        self.delete_btn.setEnabled(True)
-        self.cultivate_btn.setEnabled(True)
-    
+    def _on_knowledge_selection_changed(self, current, previous):
+        """Handle knowledge chunk selection change (mouse or keyboard)."""
+        if not current:
+            return
+        
+        # Получаем данные из первой колонки текущей строки
+        row = current.row()
+        id_item = self.knowledge_table.item(row, 0)
+        
+        if id_item:
+            data = id_item.data(Qt.ItemDataRole.UserRole)
+            if data:
+                self._show_details(data, 'knowledge')
+                self.delete_btn.setEnabled(True)
+                self.cultivate_btn.setEnabled(True)
+
     def _show_details(self, data: dict, data_type: str):
         """Show details in the right panel."""
         # Clear existing content

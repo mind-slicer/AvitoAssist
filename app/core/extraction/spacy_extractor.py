@@ -221,32 +221,30 @@ class SpacyFeatureExtractor:
         lemmas_set = set(lemmas)
         scores = {}
 
-        # 1. Списки ключевых слов (расширенные)
+        # 1. Списки ключевых слов
         hardware_cats = {'GPU', 'CPU', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU', 'LAPTOP', 'PC_BUILD', 'MONITOR', 'CASE'}
+        
+        # Бренды, которые НЕ делают ноутбуки (или очень редко)
+        non_laptop_brands = {
+            'palit', 'sapphire', 'zotac', 'inno3d', 'gainward', 'pny', 'colorful', 
+            'powercolor', 'evga', 'kfa2', 'his', 'xfx', 'biostar', 'leadtek', 'sparkle', 'matrox', 's3', 'trident'
+        }
         
         accessory_modifiers = {
             'коробка', 'box', 'упаковка', 'держатель', 'подставка', 'кронштейн', 'стойка',
             'кабель', 'шлейф', 'переходник', 'удлинитель', 'мост', 'bridge', 'райзер', 'riser',
-            'винты', 'крепление', 'заглушка', 'салазки', 'трафарет'
+            'винты', 'крепление', 'заглушка', 'салазки', 'трафарет', 'звуковая'
         }
         
         cooling_modifiers = {
             'кулер', 'cooler', 'fan', 'вентилятор', 'радиатор', 'кожух', 'вертушка', 'охлаждение',
-            'термопрокладки', 'термопаста', 'сжо', 'сво'
+            'термопрокладки', 'термопаста', 'сжо', 'сво', 'с/охл', 'охлад', 'вентиляторы'
         }
         
-        service_modifiers = {
+        service_keywords_title = {
             'скупка', 'выкуп', 'куплю', 'покупка', 'обмен', 'ремонт', 'диагностика', 
             'trade-in', 'трейд-ин', 'настройка', 'чистка', 'обслуживание', 'мастер', 'услуги',
             'прогар', 'отвал', 'аренда', 'прокат', 'установка'
-        }
-
-        # Явные маркеры ноутбуков
-        laptop_markers = {
-            'inbook', 'matebook', 'zenbook', 'vivobook', 'ideapad', 'thinkpad', 'macbook', 
-            'legion', 'nitro', 'predator', 'tuf', 'rog', 'inspiron', 'latitude', 'precision',
-            'pavilion', 'omen', 'victus', 'envy', 'katana', 'sword', 'crosshair', 'pulse',
-            'notebook', 'ultrabook', 'laptop', 'нетбук', 'лэптоп', 'ноутбук', 'ультрабук'
         }
 
         # 2. Базовый подсчет (Standard Scoring)
@@ -256,17 +254,26 @@ class SpacyFeatureExtractor:
             banned_keys = rules.get("banned_keywords", [])
             base_priority = rules.get("priority", 10)
 
+            # SPECIAL CHECK FOR SERVICE:
+            if cat_name == 'SERVICE':
+                has_service_in_title = not service_keywords_title.isdisjoint(lemmas_set)
+                if not has_service_in_title:
+                    continue 
+
             current_score = 0
             strong_match_count = 0
 
             # Strong Matches
             for strong_word in strong_keys:
-                if " " not in strong_word:
-                    if strong_word in lemmas_set:
+                # УЛУЧШЕНИЕ: Поиск частичных совпадений для ретро-карт и сложных слов
+                # Если ключевое слово короткое (<4 букв), ищем строго. Иначе - мягче.
+                if len(strong_word) < 4 and " " not in strong_word:
+                     if strong_word in lemmas_set:
                         strong_match_count += 1
                         current_score += 100
                 else:
-                    if re.search(r'\b' + re.escape(strong_word) + r'\b', raw_text_full):
+                    # Ищем подстроку с границами слова в сыром тексте
+                    if re.search(r'\b' + re.escape(strong_word), raw_text_full):
                         strong_match_count += 1
                         current_score += 120
 
@@ -277,7 +284,7 @@ class SpacyFeatureExtractor:
                     if ban_word in lemmas_set: 
                         is_banned = True; break
                 elif strong_match_count == 0:
-                    if re.search(r'\b' + re.escape(ban_word) + r'\b', raw_text_full):
+                    if re.search(r'\b' + re.escape(ban_word) + r'\b', raw_title.lower()):
                         is_banned = True; break
             
             if is_banned:
@@ -299,91 +306,85 @@ class SpacyFeatureExtractor:
         # 3. Price Heuristics
         scores = self._apply_price_heuristics(scores, price, lemmas_set, raw_text_full)
 
-        # 4. CONFLICT RESOLUTION (FIXED)
+        # 4. CONFLICT RESOLUTION
         
         has_accessory_mod = not accessory_modifiers.isdisjoint(lemmas_set)
-        has_cooling_mod = not cooling_modifiers.isdisjoint(lemmas_set)
-        has_service_mod = not service_modifiers.isdisjoint(lemmas_set)
+        # Проверяем также сырой текст для сокращений типа "с/охл"
+        has_cooling_mod = not cooling_modifiers.isdisjoint(lemmas_set) or 'с/охл' in raw_text_full or 'охлад' in raw_text_full
         
-        # A. LAPTOP vs COMPONENT FIX (Critical)
-        # Если найдены явные маркеры ноутбука -> убиваем категории компонентов
-        if not laptop_markers.isdisjoint(lemmas_set):
-            for cat in ['GPU', 'CPU', 'MOTHERBOARD', 'PSU', 'CASE']:
-                scores[cat] = -2000.0
-            # Бустим LAPTOP, если он был найден
-            if scores.get('LAPTOP', 0) > -100:
-                scores['LAPTOP'] = scores.get('LAPTOP', 0) + 500.0
+        # A. NON-LAPTOP BRAND GUARD
+        if not non_laptop_brands.isdisjoint(lemmas_set):
+            scores['LAPTOP'] = -2000.0
+            if scores.get('GPU', 0) > -100:
+                scores['GPU'] += 200.0
+                # Если найден бренд GPU, это точно не PC_BUILD (если нет явных слов сборки)
+                scores['PC_BUILD'] = -500.0 
 
-        # B. COOLING SEPARATION
+        # B. COOLING PRICE GUARD
         if has_cooling_mod:
-            # Убиваем SERVICE для кулеров, если нет слов "ремонт/замена"
-            if 'ремонт' not in lemmas_set and 'замена' not in lemmas_set:
-                scores['SERVICE'] = -500.0
-            
-            # Бустим COOLING
-            scores['COOLING'] = scores.get('COOLING', 0) + 300.0
-            
-            # Снижаем вес железа (это запчасть)
-            for cat in ['GPU', 'CPU', 'LAPTOP']:
-                if scores.get(cat, 0) > 0: scores[cat] -= 400.0
+            if price > 5000 and scores.get('GPU', 0) > 0:
+                # Дорогой кулер? Скорее видеокарта с хорошим охлаждением.
+                scores['COOLING'] = -100.0
+            else:
+                scores['COOLING'] = scores.get('COOLING', 0) + 400.0
+                scores['SERVICE'] = -500.0 
+                for cat in ['GPU', 'CPU', 'LAPTOP', 'PC_BUILD']:
+                    if scores.get(cat, 0) > 0: scores[cat] = -500.0 # Охлаждение убивает все категории железа
 
         # C. ACCESSORY GUARD
         if has_accessory_mod:
-            for cat in hardware_cats:
-                if cat not in ['COOLING', 'CASE', 'MONITOR']: 
-                    if scores.get(cat, 0) > 0: scores[cat] -= 500.0
-            
-            # Особая проверка для "Коробка" - проверяем цену
+            # Особая проверка для "Коробка"
             if 'коробка' in lemmas_set and price > 5000:
-                # Скорее всего это "Видеокарта (в коробке)", а не "Коробка от видеокарты"
-                # Возвращаем баллы GPU
-                if scores.get('GPU', -1000) == -1000.0: 
-                     # Восстанавливаем, если было убито
-                     pass 
-                else:
-                     # Отменяем штраф
-                     if scores.get('GPU', 0) > 0: scores['GPU'] += 500.0
+                if scores.get('GPU', 0) > 0: scores['GPU'] += 500.0
             else:
-                scores['ACCESSORY'] = scores.get('ACCESSORY', 0) + 300.0
-
-        # D. SERVICE GUARD (RELAXED)
-        # Если есть слова скупки, но также есть явная модель железа, это может быть продажа
-        if has_service_mod:
-            # Если заголовок начинается со "Скупка" или "Куплю" - это точно сервис
-            first_word = lemmas[0] if lemmas else ""
-            if first_word in ['скупка', 'куплю', 'выкуп', 'ремонт', 'аренда']:
                 for cat in hardware_cats:
-                    scores[cat] = -1000.0
-                scores['SERVICE'] = 1000.0
-            else:
-                # Это продажа с упоминанием трейд-ина/скупки
-                # Если найдено железо с высоким скором -> убиваем SERVICE
-                max_hw_score = max([scores.get(c, 0) for c in hardware_cats], default=0)
-                if max_hw_score > 150:
-                    scores['SERVICE'] = -500.0
-                else:
-                    # Иначе это скорее всего услуга
-                    scores['SERVICE'] += 200.0
+                    if cat not in ['COOLING', 'CASE', 'MONITOR']: 
+                        if scores.get(cat, 0) > 0: scores[cat] = -500.0
+                scores['ACCESSORY'] = scores.get('ACCESSORY', 0) + 400.0
 
-        # E. RETRO HARDWARE FIX
-        # Если найдено слово 'agp' или 'pci' (старое), но нет категорий -> бустим GPU/ACCESSORY
-        if 'agp' in lemmas_set or 'isa' in lemmas_set:
-            if scores.get('GPU', 0) < 50:
-                scores['GPU'] = 150.0 # Принудительно ставим как GPU
-            if scores.get('SERVICE', 0) > 0:
-                scores['SERVICE'] = -500.0 # Это не услуга
+        # D. RETRO HARDWARE FIX
+        # Если есть слова agp, isa, s3, voodoo и нет явных признаков других категорий
+        retro_markers = {'agp', 'isa', 'pci', 's3', 'voodoo', 'matrox', '3dfx', 'riva', 'tnt2'}
+        if not retro_markers.isdisjoint(lemmas_set):
+            if scores.get('GPU', 0) > -100: 
+                scores['GPU'] += 200.0
+            scores['SERVICE'] = -500.0
+            scores['MISC'] = -200.0
 
-        # F. ABSOLUTE DESKTOP GUARD
+        # E. ABSOLUTE DESKTOP GUARD
         if 'видеокарта' in lemmas_set or 'videocard' in lemmas_set or 'gpu' in lemmas_set:
             scores['LAPTOP'] = -2000.0
-            if scores.get('GPU', 0) > -100:
-                scores['GPU'] += 100.0
+            if scores.get('GPU', 0) > -100: scores['GPU'] += 200.0
+
+        # F. PC_BUILD STRICT GUARD (CRITICAL FIX)
+        # Сборка должна содержать ЯВНЫЕ слова: пк, комп, системник, сборка, workstation
+        pc_build_strong_indicators = {'пк', 'pc', 'сборка', 'системный', 'блок', 'computer', 'компьютер', 'системник', 'workstation', 'сервер', 'моноблок'}
+        
+        # Если категория PC_BUILD набрала очки, но НЕТ сильных индикаторов
+        if scores.get('PC_BUILD', 0) > 0:
+            if pc_build_strong_indicators.isdisjoint(lemmas_set):
+                # Проверяем, не является ли это просто перечислением (Core i5 RTX 3060)
+                # Если это не явная сборка, обнуляем PC_BUILD
+                scores['PC_BUILD'] = -500.0
+                # И скорее всего это Лэптоп или GPU (если есть их признаки)
+                if scores.get('LAPTOP', 0) > -500: scores['LAPTOP'] += 50.0
+                if scores.get('GPU', 0) > -500: scores['GPU'] += 50.0
 
         # 5. Final Selection
         valid_scores = {k: v for k, v in scores.items() if v > -500}
         if not valid_scores: return "MISC", scores
         
         best_category = max(valid_scores, key=valid_scores.get)
+        
+        # FINAL SAFETY CHECK
+        if best_category == 'SERVICE' and price > 5000:
+            del valid_scores['SERVICE']
+            if valid_scores:
+                best_category = max(valid_scores, key=valid_scores.get)
+            else:
+                if 'rtx' in raw_title or 'gtx' in raw_title: return 'GPU', scores
+                return 'MISC', scores
+            
         return best_category, scores
 
     def _apply_price_heuristics(self, scores: Dict[str, float], price: int, lemmas_set: set, raw_text: str) -> Dict[str, float]:
@@ -441,17 +442,24 @@ class SpacyFeatureExtractor:
             elif 'GPU' in scores and price >= 120000:
                 scores['GPU'] -= 50
 
-        if 20000 <= price <= 60000:
-            # Проверяем наличие типичных маркеров ноутбука
-            has_screen_size = bool(re.search(r'\d{2}\.\d', raw_text))  # 15.6, 17.3
-            has_cpu_mention = any(x in lemmas_set for x in ['core', 'ryzen', 'i5', 'i7', 'r5', 'r7'])
-            has_ram_mention = 'ram' in raw_text or 'озу' in raw_text
+        has_screen_size = bool(re.search(r'\b(1[3-7][\.,]\d|1[3-7]"|1[3-7]″)\b', raw_text)) # 13.3, 15.6, 17.3
+        has_cpu_mention = any(x in lemmas_set for x in ['core', 'ryzen', 'i3', 'i5', 'i7', 'i9', 'r3', 'r5', 'r7', 'celeron', 'pentium'])
+        
+        if has_screen_size:
+            # Если есть экран и CPU - это почти наверняка ноутбук или моноблок (но моноблок часто в PC_BUILD)
+            if has_cpu_mention:
+                scores['LAPTOP'] = scores.get('LAPTOP', 0) + 150.0
+                scores['CPU'] = -500.0 # Это точно не отдельный процессор
+                
+            # Если есть экран, это не может быть видеокартой
+            scores['GPU'] = -1000.0
+            scores['MOTHERBOARD'] = -1000.0
 
-            if has_screen_size and (has_cpu_mention or has_ram_mention):
-                if 'LAPTOP' in scores:
-                    scores['LAPTOP'] += 80  # Сильный буст
-                if 'GPU' in scores:
-                    scores['GPU'] -= 40  # Снижаем вероятность
+        # Старая логика по цене (можно оставить или модифицировать)
+        if 20000 <= price <= 60000:
+             has_ram_mention = 'ram' in raw_text or 'озу' in raw_text
+             if has_screen_size and has_ram_mention:
+                 if 'LAPTOP' in scores: scores['LAPTOP'] += 80
 
         return scores
 
