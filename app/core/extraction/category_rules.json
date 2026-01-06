@@ -15,17 +15,17 @@
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
       "alienware", "matebook", "magicbook", "helios", "nitro 5", "nitro", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
-      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "thunderobot", "machenike",
+      "omen", "victus", "zephyrus", "thunderobot", "machenike", "machcreator",
       "inbook", "megabook", "maibenben", "chuwi", "hasee", "vostro", "inspiron", "precision", 
       "expertbook", "hunter v700", "stealth", "leopard", "katana", "gf63", "gf65", "gf66", "gl65",
-      "dell", "acer", "lenovo", "honor", "huawei", "msi gaming"
+      "dell", "acer", "lenovo", "honor", "huawei", "osio", "tecno", "infinix"
     ],
     "weak_keywords": [
       "intel", "core", "ryzen", "144hz", "ips", "oled", "15.6", "17.3", "14.0", "13.3", "16.1", "экран"
     ],
     "banned_keywords": [
       "разбор", "запчасти", "матрица", "клавиатура", "топкейс", "поддон", "рамка", "петли", "шлейф", "аккумулятор", "батарея",
-      "материнская плата", "кулер", "вентилятор", "зарядка", "блок питания", "коробка", "видеокарта"
+      "материнская плата", "кулер", "вентилятор", "зарядка", "блок питания", "коробка"
     ],
     "priority": 500
   },
@@ -57,7 +57,7 @@
     "banned_keywords": [
       "ноутбук", "laptop", "видеокарта", "экран", "inbook", "matebook", "разбор", "запчасти",
       "palit", "sapphire", "zotac", "gddr6", "gddr5", "gddr6x", "термопаста", "кулер", "вентилятор",
-      "блок питания", "psu", "коробка", "корпус", "case", "rtx", "gtx", "rx", "apple imac"
+      "блок питания", "psu", "коробка", "корпус", "case", "apple imac"
     ],
     "priority": 400
   },
@@ -76,9 +76,9 @@
       "nvidia", "amd", "intel", "gddr7", "gddr6", "gddr6x", "gddr5", "gddr3", "gaming oc", "ventus", "eagle", "jetstream", "gamerock", "suprim", "текстолит", "доска"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "райзер", "кулер для", "вентилятор для", "охлаждение", "радиатор", "inbook", "matebook",
-      "звуковая карта", "коробка", "коробки", "sli bridge", "кожух", "с/охл",
-      "держатель", "подставка", "кабель", "переходник", "крепление", "кронштейн"
+      "ноутбук", "laptop", "райзер", "inbook", "matebook",
+      "звуковая карта", "sli bridge", "разъем", "удлинитель",
+      "держатель", "подставка", "кабель", "переходник", "крепление", "кронштейн", "крепеж"
     ],
     "priority": 100
   },
@@ -95,7 +95,8 @@
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "компьютер", "сборка", "материнская", "мать",
       "плата", "комплект", "кулер", "вентилятор", "скупка", "аренда",
-      "macbook", "inspiron", "aspire", "ideapad", "видеокарта", "geforce", "radeon", "nvidia", "rtx", "gtx", "gddr", "графический"
+      "macbook", "inspiron", "aspire", "ideapad", "видеокарта", "geforce", "radeon", "nvidia", "rtx", "gtx", "gddr", "графический",
+      "ips", "экран", "дюймов", "osio", "machcreator"
     ],
     "priority": 90
   },
@@ -109,7 +110,7 @@
       "socket", "сокет", "чипсет", "ddr4", "ddr5", "atx", "matx", "itx", "wifi"
     ],
     "banned_keywords": [
-      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "коробка", "кулер", "gddr", "rtx", "gtx"
+      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "кулер", "gddr", "rtx", "gtx"
     ],
     "priority": 80
   },
@@ -124,7 +125,8 @@
     ],
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "сборка", "видеокарта", "процессор", "gddr", 
-      "материнская", "плата", "mainboard", "lga", "socket", "b760", "z790", "b660", "h610", "am4", "am5", "rtx", "gtx"
+      "материнская", "плата", "mainboard", "lga", "socket", "b760", "z790", "b660", "h610", "am4", "am5", "rtx", "gtx",
+      "ips", "экран", "machcreator", "osio", "tecno", "ssd", "hdd", "tb", "тб", "ryzen", "core", "intel", "amd", "nvidia"
     ],
     "priority": 70
   },
@@ -193,7 +195,8 @@
       "crossfire", "box only", "пустая коробка", "упаковка", "держатель", "подставка", "кронштейн", 
       "термопаста", "термопрокладки", "винтики", "крепление", "заглушка", "салазки",
       "док станция", "хаб", "usb hub", "контроллер", "пульт", "трафарет", "удлинитель",
-      "nvlink", "мостик", "звуковая карта", "sound card", "tv tuner", "тюнер", "wifi адаптер"
+      "nvlink", "мостик", "звуковая карта", "sound card", "tv tuner", "тюнер", "wifi адаптер",
+      "крепеж", "бекплейт", "backplate"
     ],
     "weak_keywords": [
       "для", "видеокарты", "блока", "питания", "монитора", "hdmi", "displayport", "vga", "dvi"

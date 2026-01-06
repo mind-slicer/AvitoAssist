@@ -32,7 +32,7 @@ def filter_misc_items(input_file, output_file):
 
 # Использование
 if __name__ == "__main__":
-    input_file = "diagnostic_20260106_121326.json"  # ваш входной файл
+    input_file = "diagnostic_20260106_130732.json"  # ваш входной файл
     output_file = "diagnostic_misc_only.json"  # результат
     
     filter_misc_items(input_file, output_file)
