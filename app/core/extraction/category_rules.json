@@ -1,87 +1,114 @@
 {
+  "SERVICE": {
+    "strong_keywords": [
+      "скупка", "выкуп", "куплю", "приму", "аренда", "сдам", "ремонт", 
+      "настройка", "обслуживание", "диагностика", "чистка", "апгрейд", 
+      "установка windows", "сборка на заказ", "консультация", "прокат", "service"
+    ],
+    "weak_keywords": ["дорого", "быстро", "выезд", "мастер", "срочно"],
+    "banned_keywords": [],
+    "priority": 1000
+  },
   "LAPTOP": {
     "strong_keywords": [
-      "ноутбук", "ноутбуки", "ультрабук", "ультрабуки", "laptop", "laptops", "ultrabook", "netbook", "нетбук", "macbook", "макбук", "лэптоп",
+      "ноутбук", "ноутбуки", "ультрабук", "нетбук", "laptop", "ultrabook", "macbook", "макбук",
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
       "alienware", "matebook", "magicbook", "predator", "helios", "nitro 5", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
-      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "prime", 
-      "katana", "sword", "crosshair", "bravo", "alpha", "delta", 
-      "thunderobot", "machenike", "machcreator", "mechrevolution", "gigabyte g5", "gigabyte aorus",
-      "inbook", "megabook", "osio", "infinix", "tecno", "chuwi", "hasee", "maibenben",
-      "vostro", "inspiron", "precision", "surface", "book", "flip", "expertbook", "proart", "notebook"
+      "omen", "victus", "tuf gaming", "rog strix", "zephyrus", "thunderobot", "machenike",
+      "inbook", "megabook", "maibenben", "chuwi", "hasee", "vostro", "inspiron", "precision", 
+      "expertbook", "proart", "hunter v700"
     ],
     "weak_keywords": [
-      "intel", "core", "ryzen", "nvidia", "geforce", "radeon", "n100", "n200", "144hz", "ips", "oled", "fhd", "2k", "16gb", "512gb", "15.6", "17.3", "14.0", "16.0"
+      "intel", "core", "ryzen", "144hz", "ips", "oled", "15.6", "17.3", "14.0", "13.3", "16.1", "экран"
     ],
     "banned_keywords": [
-      "видеокарта", "gpu", "desktop", "системный блок", "моноблок", "запчасти на", "разбор", "матрица", "клавиатура для", "топкейс", "поддон", "рамка",
-      "palit", "sapphire", "zotac", "inno3d", "gainward", "pny", "colorful", "powercolor", "evga", "kfa2", "gddr"
+      "разбор", "запчасти", "матрица", "клавиатура", "топкейс", "поддон", "рамка", "петли", "шлейф", "аккумулятор", "батарея",
+      "материнская плата", "кулер", "вентилятор", "зарядка", "блок питания", "коробка"
     ],
-    "priority": 120
+    "priority": 500
+  },
+  "MONITOR": {
+    "strong_keywords": [
+      "монитор", "monitor", "дисплей", "экран для пк", 
+      "samsung odyssey", "lg ultragear", "aoc", "ardor gaming", "huawei mateview", "xiaomi monitor",
+      "thunderobot monitor", "titan army", "mucai"
+    ],
+    "weak_keywords": [
+      "144hz", "165hz", "240hz", "ips", "va", "tn", "oled", "fhd", "2k", "4k", "curved", "изогнутый"
+    ],
+    "banned_keywords": [
+      "ноутбук", "laptop", "моноблок", "кронштейн", "кабель", "разбита", "матрица", "dvi", "vga", "видеокарта", "системный блок"
+    ],
+    "priority": 450
   },
   "PC_BUILD": {
     "strong_keywords": [
-      "системный блок", "системник", "игровой пк", "офисный пк", "сборка пк", 
-      "gaming pc", "desktop", "компьютер", "моноблок", "imac", "mac mini", 
-      "неттоп", "workstation", "сервер", "готовый пк", "персональный компьютер", "системный", "компьютерный"
+      "системный блок", "системник", "сборка пк", "gaming pc", "desktop", "компьютер", "моноблок", 
+      "imac", "mac mini", "неттоп", "workstation", "сервер", "готовый пк", "персональный компьютер",
+      "пк для игр", "пк для работы", "офисный пк", "игровой пк", "мощный пк"
     ],
     "weak_keywords": [
       "корпус", "case", "rgb", "tower", "win10", "win11", "комплект", "монитор", "клавиатура", "мышь"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "видеокарт", "материнск", "процессор", "экран", "inbook", "matebook",
-      "palit", "sapphire", "zotac", "gddr6", "gddr5", "gddr6x", "192bit", "256bit", "термопаста", "кулер"
+      "ноутбук", "laptop", "видеокарта", "экран", "inbook", "matebook", "разбор", "запчасти",
+      "palit", "sapphire", "zotac", "gddr6", "gddr5", "gddr6x", "термопаста", "кулер", "вентилятор",
+      "блок питания", "psu", "коробка", "корпус", "case"
     ],
-    "priority": 85
+    "priority": 400
   },
   "GPU": {
     "strong_keywords": [
       "видеокарта", "видеокарты", "gpu", "graphics card", "видеоадаптер", "видюха", 
       "rtx", "gtx", "rx", "arc", "quadro", "tesla", "titan", 
-      "geforce", "radeon", "sapphire", "palit", "zotac", "powercolor", "inno3d", "kfa2",
-      "agp", "pci-e", "isa", "voodoo", "riva", "tnt2", "s3", "sis", "trident", "cirrus logic", "3dfx", "matrox", "rage pro", "rage",
-      "mx440", "fx5200", "fx5500", "6600gt", "7600gs", "8600gt", "9600gt", "9800gt", 
-      "hd3850", "hd4850", "hd5770", "hd6850", "hd7770", "r7 260", "r9 280", "r9 290"
+      "geforce", "radeon", "sapphire", "palit", "zotac", "powercolor", "inno3d", "kfa2", "gainward", "xfx", "his",
+      "agp", "pci-e", "voodoo", "riva", "tnt2", "s3", "sis", "trident", "3dfx", "matrox", 
+      "mx440", "fx5200", "fx5500", "6600gt", "7600gs", "8600gt", "8800gt", "9600gt", "9800gt", "9500gt", "gt210", "gt220", "gt240", 
+      "gts250", "gts450", "hd3850", "hd4850", "hd5770", "hd6850", "hd7770", "hd7750", "hd7850", "hd7970", 
+      "r7 260", "r9 280", "r9 290", "gt 1030", "gt 710", "gt 730", "gt 610", "gt 630", "gt 440", "gt 430",
+      "asus en", "gigabyte gv"
     ],
     "weak_keywords": [
-      "nvidia", "amd", "intel", "gddr7", "gddr6", "gddr6x", "gddr5", "hbm", "gaming oc", "ventus", "eagle", "jetstream", "gamerock", "gaming x", "suprim"
+      "nvidia", "amd", "intel", "gddr7", "gddr6", "gddr6x", "gddr5", "gddr3", "gaming oc", "ventus", "eagle", "jetstream", "gamerock", "suprim", "текстолит", "доска"
     ],
     "banned_keywords": [
       "ноутбук", "laptop", "райзер", "кулер", "вентилятор", "охлаждение", "радиатор", "inbook", "matebook",
-      "кулеры", "вентиляторы", "звуковая карта", "sound card", "коробки", "sli bridge", "crossfire bridge", "кожух", "с/охл"
+      "звуковая карта", "коробка", "коробки", "sli bridge", "кожух", "с/охл",
+      "держатель", "подставка", "кабель", "переходник", "крепление", "кронштейн"
     ],
-    "priority": 50
+    "priority": 100
   },
   "CPU": {
     "strong_keywords": [
       "процессор", "cpu", "проц", "камень", "ryzen", "epyc", "threadripper", 
       "xeon", "pentium", "celeron", "athlon", "phenom", "fx-", "core i3", 
-      "core i5", "core i7", "core i9", "core 2 duo", "core 2 quad"
+      "core i5", "core i7", "core i9", "core 2 duo", "core 2 quad",
+      "i3-", "i5-", "i7-", "i9-", "r3-", "r5-", "r7-", "r9-"
     ],
     "weak_keywords": [
       "intel", "amd", "socket", "lga", "am4", "am5", "ghz", "ггц", "ядер", "потоков", "oem", "box"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "системный", "компьютер", "сборка", "материнская", 
-      "плата", "комплект", "кулер", "вентилятор", "скупка", 
-      "macbook", "inspiron", "aspire", "ideapad", "zenbook", "inbook", "matebook", "видеокарта", "ультрабуки"
+      "ноутбук", "laptop", "системный", "компьютер", "сборка", "материнская", "мать",
+      "плата", "комплект", "кулер", "вентилятор", "скупка", "аренда",
+      "macbook", "inspiron", "aspire", "ideapad", "видеокарта", "geforce", "radeon", "nvidia", "rtx", "gtx", "gddr", "графический"
     ],
-    "priority": 40
+    "priority": 90
   },
   "MOTHERBOARD": {
     "strong_keywords": [
       "материнская", "плата", "motherboard", "mainboard", "mobo", "материнка", "мать", "матплата",
       "z790", "z690", "b760", "b660", "h610", "x670", "b650", "x570", "b550", "b450", 
-      "a520", "a320", "lga1700", "lga1200", "am4", "am5", "x99", "x79"
+      "a520", "a320", "lga1700", "lga1200", "am4", "am5", "x99", "x79", "h61", "h81", "b75", "b85", "z77"
     ],
     "weak_keywords": [
-      "socket", "сокет", "чипсет", "ddr4", "ddr5", "atx", "matx", "itx", "wifi", "msi mag", "asus rog", "gigabyte aorus"
+      "socket", "сокет", "чипсет", "ddr4", "ddr5", "atx", "matx", "itx", "wifi"
     ],
     "banned_keywords": [
-      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "коробка", "inbook", "кулер"
+      "ноутбук", "системный", "сборка", "процессор", "видеокарта", "коробка", "кулер", "gddr", "rtx", "gtx"
     ],
-    "priority": 30
+    "priority": 80
   },
   "RAM": {
     "strong_keywords": [
@@ -93,9 +120,10 @@
       "8gb", "16gb", "32gb", "64gb", "3200mhz", "3600mhz", "5200mhz", "6000mhz", "cl16", "cl30", "cl32", "cl40", "mhz"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "системный", "сборка", "видеокарта", "процессор", "gddr"
+      "ноутбук", "laptop", "системный", "сборка", "видеокарта", "процессор", "gddr", 
+      "материнская", "плата", "mainboard", "lga", "socket", "rtx", "gtx"
     ],
-    "priority": 25
+    "priority": 70
   },
   "STORAGE": {
     "strong_keywords": [
@@ -104,75 +132,63 @@
       "wd blue", "wd black", "seagate barracuda"
     ],
     "weak_keywords": [
-      "120gb", "240gb", "250gb", "480gb", "500gb", "512gb", "1tb", "2tb", "4tb", "pcie 3.0", "pcie 4.0"
+      "120gb", "240gb", "250gb", "480gb", "500gb", "512gb", "1tb", "2tb", "4tb"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "системный", "сборка", "psu", "оперативная"
+      "ноутбук", "laptop", "системный", "сборка", "psu", "оперативная", "аренда"
     ],
-    "priority": 25
+    "priority": 60
   },
   "PSU": {
     "strong_keywords": [
       "блок питания", "psu", "power supply", "atx блок", "sfx блок", "бп для пк", 
       "be quiet", "seasonic", "chieftec", "deepcool pk", "deepcool pf", "deepcool dq", 
-      "corsair rm", "montech", "1stplayer", "cougar gex", "cougar stx"
+      "corsair rm", "montech", "1stplayer", "cougar gex", "cougar stx", "ginzzu", "aerocool", "ksas"
     ],
     "weak_keywords": [
       "500w", "600w", "700w", "750w", "800w", "850w", "1000w", "1200w", 
       "gold", "bronze", "platinum", "titanium", "modular", "модульный", "сертификат"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "системный", "корпус", "кабель", "удлинитель", "зарядка", "адаптер"
+      "ноутбук", "laptop", "системный", "корпус", "зарядка", "адаптер", "кабель"
     ],
-    "priority": 20
+    "priority": 75
+  },
+  "CASE": {
+    "strong_keywords": [
+      "корпус", "case", "tower", "chassis", "atx корпус", "matx корпус", "itx корпус",
+      "lian li", "nzxt", "fractal design", "cougar", "zalman", "powercase", "ginzzu", "jonsbo"
+    ],
+    "weak_keywords": [
+      "mesh", "glass", "tempered", "midi", "full", "mini", "стекло", "сетка", "белый", "черный"
+    ],
+    "banned_keywords": [
+      "системный блок", "сборка", "игровой пк", "компьютер", "ноутбук", "телефон", "планшет", 
+      "вентилятор", "кулер", "видеокарта", "gpu", "для видеокарты", "rtx", "gtx"
+    ],
+    "priority": 55
   },
   "COOLING": {
     "strong_keywords": [
       "кулер", "вентилятор", "fan", "cooler", "радиатор", "сво", "сжо", "водянка", "с/охл", "охлад",
-      "water cooling", "aio", "башня", "вертушка", "термопаста", "lga1700 крепление",
+      "water cooling", "aio", "башня", "вертушка", "lga1700 крепление",
       "deepcool ak", "deepcool ag", "id-cooling", "охлаждение", "кожух", "кульки", "backplate", "бэкплейт"
     ],
     "weak_keywords": [
       "120mm", "140mm", "rgb", "argb", "pwm", "4pin", "3pin"
     ],
     "banned_keywords": [
-      "процессор", "ноутбук", "системный", "блок питания", "корпус", "gddr", "gb gddr"
+      "ноутбук", "системный", "блок питания", "корпус", "gddr", "gb gddr"
     ],
-    "priority": 25
-  },
-  "MONITOR": {
-    "strong_keywords": [
-      "монитор", "monitor", "display", "дисплей", "экран для пк", 
-      "samsung odyssey", "lg ultragear", "aoc", "ardor gaming", "huawei mateview", "xiaomi monitor"
-    ],
-    "weak_keywords": [
-      "144hz", "165hz", "240hz", "1ms", "ips", "va", "tn", "oled", "fhd", "2k", "4k", "qhd", "uhd", "curved", "изогнутый"
-    ],
-    "banned_keywords": [
-      "ноутбук", "laptop", "моноблок", "кронштейн", "кабель", "broken"
-    ],
-    "priority": 45
-  },
-  "CASE": {
-    "strong_keywords": [
-      "корпус", "case", "tower", "chassis", "atx корпус", "matx корпус", "itx корпус",
-      "lian li", "nzxt", "fractal design", "cougar", "zalman", "ginzzu", "powercase"
-    ],
-    "weak_keywords": [
-      "mesh", "glass", "tempered", "midi", "full", "mini", "стекло", "сетка", "белый", "черный"
-    ],
-    "banned_keywords": [
-      "системный блок", "сборка", "игровой пк", "компьютер", "ноутбук", "телефон", "планшет", "вентилятор", "кулер"
-    ],
-    "priority": 15
+    "priority": 40
   },
   "ACCESSORY": {
     "strong_keywords": [
-      "коробка", "райзер", "райзера", "riser", "переходник", "кабель", "шлейф", "мост", "sli bridge", 
+      "райзер", "райзера", "riser", "переходник", "кабель", "шлейф", "мост", "sli bridge", 
       "crossfire", "box only", "пустая коробка", "упаковка", "держатель", "подставка", "кронштейн", 
       "термопаста", "термопрокладки", "винтики", "крепление", "заглушка", "салазки",
       "док станция", "хаб", "usb hub", "контроллер", "пульт", "трафарет", "удлинитель",
-      "nvlink", "мостик", "звуковая карта", "sound card", "tv tuner", "тюнер"
+      "nvlink", "мостик", "звуковая карта", "sound card", "tv tuner", "тюнер", "wifi адаптер"
     ],
     "weak_keywords": [
       "для", "видеокарты", "блока", "питания", "монитора", "hdmi", "displayport", "vga", "dvi"
@@ -180,18 +196,6 @@
     "banned_keywords": [
       "ноутбук", "системный"
     ],
-    "priority": 80
-  },
-  "SERVICE": {
-    "strong_keywords": [
-      "скупка", "выкуп", "куплю", "приму", "аренда", "сдам", "ремонт", 
-      "настройка", "обслуживание", "диагностика", "чистка", "апгрейд", 
-      "установка windows", "сборка на заказ", "помощь", "консультация"
-    ],
-    "weak_keywords": [
-      "дорого", "быстро", "выезд", "мастер"
-    ],
-    "banned_keywords": [],
-    "priority": 200
+    "priority": 30
   }
 }
