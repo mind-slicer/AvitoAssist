@@ -288,7 +288,6 @@ class SpacyFeatureExtractor:
             
             # Special logic for old GPUs (GT 220, etc)
             if cat_name == 'GPU' and score > 0:
-                # If we found a strong GPU keyword, boost it to avoid losing to CPU
                 score += 50
 
             if score > 0:
@@ -296,14 +295,19 @@ class SpacyFeatureExtractor:
 
         # --- PHASE 6: FINAL CONFLICT RESOLUTION ---
         
-        # CPU vs GPU conflict (e.g. "Intel Core i3... + GTX 1060") -> Usually PC Build, but if we missed Phase 2/4...
-        # If both present and high score, assume Bundle/PC
+        # 1. GPU PROTECTION: If GPU is found, Cooling and Accessory (if not triggered by Phase 3) die.
+        if scores.get('GPU', 0) > 0:
+             scores['COOLING'] = -1000.0
+             scores['ACCESSORY'] = -1000.0
+             scores['MONITOR'] = -1000.0
+             scores['PSU'] = -1000.0
+
+        # 2. CPU vs GPU conflict (e.g. "Intel Core i3... + GTX 1060") -> PC Build
         if scores.get('CPU', 0) > 0 and scores.get('GPU', 0) > 0 and scores.get('MOTHERBOARD', 0) > 0:
              return 'PC_BUILD', {'PC_BUILD': 500.0}
 
-        # PSU vs Accessory (Cable)
-        if scores.get('PSU', 0) > 0 and scores.get('ACCESSORY', 0) > 0:
-             # PSU wins over generic accessory keywords if PSU brand/model is found
+        # 3. PSU vs Accessory (Cable)
+        if scores.get('PSU', 0) > 0:
              scores['ACCESSORY'] = -100.0
 
         # Select winner
@@ -323,7 +327,7 @@ class SpacyFeatureExtractor:
         if (has_cpu and has_mobo) or (has_mobo and has_ram and has_cpu):
             return True
             
-        bundle_keywords = ['комплект', 'связка', 'сборка на', 'тушка', 'основа']
+        bundle_keywords = ['комплект', 'связка', 'сборка на', 'тушка', 'основа', 'набор']
         if any(bk in raw_title.lower() for bk in bundle_keywords):
             if has_cpu or has_mobo or has_ram:
                 return True
