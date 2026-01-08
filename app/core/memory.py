@@ -319,6 +319,16 @@ class MemoryManager:
                     f"(категория = {category})"
                 )
                 return False
+            
+        if category in ['GPU', 'CPU', 'RAM', 'STORAGE', 'MOTHERBOARD', 'PSU']:
+            # Если в заголовке есть и процессор, и видеокарта — это не может быть просто "диском" или "памятью"
+            has_cpu_cues = any(x in item_title.lower() for x in ['ryzen', 'core i', 'i3-', 'i5-', 'i7-', 'i9-'])
+            has_gpu_cues = any(x in item_title.lower() for x in ['rtx', 'gtx', 'rx ', 'geforce', 'radeon'])
+            
+            # Если найдены оба признака в "мелком" компоненте (например, STORAGE)
+            if category in ['STORAGE', 'RAM', 'PSU'] and (has_cpu_cues or has_gpu_cues):
+                logger.warning(f"Элемент '{item_title[:50]}' помечен как {category}, но содержит CPU/GPU. БЛОКИРОВАН.")
+                return False
 
         # ✅ НОВОЕ: Проверка 5 - ACCESSORY может быть без бренда/модели, но не без clean_name
         if category == 'ACCESSORY':

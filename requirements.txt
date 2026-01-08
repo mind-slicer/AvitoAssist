@@ -13,3 +13,4 @@ pytest
 scikit-learn
 openpyxl
 spacy
+deadcode

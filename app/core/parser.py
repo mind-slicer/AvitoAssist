@@ -605,7 +605,7 @@ class ItemParser:
             return ad_id
         except:
             return ""
-     
+
     @staticmethod
     def parse_search_item(soup_element, logger=None) -> Optional[Dict[str, Any]]:
         try:

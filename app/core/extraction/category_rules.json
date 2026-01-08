@@ -11,21 +11,21 @@
   },
   "LAPTOP": {
     "strong_keywords": [
-      "ноутбук", "ноутбуки", "ультрабук", "нетбук", "laptop", "ultrabook", "macbook", "макбук",
+      "ноутбук", "ноутбуки", "ультрабук", "ультрабуки", "нетбук", "notebook", "laptop", "ultrabook", "macbook", "макбук",
       "legion", "zenbook", "vivobook", "ideapad", "thinkpad", "latitude", "xps", 
       "alienware", "matebook", "magicbook", "helios", "nitro 5", "nitro", 
       "aspire", "swift", "travelmate", "probook", "elitebook", "pavilion", "envy", 
-      "omen", "victus", "zephyrus", "thunderobot", "machenike", "machcreator",
+      "omen", "victus", "zephyrus", "thunderobot", "machenike", "machcreator", "prime",
       "inbook", "megabook", "maibenben", "chuwi", "hasee", "vostro", "inspiron", "precision", 
-      "expertbook", "hunter v700", "stealth", "leopard", "katana", "gf63", "gf65", "gf66", "gl65",
-      "dell", "acer", "lenovo", "honor", "huawei", "osio", "tecno", "infinix"
+      "expertbook", "hunter v700", "hunter", "stealth", "leopard", "katana", "gf63", "gf65", "gf66", "gl65",
+      "redmibook", "mi gaming", "hp 15s", "sword", "osio", "tecno", "infinix", "gigabyte g5"
     ],
     "weak_keywords": [
-      "intel", "core", "ryzen", "144hz", "ips", "oled", "15.6", "17.3", "14.0", "13.3", "16.1", "экран"
+      "intel", "core", "ryzen", "144hz", "ips", "oled", "15.6", "17.3", "14.0", "13.3", "16.1", "экран", "дюймов"
     ],
     "banned_keywords": [
       "разбор", "запчасти", "матрица", "клавиатура", "топкейс", "поддон", "рамка", "петли", "шлейф", "аккумулятор", "батарея",
-      "материнская плата", "кулер", "вентилятор", "зарядка", "блок питания", "коробка"
+      "материнская плата", "кулер", "кулеры", "вентилятор", "зарядка", "блок питания", "коробка"
     ],
     "priority": 500
   },
@@ -40,13 +40,14 @@
     ],
     "banned_keywords": [
       "ноутбук", "laptop", "моноблок", "кронштейн", "кабель", "разбита", "матрица", "dvi", "vga", 
-      "видеокарта", "системный блок", "geforce", "radeon", "gtx", "rtx", "rx"
+      "видеокарта", "системный блок", "geforce", "radeon", "gtx", "rtx", "rx", "на 2 монитора", "на монитор",
+      "ssd", "hdd", "core i", "ryzen"
     ],
     "priority": 450
   },
   "PC_BUILD": {
     "strong_keywords": [
-      "системный блок", "системник", "сборка пк", "gaming pc", "desktop", "компьютер", "моноблок", 
+      "системный блок", "системник", "сборка пк", "gaming pc", "desktop", "компьютер", "моноблок", "пк",
       "imac", "mac mini", "неттоп", "workstation", "сервер", "готовый пк", "персональный компьютер",
       "пк для игр", "пк для работы", "офисный пк", "игровой пк", "мощный пк", 
       "комплект для сборки", "набор процессор", "набор для сборки", "основа для пк", "комплект материнская"
@@ -126,7 +127,7 @@
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "сборка", "видеокарта", "процессор", "gddr", 
       "материнская", "плата", "mainboard", "lga", "socket", "b760", "z790", "b660", "h610", "am4", "am5", "rtx", "gtx",
-      "ips", "экран", "machcreator", "osio", "tecno", "ssd", "hdd", "tb", "тб", "ryzen", "core", "intel", "amd", "nvidia"
+      "ips", "экран", "machcreator", "osio", "tecno", "ssd", "hdd", "tb", "тб", "ryzen", "core", "intel", "amd", "nvidia", "geforce", "radeon"
     ],
     "priority": 70
   },
@@ -140,7 +141,7 @@
       "120gb", "240gb", "250gb", "480gb", "500gb", "512gb", "1tb", "2tb", "4tb"
     ],
     "banned_keywords": [
-      "ноутбук", "laptop", "системный", "сборка", "psu", "оперативная", "аренда"
+      "ноутбук", "laptop", "системный", "сборка", "psu", "оперативная", "аренда", "ryzen", "core", "intel", "amd", "rtx", "gtx", "geforce", "radeon", "machcreator", "x16"
     ],
     "priority": 60
   },
@@ -156,7 +157,7 @@
     ],
     "banned_keywords": [
       "ноутбук", "laptop", "системный", "корпус", "зарядка", "адаптер", "кабель", 
-      "видеокарта", "geforce", "radeon", "rtx", "gtx"
+      "видеокарта", "geforce", "radeon", "rtx", "gtx", "ryzen", "core"
     ],
     "priority": 75
   },
@@ -170,7 +171,7 @@
     ],
     "banned_keywords": [
       "системный блок", "сборка", "игровой пк", "компьютер", "ноутбук", "телефон", "планшет", 
-      "вентилятор", "кулер", "видеокарта", "gpu", "для видеокарты", "rtx", "gtx"
+      "вентилятор", "кулер", "видеокарта", "gpu", "для видеокарты", "rtx", "gtx", "ryzen", "core"
     ],
     "priority": 55
   },

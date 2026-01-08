@@ -24,7 +24,8 @@ class SpacyFeatureExtractor:
         'machcreator', 'chuwi', 'haier', 'digma', 'osio', 'infinix', 'tecno',
         'machenike', 'irbis', 'hasee', 'yeston', 'afox', 'biostar', 'gainward',
         'leadtek', 'sparkle', 'his', 'xfx', 'powercolor', 'albatron', 'galaxy', 'kfa2',
-        'titan', 'mucai', 'sunwind', 'dexp', 'lian li', 'nzxt', 'fractal', 'zalman'
+        'titan', 'mucai', 'sunwind', 'dexp', 'lian li', 'nzxt', 'fractal', 'zalman',
+        'redmibook', 'macbook', 'surface'
     }
 
     SERIES_KEYWORDS = {
@@ -35,15 +36,16 @@ class SpacyFeatureExtractor:
         'ideapad', 'thinkpad', 'nitro', 'predator', 'alienware', 'xps', 'latitude',
         'inspiron', 'omen', 'victus', 'pavilion', 'envy', 'matebook', 'magicbook',
         'playstation', 'xbox', 'nintendo', 'cosmos', 'gf', 'katana', 'sword', 'pulse',
-        'agp', 's3', 'tnt2', 'riva', 'rage', 'voodoo', 'matrox', 'fx', 'hd', 'r7', 'r9'
+        'agp', 's3', 'tnt2', 'riva', 'rage', 'voodoo', 'matrox', 'fx', 'hd', 'r7', 'r9',
+        'prime', 'redmibook', 'mi gaming'
     }
 
     NOISE_WORDS = {
-        'gaming', 'edition', 'oc', 'overclock', 'ultra', 'pro', 'max', 'plus',
+        'gaming', 'edition', 'oc', 'overclock', 'ultra', 'max', 'plus',
         'evo', 'x', 'z', 'super', 'ti', 'lhr', 'box', 'oem', 'new', 'used',
         'white', 'black', 'rgb', 'wifi', 'dvd', 'cd', 'hero', 'master', 'elite',
-        'eagle', 'vision', 'trio', 'ventus', 'suprim', 'strix', 'tuf', 'aorus',
-        'fatboy', 'nitro', 'pulse', 'mech', 'dual', 'windforce', 'phoenix',
+        'eagle', 'vision', 'trio', 'ventus', 'suprim', 'aorus',
+        'fatboy', 'pulse', 'mech', 'dual', 'windforce', 'phoenix',
         'phantom', 'gamerock', 'jetstream', 'stormx', 'verto', 'epic', 'extreme',
         'waterforce', 'se', 'xt', 'xtx', 'gddr6', 'gddr6x', 'gddr5', 'ddr4', 'ddr5',
         'ssd', 'hdd', 'nvme', 'sata', 'm2', 'pci', 'express', 'usb', 'hdmi',
@@ -193,9 +195,6 @@ class SpacyFeatureExtractor:
         return semantic_data, debug_info
 
     def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
-        """
-        Waterfall/Cascade categorization logic.
-        """
         clean_title = raw_title.lower().strip()
         lemmas_set = set(lemmas)
         scores = {}
@@ -205,14 +204,47 @@ class SpacyFeatureExtractor:
         if not rent_keywords.isdisjoint(lemmas_set):
             return 'SERVICE', {'SERVICE': 1000.0}
 
+        # --- PHASE 2: SYSTEM DETECTOR (Implicit Laptop/PC) ---
+        # Эта фаза ищет "скрытые" ноутбуки/ПК, где нет слова "ноутбук", но есть Бренд + CPU + GPU
+        # Пример: "Asus ROG Strix i7 12700H RTX 3060" -> Это точно не просто видеокарта.
+        
+        # 1. Расширенный список вендоров, которые делают готовые устройства
+        sys_vendors = ['asus', 'msi', 'acer', 'hp', 'lenovo', 'dell', 'thunderobot', 'machenike', 'xiaomi', 'huawei', 'honor', 'gigabyte', 'ardor', 'osio', 'tecno', 'infinix', 'apple']
+        has_top_vendor = any(v in clean_title for v in sys_vendors)
+        
+        has_cpu_strong = any(c in clean_title for c in ['i3', 'i5', 'i7', 'i9', 'ryzen', 'r3', 'r5', 'r7', 'r9', 'n100', 'n200', 'n95', 'n5095', 'celeron', 'pentium', '3050u', '3500u', '5500u'])
+        has_gpu_strong = any(g in clean_title for g in ['rtx', 'gtx', 'rx 6', 'rx 7', 'radeon', 'geforce'])
+        has_storage_ram = any(s in clean_title for s in ['gb', 'гб', 'ssd', 'ram', 'озу'])
+
+        # Логика:
+        # А) Бренд + CPU + GPU (Игровой ноут/ПК) -> Gigabyte ... i5 ... RTX 3050
+        # Б) Бренд + CPU + Память (Офисный ноут) -> Osio ... N200 ... 8Gb
+        
+        if has_top_vendor and has_cpu_strong:
+             is_system = False
+             if has_gpu_strong:
+                 is_system = True
+             elif has_storage_ram:
+                 is_system = True
+            
+             if is_system:
+                 # Если есть экран или мобильные признаки - ноутбук, иначе ПК
+                 mobile_cues = ['15.6', '17.3', '14.0', '16.1', '14"', 'ips', 'oled', 'battery', 'батарея', 'ultrabook', 'ультрабук', 'tb', 'thin']
+                 if any(cue in clean_title for cue in mobile_cues):
+                     return 'LAPTOP', {'LAPTOP': 5000.0}
+                 
+                 # По умолчанию считаем ноутбуком (чаще встречаются), если нет слова "системник"
+                 # Ardor Gaming - может быть монитором, но presence of CPU kills monitor logic via Banned keywords later, but here we enforce Laptop/PC
+                 if 'системн' not in clean_title and 'пк' not in clean_title.split() and 'desktop' not in clean_title:
+                     return 'LAPTOP', {'LAPTOP': 4500.0}
+                 else:
+                     return 'PC_BUILD', {'PC_BUILD': 4500.0}
+
         # --- CLEAN START STRING (Remove adjectives like "new", "gaming") ---
         adjectives_strip = r'^(новая|новый|новые|игровая|игровой|б\/у|бу|продам|продается|мощная|топовая|нерабочая|неисправная|faulty)\s+'
         stripped_start = re.sub(adjectives_strip, '', clean_title).strip()
-        tokens_start = stripped_start.split()
-        first_word = tokens_start[0] if tokens_start else ""
-        second_word = tokens_start[1] if len(tokens_start) > 1 else ""
-
-        # --- PHASE 2: FORCED START DETECTOR (Modifiers) ---
+        
+        # --- PHASE 3: FORCED START DETECTOR (Modifiers) ---
         acc_starters = (
             'коробка', 'коробки', 'каробка', 'упаковка', 'box', 
             'держатель', 'подставка', 'кронштейн', 
@@ -230,76 +262,55 @@ class SpacyFeatureExtractor:
         )
         if stripped_start.startswith(cool_starters):
             return 'COOLING', {'COOLING': 2000.0}
+        
+        # --- PHASE 4: LAPTOP DETECTOR ---
+        laptop_rules = self.category_rules['LAPTOP']
+        is_laptop = False
+        
+        # Strong keywords check (включая "ультрабуки" и т.д.)
+        for kw in laptop_rules['strong_keywords']:
+            if kw in lemmas_set or kw in clean_title: # Check raw title too for things like "hp 15s"
+                is_laptop = True
+                break
+        
+        # Доп. проверка по комбинации бренд + экран
+        if not is_laptop:
+            has_laptop_brand = any(b in lemmas_set for b in self.VENDORS)
+            has_screen = any(kw in lemmas_set for kw in ['ips', '144hz', 'дюймов', 'экран'])
+            if has_laptop_brand and has_screen:
+                is_laptop = True
+        
+        # Проверка Banned для Laptop
+        if is_laptop:
+            if not any(ban in clean_title for ban in laptop_rules['banned_keywords']):
+                return 'LAPTOP', {'LAPTOP': 1500.0}
 
-        # --- PHASE 3: GPU START DETECTOR (Flexible, moved UP) ---
-        # Catches: "Видеокарта...", "Nvidia...", "MSI RTX..." BEFORE Monitor Check
+        # --- PHASE 5: MONITOR DETECTOR ---
+        monitor_strong = self.category_rules['MONITOR']['strong_keywords']
+        if any(kw in lemmas_set for kw in monitor_strong) or any(kw in clean_title for kw in monitor_strong):
+             # Защита от "Видеокарта на 2 монитора"
+             # Ищем паттерн "на ... монитор"
+             context_ban = re.search(r'\bна\s+\d*\s*монитор', clean_title)
+             if not context_ban:
+                 if 'матрица' not in lemmas_set and 'разбита' not in lemmas_set:
+                     return 'MONITOR', {'MONITOR': 1000.0}
+
+        # --- PHASE 6: PC BUILD / BUNDLE ---
+        pc_strong = self.category_rules['PC_BUILD']['strong_keywords']
+        # Проверяем на точное совпадение "пк" как отдельного слова
+        if any(kw in clean_title for kw in pc_strong) or re.search(r'\bпк\b', clean_title):
+             return 'PC_BUILD', {'PC_BUILD': 1000.0}
+
+        # --- PHASE 7: GPU / CPU START DETECTOR (With safety) ---
         gpu_explicit = ('видеокарта', 'videocard', 'gpu', 'видюха')
         gpu_series_start = ('rtx', 'gtx', 'rx', 'radeon', 'geforce')
         
-        is_gpu_start = False
-        if stripped_start.startswith(gpu_explicit):
-            is_gpu_start = True
-        elif stripped_start.startswith(gpu_series_start):
-            is_gpu_start = True
-        elif first_word in self.VENDORS and second_word in gpu_series_start:
-            # E.g. "MSI RTX..."
-            is_gpu_start = True
-            
+        is_gpu_start = (stripped_start.startswith(gpu_explicit) or stripped_start.startswith(gpu_series_start))
         if is_gpu_start:
-             # SAFETY: Don't steal Laptops if they start with "MSI RTX..."
-             # Check if title contains laptop keywords
              if 'ноутбук' not in clean_title and 'laptop' not in clean_title:
-                 if 'кулер' in clean_title or 'вентилятор' in clean_title or 'охлаждение' in clean_title:
-                     return 'COOLING', {'COOLING': 2000.0}
                  return 'GPU', {'GPU': 2000.0}
 
-        # --- PHASE 4: CONTAINER DETECTOR (Laptop/Monitor) ---
-        
-        # 1. Monitor
-        monitor_strong = self.category_rules['MONITOR']['strong_keywords']
-        if any(kw in lemmas_set for kw in monitor_strong):
-             if 'матрица' not in lemmas_set and 'разбита' not in lemmas_set:
-                 return 'MONITOR', {'MONITOR': 1000.0}
-
-        # 2. Laptop (ROBUST)
-        laptop_strong = self.category_rules['LAPTOP']['strong_keywords']
-        is_laptop = False
-        
-        # A. Explicit series check
-        for kw in laptop_strong:
-            if kw in lemmas_set:
-                is_laptop = True
-                break
-                
-        # B. Brand + Screen cues (IPS, 144Hz)
-        if not is_laptop:
-            screen_kws = {'ips', 'oled', 'amoled', '144hz', '165hz', '360hz', '15.6', '17.3', '14.0', '13.3', '16.1', 'экран', 'дюймов'}
-            has_screen = not screen_kws.isdisjoint(lemmas_set)
-            has_laptop_brand = any(b in lemmas_set for b in self.VENDORS) 
-            if has_screen and has_laptop_brand and ('монитор' not in lemmas_set):
-                 is_laptop = True
-
-        # Check banned words for Laptop (parts)
-        if is_laptop:
-            parts_ban = self.category_rules['LAPTOP']['banned_keywords']
-            for part in parts_ban:
-                if part in clean_title:
-                    is_laptop = False 
-                    break
-        
-        if is_laptop:
-            return 'LAPTOP', {'LAPTOP': 1500.0}
-
-        # --- PHASE 5: PC BUILD / BUNDLE ---
-        pc_strong = self.category_rules['PC_BUILD']['strong_keywords']
-        if any(kw in clean_title for kw in pc_strong):
-             return 'PC_BUILD', {'PC_BUILD': 1000.0}
-             
-        is_bundle = self._detect_bundle(lemmas_set, clean_title)
-        if is_bundle:
-            return 'PC_BUILD', {'PC_BUILD': 800.0}
-
-        # --- PHASE 6: COMPONENT SCORING (Hardware) ---
+        # --- PHASE 8: COMPONENT SCORING (Hardware) ---
         hardware_cats = ['GPU', 'CPU', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU', 'CASE', 'COOLING', 'ACCESSORY']
         
         for cat_name in hardware_cats:
@@ -335,31 +346,51 @@ class SpacyFeatureExtractor:
             if score > 0:
                 scores[cat_name] = score + base_priority
 
-        # --- PHASE 7: FINAL CONFLICT RESOLUTION (Sanity Checks) ---
+        # --- PHASE 9: FINAL CONFLICT RESOLUTION (Sanity Checks) ---
         
-        # 1. GPU PROTECTION
-        if scores.get('GPU', 0) > 0:
-             scores['MONITOR'] = -1000.0
-             scores['PSU'] = -1000.0
-
-        # 2. CPU vs GPU conflict -> PC Build
-        if scores.get('CPU', 0) > 0 and scores.get('GPU', 0) > 0 and scores.get('MOTHERBOARD', 0) > 0:
-             return 'PC_BUILD', {'PC_BUILD': 500.0}
-
-        # 3. PSU vs Accessory
-        if scores.get('PSU', 0) > 0:
-             scores['ACCESSORY'] = -100.0
-             
-        # 4. RAM Sanity: Memory doesn't have CPU or Storage (SSD)
-        if scores.get('RAM', 0) > 0:
-             if scores.get('CPU', 0) > 0 or scores.get('STORAGE', 0) > 0:
-                 scores['RAM'] = -1000.0
-             
-        # Select winner
         valid_scores = {k: v for k, v in scores.items() if v > 0}
         if not valid_scores:
             return "MISC", scores
             
+        best_category = max(valid_scores, key=valid_scores.get)
+
+        # 1. Защита компонентов от Систем (Storage/RAM vs Laptop/PC)
+        # Если победил компонент, но есть признаки CPU+GPU или Бренд+CPU, это подозрительно
+        if best_category in ['STORAGE', 'RAM', 'PSU', 'COOLING', 'CASE', 'ACCESSORY']:
+            has_cpu = any(c in clean_title for c in ['ryzen', 'core i', 'intel i', 'amd r'])
+            has_gpu = any(g in clean_title for g in ['rtx', 'gtx', 'radeon', 'geforce'])
+            
+            if has_cpu or has_gpu:
+                # Это не просто диск, это система с диском
+                scores[best_category] = -500.0
+                # Пытаемся понять, это ПК или Ноут
+                if any(x in clean_title for x in ['ноутбук', 'laptop', 'экран', 'ips']):
+                    return 'LAPTOP', scores
+                else:
+                    return 'PC_BUILD', scores
+
+        # 2. GPU PROTECTION
+        if scores.get('GPU', 0) > 0:
+             scores['MONITOR'] = -1000.0
+             scores['PSU'] = -1000.0
+
+        # 3. CPU vs GPU conflict -> PC Build
+        if scores.get('CPU', 0) > 0 and scores.get('GPU', 0) > 0 and scores.get('MOTHERBOARD', 0) > 0:
+             return 'PC_BUILD', {'PC_BUILD': 500.0}
+
+        # 4. RAM Sanity
+        if scores.get('RAM', 0) > 0:
+             if scores.get('CPU', 0) > 0 or scores.get('STORAGE', 0) > 0:
+                 scores['RAM'] = -1000.0
+             
+        # Re-evaluate after punishments
+        valid_scores = {k: v for k, v in scores.items() if v > 0}
+        if not valid_scores:
+            # Fallback if everything was banned (e.g. "Laptop with SSD")
+            if 'LAPTOP' in scores and scores['LAPTOP'] > -2000: # If it wasn't explicitly banned
+                 return 'LAPTOP', scores
+            return "MISC", scores
+
         best_category = max(valid_scores, key=valid_scores.get)
         
         # --- POST-SELECTION CORRECTION ---
@@ -367,13 +398,14 @@ class SpacyFeatureExtractor:
         # If PC_BUILD selected, but looks like a single GPU ("MSI RTX 4060")
         if best_category == 'PC_BUILD':
             pc_words = ['системный', 'блок', 'пк', 'компьютер', 'сборка', 'station', 'server', 'desktop', 'rig', 'ферма']
+            # Проверяем, есть ли слова ПК. Если нет, и есть GPU - это GPU.
             if not any(w in clean_title for w in pc_words):
                  if scores.get('GPU', 0) > 0:
                      return 'GPU', scores
                      
-        # If Laptop was missed in Phase 4 but caught here (e.g. by weak keywords in RAM), verify it
+        # Catch-all for Laptops missed earlier
         if best_category in ['RAM', 'CPU', 'GPU']:
-            laptop_cues = ['ноутбук', 'laptop', 'ips', 'screen', 'экран', 'дюйм']
+            laptop_cues = ['ноутбук', 'laptop', 'ips', 'screen', 'экран', 'дюйм', 'tb', '15s', 'machcreator']
             if any(cue in clean_title for cue in laptop_cues):
                 if 'матрица' not in clean_title:
                      return 'LAPTOP', {'LAPTOP': 9999.0}
@@ -400,14 +432,15 @@ class SpacyFeatureExtractor:
         brands = {'chip': None, 'vendor': None}
 
         for lemma in lemmas:
-            if lemma in self.VENDORS:
-                brands['vendor'] = lemma
-                break 
-            
-        for lemma in lemmas:
             if lemma in self.CHIP_MAKERS:
                 brands['chip'] = lemma
                 break
+
+        for lemma in lemmas:
+            if lemma in self.VENDORS:
+                if lemma not in self.CHIP_MAKERS:
+                    brands['vendor'] = lemma
+                    break
             
         if raw_text:
             compound_brands = {
