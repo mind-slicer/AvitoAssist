@@ -197,3 +197,5 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 user_instructions.json
+project_map.md
+DEVELOPMENT.md
