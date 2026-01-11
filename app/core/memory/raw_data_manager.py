@@ -49,7 +49,7 @@ class AddItemResult:
 
 
 class RawDataManager:
-    SCHEMA_VERSION = 7
+    SCHEMA_VERSION = 8
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -113,6 +113,7 @@ class RawDataManager:
                 name TEXT UNIQUE NOT NULL
             )
         """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sellers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,13 +122,17 @@ class RawDataManager:
                 status TEXT DEFAULT 'active'
             )
         """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
+                is_deleted INTEGER DEFAULT 0,
+                deleted_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,10 +141,14 @@ class RawDataManager:
                 brand TEXT,
                 model TEXT,
                 category_id INTEGER,
+                is_deleted INTEGER DEFAULT 0,
+                deleted_at TEXT,
+                original_category_id INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             )
         """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS raw_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,10 +164,14 @@ class RawDataManager:
                 city_id INTEGER REFERENCES cities(id),
                 seller_table_id INTEGER REFERENCES sellers(id),
                 product_id INTEGER REFERENCES products(id),
+                is_deleted INTEGER DEFAULT 0,
+                deleted_at TEXT,
+                original_product_id INTEGER,
                 analyzed_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,6 +181,7 @@ class RawDataManager:
                 FOREIGN KEY (raw_item_id) REFERENCES raw_items(id) ON DELETE CASCADE
             )
         """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +190,7 @@ class RawDataManager:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id ON raw_items(ad_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price ON raw_items(price)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_item ON price_history(raw_item_id)")
@@ -187,6 +202,9 @@ class RawDataManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_category_brand ON products(category_id, brand, display_name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_valid_prices ON raw_items(price, city_id) WHERE price > 0")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_ad_id_analyzed ON raw_items(ad_id, analyzed_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_deleted ON raw_items(is_deleted, deleted_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_deleted ON products(is_deleted)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_deleted ON categories(is_deleted)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
         if from_version < 2:
@@ -238,6 +256,28 @@ class RawDataManager:
                 logger.info("Миграция v7: добавлен composite index на (ad_id, analyzed_at)")
             except Exception as e:
                 logger.error(f"Migration to v7 failed: {e}")
+        if from_version < 8:
+            try:
+                # Добавляем поля для мягкого удаления
+                cursor.execute("ALTER TABLE raw_items ADD COLUMN is_deleted INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE raw_items ADD COLUMN deleted_at TEXT")
+                cursor.execute("ALTER TABLE raw_items ADD COLUMN original_product_id INTEGER")
+
+                cursor.execute("ALTER TABLE products ADD COLUMN is_deleted INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE products ADD COLUMN deleted_at TEXT")
+                cursor.execute("ALTER TABLE products ADD COLUMN original_category_id INTEGER")
+
+                cursor.execute("ALTER TABLE categories ADD COLUMN is_deleted INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE categories ADD COLUMN deleted_at TEXT")
+
+                # Индексы для корзины
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_deleted ON raw_items(is_deleted, deleted_at DESC)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_deleted ON products(is_deleted)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_deleted ON categories(is_deleted)")
+
+                logger.info("Миграция v8: добавлена поддержка мягкого удаления (корзина)")
+            except Exception as e:
+                logger.error(f"Migration to v8 failed: {e}")
 
     def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
         with self._cache_lock:
@@ -575,33 +615,31 @@ class RawDataManager:
                     prod.brand,
                     prod.model,
                     c.name as category_name
-
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
                 LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
                 LEFT JOIN products prod ON ri.product_id = prod.id
                 LEFT JOIN categories c ON prod.category_id = c.id
-
-                WHERE 1=1
+                WHERE ri.is_deleted = 0
             """
             params = []
-
+    
             if category:
                 query += " AND c.name = ?"
                 params.append(category)
-
+    
             if product_key:
                 query += " AND prod.key = ?"
                 params.append(product_key)
-
+    
             if search_query:
                 query += " AND (ri.title LIKE ? OR ri.description LIKE ? OR cit.name LIKE ?)"
                 search_term = f"%{search_query}%"
                 params.extend([search_term, search_term, search_term])
-
+    
             query += " ORDER BY ri.analyzed_at DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
-
+    
             cursor.execute(query, params)
             return [self._item_from_row(row) for row in cursor.fetchall()]
         finally:
@@ -674,7 +712,8 @@ class RawDataManager:
                     COUNT(ri.id) as item_count
                 FROM products p
                 JOIN categories c ON p.category_id = c.id
-                LEFT JOIN raw_items ri ON p.id = ri.product_id
+                LEFT JOIN raw_items ri ON p.id = ri.product_id AND ri.is_deleted = 0
+                WHERE p.is_deleted = 0 AND c.is_deleted = 0
                 GROUP BY c.name, p.brand, p.display_name, p.key, p.id
                 ORDER BY c.name, p.brand, p.display_name
             """
@@ -697,6 +736,7 @@ class RawDataManager:
                     'name': row['display_name'],
                     'count': row['item_count']
                 })
+
             return tree
         finally:
             conn.close()
@@ -1010,5 +1050,277 @@ class RawDataManager:
             if conn: conn.rollback()
             logger.error(f"Import error: {e}")
             raise
+        finally:
+            conn.close()
+    
+    def soft_delete_item(self, item_id: int) -> bool:
+        """Мягкое удаление элемента (перенос в корзину)."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            
+            # Сохраняем оригинальный product_id
+            cursor.execute("SELECT product_id FROM raw_items WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            
+            cursor.execute("""
+                UPDATE raw_items 
+                SET is_deleted = 1, deleted_at = ?, original_product_id = product_id
+                WHERE id = ?
+            """, (now, item_id))
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+    
+    def soft_delete_product(self, product_id: int) -> int:
+        """Мягкое удаление продукта и всех его элементов."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            
+            # Получаем category_id продукта
+            cursor.execute("SELECT category_id FROM products WHERE id = ?", (product_id,))
+            row = cursor.fetchone()
+            if not row:
+                return 0
+            
+            # Удаляем все элементы этого продукта
+            cursor.execute("""
+                UPDATE raw_items 
+                SET is_deleted = 1, deleted_at = ?, original_product_id = product_id
+                WHERE product_id = ? AND is_deleted = 0
+            """, (now, product_id))
+            items_count = cursor.rowcount
+            
+            # Удаляем сам продукт
+            cursor.execute("""
+                UPDATE products 
+                SET is_deleted = 1, deleted_at = ?, original_category_id = category_id
+                WHERE id = ?
+            """, (now, product_id))
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            return items_count
+        finally:
+            conn.close()
+    
+    def soft_delete_category(self, category_id: int) -> int:
+        """Мягкое удаление категории и всех её продуктов/элементов."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            
+            # Получаем все продукты категории
+            cursor.execute("SELECT id FROM products WHERE category_id = ? AND is_deleted = 0", (category_id,))
+            product_ids = [row[0] for row in cursor.fetchall()]
+            
+            total_items = 0
+            for pid in product_ids:
+                # Удаляем элементы каждого продукта
+                cursor.execute("""
+                    UPDATE raw_items 
+                    SET is_deleted = 1, deleted_at = ?, original_product_id = product_id
+                    WHERE product_id = ? AND is_deleted = 0
+                """, (now, pid))
+                total_items += cursor.rowcount
+            
+            # Удаляем все продукты категории
+            cursor.execute("""
+                UPDATE products 
+                SET is_deleted = 1, deleted_at = ?, original_category_id = category_id
+                WHERE category_id = ? AND is_deleted = 0
+            """, (now, category_id))
+            
+            # Удаляем саму категорию
+            cursor.execute("""
+                UPDATE categories 
+                SET is_deleted = 1, deleted_at = ?
+                WHERE id = ?
+            """, (now, category_id))
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            return total_items
+        finally:
+            conn.close()
+    
+    def restore_item(self, item_id: int) -> bool:
+        """Восстановление элемента из корзины."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Восстанавливаем product_id из original_product_id
+            cursor.execute("""
+                UPDATE raw_items 
+                SET is_deleted = 0, deleted_at = NULL, product_id = original_product_id
+                WHERE id = ? AND is_deleted = 1
+            """, (item_id,))
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+    
+    def restore_product(self, product_id: int) -> int:
+        """Восстановление продукта и всех его элементов."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Восстанавливаем продукт
+            cursor.execute("""
+                UPDATE products 
+                SET is_deleted = 0, deleted_at = NULL, category_id = original_category_id
+                WHERE id = ? AND is_deleted = 1
+            """, (product_id,))
+            
+            # Восстанавливаем все элементы этого продукта
+            cursor.execute("""
+                UPDATE raw_items 
+                SET is_deleted = 0, deleted_at = NULL, product_id = original_product_id
+                WHERE original_product_id = ? AND is_deleted = 1
+            """, (product_id,))
+            
+            items_count = cursor.rowcount
+            conn.commit()
+            self._stats_cache.invalidate()
+            return items_count
+        finally:
+            conn.close()
+    
+    def restore_category(self, category_id: int) -> int:
+        """Восстановление категории и всех её продуктов/элементов."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Восстанавливаем категорию
+            cursor.execute("""
+                UPDATE categories 
+                SET is_deleted = 0, deleted_at = NULL
+                WHERE id = ? AND is_deleted = 1
+            """, (category_id,))
+            
+            # Получаем все удаленные продукты этой категории
+            cursor.execute("""
+                SELECT id FROM products 
+                WHERE original_category_id = ? AND is_deleted = 1
+            """, (category_id,))
+            product_ids = [row[0] for row in cursor.fetchall()]
+            
+            total_items = 0
+            for pid in product_ids:
+                # Восстанавливаем продукт
+                cursor.execute("""
+                    UPDATE products 
+                    SET is_deleted = 0, deleted_at = NULL, category_id = original_category_id
+                    WHERE id = ?
+                """, (pid,))
+                
+                # Восстанавливаем элементы
+                cursor.execute("""
+                    UPDATE raw_items 
+                    SET is_deleted = 0, deleted_at = NULL, product_id = original_product_id
+                    WHERE original_product_id = ? AND is_deleted = 1
+                """, (pid,))
+                total_items += cursor.rowcount
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            return total_items
+        finally:
+            conn.close()
+    
+    def permanent_delete_item(self, item_id: int) -> bool:
+        """Окончательное удаление элемента."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM raw_items WHERE id = ? AND is_deleted = 1", (item_id,))
+            conn.commit()
+            self._stats_cache.invalidate()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+    
+    def get_trash_items(self, limit: int = 1000) -> List[Dict]:
+        """Получить все элементы из корзины."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT DISTINCT
+                    ri.id, ri.ad_id, ri.title, ri.price, ri.description,
+                    cit.name as city,
+                    ri.condition,
+                    sel.seller_link_id as seller_id,
+                    ri.views, ri.date_text, ri.link,
+                    ri.analyzed_at, ri.created_at, ri.deleted_at,
+                    prod.key as clean_product_key,
+                    prod.brand,
+                    prod.model,
+                    c.name as category_name
+                FROM raw_items ri
+                LEFT JOIN cities cit ON ri.city_id = cit.id
+                LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
+                LEFT JOIN products prod ON ri.original_product_id = prod.id
+                LEFT JOIN categories c ON prod.category_id = c.id
+                WHERE ri.is_deleted = 1
+                ORDER BY ri.deleted_at DESC LIMIT ?
+            """
+            cursor.execute(query, (limit,))
+            return [self._item_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+    
+    def move_item_to_product(self, item_id: int, target_product_id: int) -> bool:
+        """Переместить элемент в другой продукт."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE raw_items 
+                SET product_id = ?
+                WHERE id = ?
+            """, (target_product_id, item_id))
+            conn.commit()
+            self._stats_cache.invalidate()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+    
+    def empty_trash(self) -> int:
+        """Полная очистка корзины."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Удаляем элементы
+            cursor.execute("DELETE FROM raw_items WHERE is_deleted = 1")
+            items_deleted = cursor.rowcount
+            
+            # Удаляем продукты
+            cursor.execute("DELETE FROM products WHERE is_deleted = 1")
+            
+            # Удаляем категории
+            cursor.execute("DELETE FROM categories WHERE is_deleted = 1")
+            
+            conn.commit()
+            self._stats_cache.invalidate()
+            return items_deleted
         finally:
             conn.close()

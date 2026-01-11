@@ -2,15 +2,137 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QTreeWidget, QTreeWidgetItem, QTableWidget,
     QTableWidgetItem, QLineEdit, QComboBox, QSplitter, QToolBar,
-    QMessageBox, QTabWidget, QAbstractItemView, QFormLayout
+    QMessageBox, QTabWidget, QAbstractItemView, QFormLayout,
+    QStyledItemDelegate, QStyle, QStyleOptionButton
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint, QSize
+from PyQt6.QtGui import QAction, QPainter, QColor
 
 from app.ui.styles import Components, Palette, Spacing
 from app.ui.styles.typography import TextPresets, Typography
+from app.ui.widgets.move_item_dialog import MoveItemDialog
 from app.core.log_manager import logger
 from app.config import BASE_APP_DIR
+
+
+class TreeItemDelegate(QStyledItemDelegate):
+    """
+    Делегат для отображения кнопок удаления в дереве.
+    """
+    
+    delete_clicked = pyqtSignal(object)  # Сигнал при клике на удаление
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.hovered_item = None
+    
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        
+        # Рисуем кнопку удаления только при hover
+        if option.state & QStyle.StateFlag.State_MouseOver:
+            # Кнопка в правом углу
+            btn_size = 20
+            btn_rect = QRect(
+                option.rect.right() - btn_size - 4,
+                option.rect.top() + (option.rect.height() - btn_size) // 2,
+                btn_size,
+                btn_size
+            )
+            
+            # Фон кнопки
+            painter.setBrush(QColor(Palette.ERROR))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(btn_rect, 3, 3)
+            
+            # Иконка "X"
+            painter.setPen(QColor("white"))
+            painter.setFont(painter.font())
+            painter.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "✖")
+    
+    def editorEvent(self, event, model, option, index):
+        if event.type() == event.Type.MouseButtonRelease:
+            # Проверяем клик по кнопке удаления
+            btn_size = 20
+            btn_rect = QRect(
+                option.rect.right() - btn_size - 4,
+                option.rect.top() + (option.rect.height() - btn_size) // 2,
+                btn_size,
+                btn_size
+            )
+            
+            if btn_rect.contains(event.pos()):
+                self.delete_clicked.emit(index)
+                return True
+        
+        return super().editorEvent(event, model, option, index)
+
+
+class TableItemDelegate(QStyledItemDelegate):
+    """
+    Делегат для кнопок удаления/перемещения в таблице.
+    """
+    
+    delete_clicked = pyqtSignal(int)  # row
+    move_clicked = pyqtSignal(int)    # row
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def paint(self, painter, option, index):
+        # Не рисуем ничего, кнопки будут в отдельной колонке
+        pass
+    
+    def createEditor(self, parent, option, index):
+        # Создаем виджет с кнопками
+        from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton
+        
+        widget = QWidget(parent)
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+        
+        # Кнопка перемещения
+        btn_move = QPushButton("➜")
+        btn_move.setFixedSize(24, 24)
+        btn_move.setToolTip("Переместить в другой продукт")
+        btn_move.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.PRIMARY};
+                color: {Palette.PRIMARY};
+                border-radius: 4px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)};
+            }}
+        """)
+        btn_move.clicked.connect(lambda: self.move_clicked.emit(index.row()))
+        
+        # Кнопка удаления
+        btn_delete = QPushButton("🗑")
+        btn_delete.setFixedSize(24, 24)
+        btn_delete.setToolTip("Удалить элемент")
+        btn_delete.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.ERROR};
+                color: {Palette.ERROR};
+                border-radius: 4px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {Palette.with_alpha(Palette.ERROR, 0.2)};
+            }}
+        """)
+        btn_delete.clicked.connect(lambda: self.delete_clicked.emit(index.row()))
+        
+        layout.addWidget(btn_move)
+        layout.addWidget(btn_delete)
+        layout.addStretch()
+        
+        return widget
 
 
 class DatabaseTab(QWidget):
@@ -55,6 +177,13 @@ class DatabaseTab(QWidget):
         clear_action = QAction("🗑️ Очистить БД", self)
         clear_action.triggered.connect(self._clear_database)
         toolbar.addAction(clear_action)
+        
+        toolbar.addSeparator()
+    
+        # Кнопка очистки корзины
+        empty_trash_action = QAction("🗑️ Очистить корзину", self)
+        empty_trash_action.triggered.connect(self._empty_trash)
+        toolbar.addAction(empty_trash_action)
 
         layout.addWidget(toolbar)
 
@@ -106,6 +235,11 @@ class DatabaseTab(QWidget):
             QTreeWidget::item:hover {{ background-color: {Palette.BG_DARK_2}; }}
         """)
         self.nav_tree.itemClicked.connect(self._on_tree_item_clicked)
+        
+        self.tree_delegate = TreeItemDelegate()
+        self.tree_delegate.delete_clicked.connect(self._on_tree_item_delete)
+        self.nav_tree.setItemDelegate(self.tree_delegate)
+        
         self.nav_tabs.addTab(self.nav_tree, "📂 Список")
 
         # 2. Graph
@@ -159,12 +293,21 @@ class DatabaseTab(QWidget):
 
         # Raw Items Table
         self.raw_items_table = QTableWidget()
-        self.raw_items_table.setColumnCount(6)
-        self.raw_items_table.setHorizontalHeaderLabels(["ID", "Заголовок", "Цена", "Город", "Дата", "Категории"])
-        self.raw_items_table.horizontalHeader().setStretchLastSection(True)
+        self.raw_items_table.setColumnCount(7)  # БЫЛО 6, СТАЛО 7
+        self.raw_items_table.setHorizontalHeaderLabels([
+            "ID", "Заголовок", "Цена", "Город", "Дата", "Категории", "Действия"
+        ])
+        self.raw_items_table.horizontalHeader().setStretchLastSection(False)
         self.raw_items_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.raw_items_table.setStyleSheet(self._get_table_style())
         self.raw_items_table.currentItemChanged.connect(self._on_raw_item_selection_changed)
+        
+        # Делегат для кнопок действий
+        self.table_delegate = TableItemDelegate()
+        self.table_delegate.delete_clicked.connect(self._on_table_item_delete)
+        self.table_delegate.move_clicked.connect(self._on_table_item_move)
+        self.raw_items_table.setItemDelegateForColumn(6, self.table_delegate)
+        
         self.table_tabs.addTab(self.raw_items_table, "📦 Сырые данные")
 
         # Knowledge Table Tab Container (СИНИЙ ЦВЕТ - фильтр справа от таба)
@@ -249,7 +392,35 @@ class DatabaseTab(QWidget):
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._delete_selected)
         right_layout.addWidget(self.delete_btn)
-
+        
+        # Кнопка восстановления (скрыта по умолчанию)
+        self.restore_btn = QPushButton("↺ Восстановить")
+        self.restore_btn.setStyleSheet(Components.start_button())
+        self.restore_btn.setEnabled(False)
+        self.restore_btn.setVisible(False)
+        self.restore_btn.clicked.connect(self._restore_selected)
+        right_layout.addWidget(self.restore_btn)
+        
+        # Кнопка окончательного удаления (скрыта по умолчанию)
+        self.permanent_delete_btn = QPushButton("⚠ Удалить навсегда")
+        self.permanent_delete_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.ERROR};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {Palette.with_alpha(Palette.ERROR, 0.8)};
+            }}
+        """)
+        self.permanent_delete_btn.setEnabled(False)
+        self.permanent_delete_btn.setVisible(False)
+        self.permanent_delete_btn.clicked.connect(self._permanent_delete_selected)
+        right_layout.addWidget(self.permanent_delete_btn)
+    
         self.cultivate_btn = QPushButton("🌱 Перекультивировать")
         self.cultivate_btn.setStyleSheet(Components.start_button())
         self.cultivate_btn.setEnabled(False)
@@ -294,6 +465,20 @@ class DatabaseTab(QWidget):
         self.nav_tree.addTopLevelItem(all_items_node)
         self.nav_tree.addTopLevelItem(all_knowledge_node)
         
+        # === КОРЗИНА (после разделителя) ===
+        separator = QTreeWidgetItem([""])
+        separator.setFlags(Qt.ItemFlag.NoItemFlags)
+        separator.setBackground(0, QColor(Palette.DIVIDER))
+        separator.setSizeHint(0, QSize(0, 2))
+        self.nav_tree.addTopLevelItem(separator)
+
+        # Узел корзины
+        trash_count = len(self.memory.raw_data.get_trash_items())
+        trash_node = QTreeWidgetItem([f"🗑️ Корзина ({trash_count})"])
+        trash_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'trash'})
+        trash_node.setForeground(0, QColor(Palette.TEXT_MUTED))
+        self.nav_tree.addTopLevelItem(trash_node)
+
         # Iterate Categories
         for cat_name, brands in hierarchy.items():
             cat_node = QTreeWidgetItem([f"📂 {cat_name}"])
@@ -348,6 +533,7 @@ class DatabaseTab(QWidget):
     
     def _populate_raw_items_table(self, items: list):
         """Populate the raw items table."""
+        self.raw_items_table.setUpdatesEnabled(False)
         self.raw_items_table.setRowCount(0)
         
         for item in items:
@@ -406,6 +592,50 @@ class DatabaseTab(QWidget):
             
             # Store full data
             self.raw_items_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, item)
+        
+            # === КОЛОНКА ДЕЙСТВИЙ ===
+            # Создаем виджет с кнопками
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            actions_layout.setSpacing(4)
+
+            # Кнопка перемещения
+            btn_move = QPushButton("➜")
+            btn_move.setFixedSize(24, 24)
+            btn_move.setToolTip("Переместить")
+            btn_move.setStyleSheet(f"""
+                QPushButton {{
+                    background: {Palette.BG_DARK_3}; border: 1px solid {Palette.PRIMARY};
+                    color: {Palette.PRIMARY}; border-radius: 4px; font-weight: bold;
+                }}
+                QPushButton:hover {{ background: {Palette.with_alpha(Palette.PRIMARY, 0.2)}; }}
+            """)
+            btn_move.clicked.connect(lambda checked, r=row: self._on_table_item_move(r))
+
+            # Кнопка удаления
+            btn_del = QPushButton("🗑")
+            btn_del.setFixedSize(24, 24)
+            btn_del.setToolTip("В корзину")
+            btn_del.setStyleSheet(f"""
+                QPushButton {{
+                    background: {Palette.BG_DARK_3}; border: 1px solid {Palette.ERROR};
+                    color: {Palette.ERROR}; border-radius: 4px; font-weight: bold;
+                }}
+                QPushButton:hover {{ background: {Palette.with_alpha(Palette.ERROR, 0.2)}; }}
+            """)
+            btn_del.clicked.connect(lambda checked, r=row: self._on_table_item_delete(r))
+
+            actions_layout.addWidget(btn_move)
+            actions_layout.addWidget(btn_del)
+            actions_layout.addStretch()
+
+            self.raw_items_table.setCellWidget(row, 6, actions_widget)
+
+        self.raw_items_table.resizeColumnsToContents()
+        self.raw_items_table.setColumnWidth(6, 80)
+
+        self.raw_items_table.setUpdatesEnabled(True)
     
     def _populate_knowledge_table(self, chunks: list):
         """Populate the knowledge table."""
@@ -522,6 +752,12 @@ class DatabaseTab(QWidget):
             self._populate_raw_items_table(brand_items)
             self.table_tabs.setCurrentIndex(0)
 
+        elif item_type == 'trash':
+            # Показываем элементы из корзины
+            trash_items = self.memory.raw_data.get_trash_items()
+            self._populate_raw_items_table(trash_items)
+            self.table_tabs.setCurrentIndex(0)
+
         elif item_type == 'product_key':
             items = self.memory.get_items_for_product_key(data.get('key'))
             self._populate_raw_items_table(items)
@@ -532,16 +768,31 @@ class DatabaseTab(QWidget):
         if not current:
             return
         
-        # Получаем данные из первой колонки текущей строки
         row = current.row()
         id_item = self.raw_items_table.item(row, 0)
-        
         if id_item:
             data = id_item.data(Qt.ItemDataRole.UserRole)
             if data:
                 self._show_details(data, 'raw_item')
-                self.delete_btn.setEnabled(True)
-                self.cultivate_btn.setEnabled(False)
+                
+                # Проверяем, из корзины ли элемент
+                is_deleted = data.get('deleted_at') is not None
+                
+                if is_deleted:
+                    # Элемент в корзине - показываем кнопки восстановления
+                    self.delete_btn.setVisible(False)
+                    self.restore_btn.setVisible(True)
+                    self.restore_btn.setEnabled(True)
+                    self.permanent_delete_btn.setVisible(True)
+                    self.permanent_delete_btn.setEnabled(True)
+                    self.cultivate_btn.setEnabled(False)
+                else:
+                    # Обычный элемент
+                    self.delete_btn.setVisible(True)
+                    self.delete_btn.setEnabled(True)
+                    self.restore_btn.setVisible(False)
+                    self.permanent_delete_btn.setVisible(False)
+                    self.cultivate_btn.setEnabled(False)
     
     def _on_knowledge_selection_changed(self, current, previous):
         """Handle knowledge chunk selection change (mouse or keyboard)."""
@@ -963,6 +1214,186 @@ class DatabaseTab(QWidget):
         self.delete_btn.setEnabled(False)
         self.cultivate_btn.setEnabled(False)
     
+    def _on_tree_item_delete(self, index):
+        """Удаление элемента из дерева (категория/продукт)."""
+        item = self.nav_tree.itemFromIndex(index)
+        if not item:
+            return
+        
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        
+        item_type = data.get('type')
+        
+        # Подтверждение
+        if item_type == 'category':
+            cat_name = data.get('name')
+            reply = QMessageBox.question(
+                self,
+                "Удалить категорию?",
+                f"Переместить категорию '{cat_name}' и все её продукты в корзину?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                cat_id = self.memory.raw_data.get_or_create_category(cat_name)
+                deleted_count = self.memory.raw_data.soft_delete_category(cat_id)
+                logger.success(f"Категория '{cat_name}' и {deleted_count} элементов перемещены в корзину")
+                self._refresh_data()
+        
+        elif item_type == 'brand_group':
+            # Удаляем все продукты бренда
+            reply = QMessageBox.question(
+                self,
+                "Удалить бренд?",
+                "Переместить все продукты этого бренда в корзину?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                total_deleted = 0
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    child_data = child.data(0, Qt.ItemDataRole.UserRole)
+                    if child_data and child_data.get('type') == 'product_key':
+                        prod_id = child_data.get('id')
+                        deleted = self.memory.raw_data.soft_delete_product(prod_id)
+                        total_deleted += deleted
+                
+                logger.success(f"{total_deleted} элементов перемещены в корзину")
+                self._refresh_data()
+        
+        elif item_type == 'product_key':
+            prod_name = data.get('key')
+            prod_id = data.get('id')
+            reply = QMessageBox.question(
+                self,
+                "Удалить продукт?",
+                f"Переместить продукт '{prod_name}' и все его элементы в корзину?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                deleted_count = self.memory.raw_data.soft_delete_product(prod_id)
+                logger.success(f"Продукт '{prod_name}' и {deleted_count} элементов перемещены в корзину")
+                self._refresh_data()
+    
+    def _on_table_item_delete(self, row: int):
+        """Удаление отдельного элемента из таблицы."""
+        id_item = self.raw_items_table.item(row, 0)
+        if not id_item:
+            return
+        
+        data = id_item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        
+        item_id = data.get('id')
+        title = data.get('title', 'Unknown')[:50]
+        
+        reply = QMessageBox.question(
+            self,
+            "Удалить элемент?",
+            f"Переместить '{title}...' в корзину?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            success = self.memory.raw_data.soft_delete_item(item_id)
+            if success:
+                logger.success(f"Элемент перемещен в корзину")
+                self._refresh_data()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось удалить элемент")
+    
+    def _on_table_item_move(self, row: int):
+        """Перемещение элемента в другой продукт."""
+        id_item = self.raw_items_table.item(row, 0)
+        if not id_item:
+            return
+        
+        data = id_item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        
+        item_id = data.get('id')
+        current_product_id = data.get('product_id') if 'product_id' in data else None
+        
+        # Получаем иерархию для диалога
+        hierarchy = self.memory.raw_data.get_hierarchy_data()
+        
+        # Открываем диалог выбора
+        dialog = MoveItemDialog(hierarchy, current_product_id, self)
+        if dialog.exec():
+            target_product_id = dialog.get_selected_product_id()
+            if target_product_id:
+                success = self.memory.raw_data.move_item_to_product(item_id, target_product_id)
+                if success:
+                    logger.success(f"Элемент перемещен в новый продукт")
+                    self._refresh_data()
+                else:
+                    QMessageBox.warning(self, "Ошибка", "Не удалось переместить элемент")
+
+    def _restore_selected(self):
+        """Восстановление элемента из корзины."""
+        if not hasattr(self, 'current_selection') or not self.current_selection:
+            return
+        
+        data = self.current_selection['data']
+        item_id = data.get('id')
+        
+        success = self.memory.raw_data.restore_item(item_id)
+        if success:
+            logger.success("Элемент восстановлен")
+            self._refresh_data()
+            self._clear_details()
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось восстановить элемент")
+    
+    def _permanent_delete_selected(self):
+        """Окончательное удаление из корзины."""
+        if not hasattr(self, 'current_selection') or not self.current_selection:
+            return
+        
+        data = self.current_selection['data']
+        item_id = data.get('id')
+        title = data.get('title', 'Unknown')[:50]
+        
+        reply = QMessageBox.warning(
+            self,
+            "ОПАСНО",
+            f"Удалить '{title}...' НАВСЕГДА?\n\nЭто действие нельзя отменить!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            success = self.memory.raw_data.permanent_delete_item(item_id)
+            if success:
+                logger.success("Элемент удален навсегда")
+                self._refresh_data()
+                self._clear_details()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось удалить")
+
+    def _empty_trash(self):
+        """Полная очистка корзины."""
+        trash_count = len(self.memory.raw_data.get_trash_items())
+        
+        if trash_count == 0:
+            QMessageBox.information(self, "Корзина пуста", "В корзине нет элементов")
+            return
+        
+        reply = QMessageBox.warning(
+            self,
+            "Очистить корзину?",
+            f"Удалить {trash_count} элементов НАВСЕГДА?\n\nЭто действие нельзя отменить!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            deleted = self.memory.raw_data.empty_trash()
+            logger.success(f"Корзина очищена: {deleted} элементов удалено")
+            self._refresh_data()
+            self._clear_details()
+
     def _refresh_data(self):
         """Refresh all data."""
         self._load_data()
