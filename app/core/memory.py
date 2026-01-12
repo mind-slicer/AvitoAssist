@@ -459,7 +459,8 @@ class MemoryManager:
 
     def find_similar_items(self, chunk_key: str, limit: int = 50) -> List[Dict]:
         """Find similar items (for cultivation prompts)."""
-        return self.raw_data.get_items_for_product_key(chunk_key)[:limit]
+        items = self.raw_data.get_items_for_product_key(product_key=chunk_key)
+        return items[:limit]
 
     def export_all(self, base_dir: str = BASE_APP_DIR):
         """Export all data to JSON files."""

@@ -377,24 +377,27 @@ class ChunkCultivationManager(QObject):
             if not stored_avg: 
                 return False
                 
-            # Получаем свежие данные по ключу чанка
             key = chunk.get('chunk_key')
             chunk_type = chunk.get('chunk_type')
             
             if chunk_type == 'PRODUCT':
+                # FIX: Используем прямой запрос к items для надежности
                 items = self.memory.find_similar_items(key, limit=20)
-                if not items: return False
+                
+                # Если по ключу продукта ничего не нашли (например, ключ изменился), отклонения нет (нет данных)
+                if not items: 
+                    return False
                 
                 prices = [i['price'] for i in items if i.get('price', 0) > 0]
                 if len(prices) < 5: return False
                 
                 current_avg = sum(prices) / len(prices)
                 
-                # Если отклонение > 25%, считаем чанк устаревшим
                 deviation = abs(current_avg - stored_avg) / stored_avg
                 return deviation > 0.25
                 
-        except Exception:
+        except Exception as e:
+            # logger.warning(f"Deviation check error for {chunk.get('id')}: {e}")
             return False
             
         return False

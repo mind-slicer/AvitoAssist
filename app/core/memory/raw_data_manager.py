@@ -24,9 +24,6 @@ def evaluate_item_placement(
     """
     Evaluate if an item is correctly placed in its category/product.
     
-    This function checks if the item's title and description match
-    the expected category and product key without using neural networks.
-    
     Args:
         title: Item title
         description: Item description
@@ -38,103 +35,156 @@ def evaluate_item_placement(
     Returns:
         True if placement is reliable, False if suspicious
     """
-    
-    # 1. Basic validation
-    if not title or not product_key or not category:
+    if not title:
         return False
-    
+
     title_lower = title.lower()
     desc_lower = (description or "").lower()
     combined_text = f"{title_lower} {desc_lower}"
+    category = category.upper()
+
+    # --- 1. GLOBAL DEFECT CHECK ---
+    # Слова, указывающие на то, что это мусор/запчасти, а не полноценный товар
+    # (кроме категорий, где это нормально)
+    if category not in ["MISC", "ACCESSORY", "SERVICE", "COOLING", "CASE"]:
+        defect_markers = [
+            "на запчасти", "на разбор", "донор", "труп", "не включается", 
+            "не рабочий", "под восстановление", "запчасти", "разборка"
+        ]
+        # Если в ЗАГОЛОВКЕ есть маркер дефекта -> ненадежно
+        if any(m in title_lower for m in defect_markers):
+            return False
+
+    # --- 2. CATEGORY RULES ---
     
-    # 2. Category keyword mapping
-    category_keywords = {
-        "GPU": ["видеокарта", "видеокарт", "gpu", "rtx", "gtx", "radeon", "geforce", "rx ", "arc "],
-        "CPU": ["процессор", "cpu", "ryzen", "core i", "intel", "amd", "xeon", "pentium", "celeron"],
-        "RAM": ["память", "ram", "озу", "ddr", "оперативн"],
-        "STORAGE": ["ssd", "hdd", "накопитель", "жесткий", "nvme", "m.2", "диск"],
-        "LAPTOP": ["ноутбук", "laptop", "lenovo", "asus", "hp", "dell", "acer", "macbook"],
-        "MOTHERBOARD": ["материнская", "мат. плата", "материнка", "motherboard", "сокет", "socket"],
-        "PSU": ["блок питания", "psu", "power supply", "бп ", "watts"],
-        "MONITOR": ["монитор", "display", "экран", "дисплей"],
-        "COOLING": ["кулер", "охлаждение", "вентилятор", "cooling", "cooler"],
-        "CASE": ["корпус", "case"],
-        "ACCESSORY": ["кабель", "cable", "мышь", "mouse", "клавиатур"],
-        "PCBUILD": ["сборка", "системный блок", "компьютер", "pc build"],
+    # REQUIRED: Слова, хотя бы одно из которых ОБЯЗАНО быть (Positive)
+    # BANNED: Слова, наличие которых сразу делает товар ненадежным (Negative)
+    # ALLOWED_CONFLICTS: Категории, ключевые слова которых допустимы внутри текущей (для систем)
+    
+    rules = {
+        "LAPTOP": {
+            "required": ["ноутбук", "laptop", "ultrabook", "macbook", "нетбук", "notebook"],
+            "banned": [
+                "матрица", "клавиатура", "аккумулятор", "батарея", "зарядка", "блок питания", 
+                "петли", "шлейф", "корпус", "топкейс", "поддон", "разбор", "кулер", 
+                "вентилятор", "видеокарта для", "плата для", "разъем", "кнопки", "запчасти"
+            ],
+            "allowed_conflicts": ["GPU", "CPU", "RAM", "STORAGE", "MONITOR"] # Ноутбук содержит это внутри
+        },
+        "PC_BUILD": {
+            "required": ["системный", "блок", "пк", "компьютер", "сборка", "desktop", "station", "server", "моноблок", "imac", "mac mini"],
+            "banned": [
+                "корпус без", "пустой корпус", "коробка", "вентилятор", "кулер", 
+                "видеокарта", "майнинг ферма", "риг", "райзер"
+            ],
+            "allowed_conflicts": ["GPU", "CPU", "RAM", "STORAGE", "MOTHERBOARD", "PSU", "CASE", "COOLING"]
+        },
+        "GPU": {
+            "required": ["видеокарта", "gpu", "rtx", "gtx", "rx", "radeon", "geforce", "arc", "quadro", "tesla", "titan", "gt", "видеоадаптер"],
+            "banned": [
+                "ноутбук", "laptop", "райзер", "riser", "кабель", "переходник", 
+                "кулер", "охлаждение", "коробка", "держатель", "подставка", "доставка", "скупка"
+            ],
+            "allowed_conflicts": []
+        },
+        "CPU": {
+            "required": ["процессор", "cpu", "ryzen", "core", "intel", "amd", "xeon", "pentium", "celeron", "athlon", "phenom"],
+            "banned": [
+                "ноутбук", "laptop", "системный", "компьютер", "сборка", "материнская", "плата", "комплект", "кулер"
+            ],
+            "allowed_conflicts": []
+        },
+        "MOTHERBOARD": {
+            "required": ["материнская", "плата", "motherboard", "mainboard", "mb", "мать", "сокет", "socket", "lga", "am4", "am5"],
+            "banned": [
+                "ноутбук", "laptop", "системный", "компьютер"
+            ],
+            "allowed_conflicts": ["CPU", "RAM"] # Часто продают комплекты "Мать + Проц"
+        },
+        "MONITOR": {
+            "required": ["монитор", "monitor", "дисплей", "экран"],
+            "banned": [
+                "ноутбук", "laptop", "разбит", "матрица", "кронштейн", "кабель", "системный", "пк", "моноблок"
+            ],
+            "allowed_conflicts": []
+        }
     }
+
+    # Если категории нет в правилах (например RAM, SSD), используем базовую проверку
+    if category not in rules:
+        # Для мелочевки (ACCESSORY, MISC) считаем надежным по умолчанию, если нет явного треша
+        if category in ["ACCESSORY", "MISC", "SERVICE", "COOLING", "CASE"]:
+            return True
+        # Для других (RAM, PSU) - нужна минимальная проверка
+        if category == "RAM" and not any(k in combined_text for k in ["память", "ram", "ddr", "озу"]): return False
+        if category == "PSU" and not any(k in combined_text for k in ["блок", "питания", "psu", "power"]): return False
+        if category == "STORAGE" and not any(k in combined_text for k in ["ssd", "hdd", "диск", "накопитель"]): return False
+        return True
+
+    rule = rules[category]
+
+    # 1. Check BANNED (Immediate Fail)
+    # Проверяем только TITLE для строгости, описание может содержать "подойдет для..."
+    for ban in rule["banned"]:
+        if ban in title_lower:
+             # Исключение: "Не ноутбук" (редкий кейс, но все же)
+             return False
+
+    # 2. Check REQUIRED (Must have one)
+    has_required = False
+    for req in rule["required"]:
+        # Проверяем слово целиком или вхождение
+        if req in title_lower:
+            has_required = True
+            break
     
-    # Check if current category keywords are present
-    current_keywords = category_keywords.get(category, [])
-    has_category_match = any(kw in combined_text for kw in current_keywords)
-    
-    # Check for conflicts with other categories
-    conflicting_categories = 0
-    conflicting_cats = []
-    for cat, keywords in category_keywords.items():
-        if cat != category:
-            if any(kw in combined_text for kw in keywords):
-                conflicting_categories += 1
-                conflicting_cats.append(cat)
-    
-    # 3. Critical category rules
-    if category in ["GPU", "CPU", "LAPTOP", "MOTHERBOARD"]:
-        # Laptop in GPU category = unreliable
-        if category == "GPU" and any(kw in combined_text for kw in ["ноутбук", "laptop"]):
+    if not has_required:
+        # Если нет ключевого слова в заголовке, проверяем начало описания (первые 100 символов)
+        if any(req in desc_lower[:100] for req in rule["required"]):
+            has_required = True
+        else:
             return False
+
+    # 3. Conflict Check (Cross-contamination)
+    # Проверяем, не упоминается ли другая "сильная" категория в заголовке
+    strong_categories = ["LAPTOP", "PC_BUILD", "GPU", "MONITOR"]
+    
+    for other_cat in strong_categories:
+        if other_cat == category: continue
+        if other_cat in rule["allowed_conflicts"]: continue
         
-        # GPU mentioned separately in LAPTOP = unreliable
-        if category == "LAPTOP" and "видеокарта" in combined_text and "ноутбук" not in combined_text:
-            return False
+        other_rule = rules.get(other_cat)
+        if not other_rule: continue
         
-        # Critical categories must have explicit match
-        if not has_category_match:
-            return False
-    
-    # 4. Product key validation
-    if "unknown" in product_key.lower() and category not in ["ACCESSORY", "MISC", "SERVICE"]:
-        # Unknown product keys are suspicious for hardware
-        return False
-    
-    if product_key.startswith(category.lower() + "-") and len(product_key) < 10:
-        # Very short product keys are suspicious
-        return False
-    
-    # 5. Brand/Model consistency check
-    if brand and len(brand) > 2:
-        if brand.lower() not in combined_text:
-            # Brand not found in text - suspicious for critical categories
-            if category in ["GPU", "CPU", "LAPTOP"]:
+        # Если в заголовке найдено ключевое слово ЧУЖОЙ категории
+        # Пример: Category=GPU, Title="Ноутбук Asus RTX 3060" -> Нашли "Ноутбук" -> Fail
+        for other_req in other_rule["required"]:
+            if other_req in title_lower:
+                # Особый случай: "Видеокарта для ноутбука" -> Category=GPU. 
+                # Нашли "ноутбук". Но это запчасть.
+                # Если текущая категория GPU, а нашли "ноутбук" - это плохо, так как GPU для ноутов это обычно мусор/запчасти
+                # Если текущая категория PC_BUILD, а нашли "монитор" - это ОК ("ПК с монитором")
                 return False
-    
-    if model and len(model) > 2:
-        model_clean = model.replace("-", "").replace(" ", "").lower()
-        text_clean = combined_text.replace("-", "").replace(" ", "")
-        if model_clean not in text_clean:
-            # Model not found - suspicious for GPU/CPU
-            if category in ["GPU", "CPU"]:
-                return False
-    
-    # 6. Final decision logic
-    result = None
-    if has_category_match and conflicting_categories <= 1:
-        result = True
-    elif conflicting_categories >= 2:
-        result = False
-    elif category in ["ACCESSORY", "MISC", "SERVICE", "COOLING", "CASE"]:
-        result = True
-    else:
-        result = has_category_match
-    
-    # Debug logging for first few items
-    if title:  # Simple check to avoid spam
-        from app.core.log_manager import logger
-        logger.dev(
-            f"Confidence eval: '{title[:30]}...' -> {category} -> "
-            f"{'RELIABLE' if result else 'UNRELIABLE'} "
-            f"(match={has_category_match}, conflicts={conflicting_categories})"
-        )
-    
-    return result
+
+    # 4. Brand Consistency (Soft Check)
+    if brand and brand != "NO_BRAND":
+        brand_clean = brand.lower().replace(" ", "")
+        # Если бренд явно указан, он должен быть в тексте (хотя бы похоже)
+        # Но делаем скидку на длину: короткие бренды (HP, LG) часто теряются или пишутся кириллицей
+        if len(brand_clean) > 2:
+            if brand_clean not in combined_text.replace(" ", ""):
+                # Попробуем кириллицу (очень примитивно)
+                # Если бренда нет нигде - это подозрительно для дорогих товаров
+                if category in ["LAPTOP", "GPU", "MONITOR"]:
+                    # Допускаем отсутствие бренда в тексте, если есть ОЧЕНЬ сильное совпадение по модели
+                    if model and len(model) > 3 and model.lower().replace(" ", "") in combined_text.replace(" ", ""):
+                        pass
+                    else:
+                        # Штрафуем, но не баним сразу (может быть опечатка)
+                        # Но для строгости - вернем False
+                        return False
+
+    return True
 
 
 class StatisticsCache:
@@ -327,8 +377,6 @@ class RawDataManager:
             cursor.execute("CREATE TABLE IF NOT EXISTS user_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT, details TEXT, created_at TEXT)")
         if from_version < 4:
             self._create_all_tables(cursor)
-            # Migration logic for v4 omitted for brevity as in original
-            pass
         if from_version < 5:
             try:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_price_city ON raw_items(price, city_id)")
@@ -339,7 +387,6 @@ class RawDataManager:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_valid_prices ON raw_items(price, city_id) WHERE price > 0")
             except Exception: pass
         if from_version < 6:
-            # v6 specific migration
             pass
         if from_version < 7:
              try:
@@ -349,7 +396,6 @@ class RawDataManager:
                 logger.error(f"Migration to v7 failed: {e}")
         if from_version < 8:
             try:
-                # Добавляем поля для мягкого удаления
                 cursor.execute("ALTER TABLE raw_items ADD COLUMN is_deleted INTEGER DEFAULT 0")
                 cursor.execute("ALTER TABLE raw_items ADD COLUMN deleted_at TEXT")
                 cursor.execute("ALTER TABLE raw_items ADD COLUMN original_product_id INTEGER")
@@ -361,7 +407,6 @@ class RawDataManager:
                 cursor.execute("ALTER TABLE categories ADD COLUMN is_deleted INTEGER DEFAULT 0")
                 cursor.execute("ALTER TABLE categories ADD COLUMN deleted_at TEXT")
                 
-                # Индексы для корзины
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_deleted ON raw_items(is_deleted, deleted_at DESC)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_deleted ON products(is_deleted)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_deleted ON categories(is_deleted)")
@@ -370,7 +415,6 @@ class RawDataManager:
                 logger.error(f"Migration to v8 failed: {e}")
         if from_version < 9:
             try:
-                # Add placement_confidence column (1=reliable, 0=unreliable)
                 cursor.execute("ALTER TABLE raw_items ADD COLUMN placement_confidence INTEGER DEFAULT 1")
                 logger.info("✅ v9: Added placement_confidence column to raw_items")
             except Exception as e:
@@ -438,7 +482,6 @@ class RawDataManager:
         try:
             cursor.execute("BEGIN TRANSACTION")
             
-            # Загружаем кэши с блокировкой
             with self._cache_lock:
                 city_cache = self._city_cache.copy()
                 seller_cache = self._seller_cache.copy()
@@ -454,7 +497,6 @@ class RawDataManager:
             new_cities = set()
             new_sellers = set()
             
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверка дублей внутри батча
             seen_ad_ids = set()
             unique_items = []
 
@@ -465,9 +507,7 @@ class RawDataManager:
                     unique_str = f"{item.get('title')}_{item.get('seller_id')}_{item.get('city')}"
                     ad_id = hashlib.md5(unique_str.encode('utf-8')).hexdigest()
                 
-                # Пропускаем дубли в батче
                 if ad_id in seen_ad_ids:
-                    logger.warning(f"Дубль в батче (ad_id={ad_id[:8]}...), пропущен")
                     continue
                 seen_ad_ids.add(ad_id)
                 unique_items.append(entry)
@@ -502,7 +542,6 @@ class RawDataManager:
                 for link_id, seller_id in cursor.fetchall():
                     seller_cache[link_id] = seller_id
 
-            # Обновляем глобальные кэши
             with self._cache_lock:
                 self._city_cache.update(city_cache)
                 self._seller_cache.update(seller_cache)
@@ -561,7 +600,6 @@ class RawDataManager:
             product_id = None
             semantic = item.get('semantic_data')
             
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Блокируем элементы без semantic_data
             if not semantic:
                 logger.error(f"Элемент '{title}' ({ad_id}) добавлен БЕЗ 'semantic_data'! БЛОКИРОВАН.")
                 return AddItemResult(-1, "error", False)
@@ -585,7 +623,6 @@ class RawDataManager:
                 """, (p_key, clean_name, brand, model, cat_id))
                 product_id = cursor.lastrowid
 
-            # Используем новый composite index
             cursor.execute("""
                 SELECT id, price, analyzed_at FROM raw_items WHERE ad_id = ?
                 ORDER BY analyzed_at DESC LIMIT 1
@@ -600,7 +637,6 @@ class RawDataManager:
                 old_price = existing[1]
                 last_analyzed = existing[2]
                 
-                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Не обновляем, если обновлялось менее 60 секунд назад
                 if last_analyzed:
                     try:
                         last_dt = datetime.fromisoformat(last_analyzed)
@@ -671,7 +707,6 @@ class RawDataManager:
 
             if result.status in ("created", "updated"):
                 try:
-                    # Вызываем пересчет ДО коммита, чтобы сохранить в той же транзакции
                     title = item.get("title", "")
                     description = item.get("description", "")
 
@@ -796,11 +831,9 @@ class RawDataManager:
         else:
             item['product_keys'] = []
         
-        # Optimization: Use fetched category_name instead of N+1 query
         cat_name = item.get('category_name')
         item['categories'] = [cat_name] if cat_name else []
         
-        # Clean up internal field if not needed in final dict
         if 'category_name' in item:
             del item['category_name']
             
@@ -1125,7 +1158,6 @@ class RawDataManager:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            # Start explicit transaction
             cursor.execute("BEGIN TRANSACTION")
             
             if clear_first:
@@ -1134,14 +1166,12 @@ class RawDataManager:
             items = data.get('items', [])
             count = 0
             
-            # Batch inserts using external cursor
             for item in items:
                 self.add_raw_item(
                     item, 
                     external_cursor=cursor
                 )
                 count += 1
-                # Commit every 1000 items to keep transaction log small
                 if count % 1000 == 0:
                     conn.commit()
                     cursor.execute("BEGIN TRANSACTION")
@@ -1156,7 +1186,6 @@ class RawDataManager:
             conn.close()
 
     def soft_delete_items(self, item_ids: List[int]) -> int:
-        """Мягкое массовое удаление элементов."""
         if not item_ids: return 0
         conn = self._get_connection()
         try:
@@ -1185,18 +1214,15 @@ class RawDataManager:
             conn.close()
 
     def soft_delete_product(self, product_id: int) -> int:
-        """Мягкое удаление продукта и всех его элементов."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             now = datetime.now().isoformat()
             
-            # Получаем category_id продукта
             cursor.execute("SELECT category_id FROM products WHERE id = ?", (product_id,))
             row = cursor.fetchone()
             if not row: return 0
             
-            # Удаляем все элементы этого продукта
             cursor.execute("""
                 UPDATE raw_items
                 SET is_deleted = 1, deleted_at = ?, original_product_id = product_id
@@ -1204,7 +1230,6 @@ class RawDataManager:
             """, (now, product_id))
             items_count = cursor.rowcount
             
-            # Удаляем сам продукт
             cursor.execute("""
                 UPDATE products
                 SET is_deleted = 1, deleted_at = ?, original_category_id = category_id
@@ -1218,19 +1243,16 @@ class RawDataManager:
             conn.close()
 
     def soft_delete_category(self, category_id: int) -> int:
-        """Мягкое удаление категории и всех её продуктов/элементов."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             now = datetime.now().isoformat()
             
-            # Получаем все продукты категории
             cursor.execute("SELECT id FROM products WHERE category_id = ? AND is_deleted = 0", (category_id,))
             product_ids = [row[0] for row in cursor.fetchall()]
             
             total_items = 0
             for pid in product_ids:
-                # Удаляем элементы каждого продукта
                 cursor.execute("""
                     UPDATE raw_items
                     SET is_deleted = 1, deleted_at = ?, original_product_id = product_id
@@ -1238,14 +1260,12 @@ class RawDataManager:
                 """, (now, pid))
                 total_items += cursor.rowcount
                 
-            # Удаляем все продукты категории
             cursor.execute("""
                 UPDATE products
                 SET is_deleted = 1, deleted_at = ?, original_category_id = category_id
                 WHERE category_id = ? AND is_deleted = 0
             """, (now, category_id))
             
-            # Удаляем саму категорию
             cursor.execute("""
                 UPDATE categories
                 SET is_deleted = 1, deleted_at = ?
@@ -1259,7 +1279,6 @@ class RawDataManager:
             conn.close()
 
     def restore_item(self, item_id: int) -> bool:
-        """Восстановление элемента из корзины."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -1275,13 +1294,11 @@ class RawDataManager:
             conn.close()
 
     def restore_items(self, item_ids: List[int]) -> int:
-        """Массовое восстановление элементов из корзины."""
         if not item_ids: return 0
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             placeholders = ','.join('?' * len(item_ids))
-            # Восстанавливаем и возвращаем привязку к оригинальному продукту
             query = f"""
                 UPDATE raw_items
                 SET is_deleted = 0, deleted_at = NULL, product_id = original_product_id
@@ -1298,76 +1315,7 @@ class RawDataManager:
         finally:
             conn.close()
 
-    #def restore_product(self, product_id: int) -> int:
-    #    """Восстановление продукта и всех его элементов."""
-    #    conn = self._get_connection()
-    #    try:
-    #        cursor = conn.cursor()
-    #        # Восстанавливаем продукт
-    #        cursor.execute("""
-    #            UPDATE products
-    #            SET is_deleted = 0, deleted_at = NULL, category_id = original_category_id
-    #            WHERE id = ? AND is_deleted = 1
-    #        """, (product_id,))
-    #        
-    #        # Восстанавливаем все элементы этого продукта
-    #        cursor.execute("""
-    #            UPDATE raw_items
-    #            SET is_deleted = 0, deleted_at = NULL, product_id = original_product_id
-    #            WHERE original_product_id = ? AND is_deleted = 1
-    #        """, (product_id,))
-    #        
-    #        items_count = cursor.rowcount
-    #        conn.commit()
-    #        self._stats_cache.invalidate()
-    #        return items_count
-    #    finally:
-    #        conn.close()
-#
-    #def restore_category(self, category_id: int) -> int:
-    #    """Восстановление категории и всех её продуктов/элементов."""
-    #    conn = self._get_connection()
-    #    try:
-    #        cursor = conn.cursor()
-    #        # Восстанавливаем категорию
-    #        cursor.execute("""
-    #            UPDATE categories
-    #            SET is_deleted = 0, deleted_at = NULL
-    #            WHERE id = ? AND is_deleted = 1
-    #        """, (category_id,))
-    #        
-    #        # Получаем все удаленные продукты этой категории
-    #        cursor.execute("""
-    #            SELECT id FROM products
-    #            WHERE original_category_id = ? AND is_deleted = 1
-    #        """, (category_id,))
-    #        product_ids = [row[0] for row in cursor.fetchall()]
-    #        
-    #        total_items = 0
-    #        for pid in product_ids:
-    #            # Восстанавливаем продукт
-    #            cursor.execute("""
-    #                UPDATE products
-    #                SET is_deleted = 0, deleted_at = NULL, category_id = original_category_id
-    #                WHERE id = ?
-    #            """, (pid,))
-    #            
-    #            # Восстанавливаем элементы
-    #            cursor.execute("""
-    #                UPDATE raw_items
-    #                SET is_deleted = 0, deleted_at = NULL, product_id = original_product_id
-    #                WHERE original_product_id = ? AND is_deleted = 1
-    #            """, (pid,))
-    #            total_items += cursor.rowcount
-    #            
-    #        conn.commit()
-    #        self._stats_cache.invalidate()
-    #        return total_items
-    #    finally:
-    #        conn.close()
-
     def permanent_delete_item(self, item_id: int) -> bool:
-        """Окончательное удаление элемента."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -1379,7 +1327,6 @@ class RawDataManager:
             conn.close()
 
     def permanent_delete_items(self, item_ids: List[int]) -> int:
-        """Окончательное массовое удаление элементов из корзины."""
         if not item_ids: return 0
         conn = self._get_connection()
         try:
@@ -1393,7 +1340,6 @@ class RawDataManager:
             conn.close()
 
     def get_trash_items(self, limit: int = 1000) -> List[Dict]:
-        """Получить все элементы из корзины."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -1424,11 +1370,9 @@ class RawDataManager:
             conn.close()
 
     def move_item_to_product(self, item_id: int, target_product_id: int) -> bool:
-        """Переместить один элемент."""
         return self.move_items_to_product([item_id], target_product_id) > 0
 
     def move_items_to_product(self, item_ids: List[int], target_product_id: int) -> int:
-        """Массовое перемещение элементов (автоматически восстанавливает из корзины)."""
         if not item_ids: return 0
         conn = self._get_connection()
         try:
@@ -1439,7 +1383,6 @@ class RawDataManager:
             if not cursor.fetchone():
                 return 0
             
-            # Обновляем product_id И сбрасываем флаг удаления
             query = f"""
                 UPDATE raw_items
                 SET product_id = ?, is_deleted = 0, deleted_at = NULL
@@ -1466,16 +1409,6 @@ class RawDataManager:
             conn.close()
 
     def update_item_confidence(self, item_id: int, is_reliable: bool) -> bool:
-        """
-        Manually update placement_confidence flag for a single item.
-
-        Args:
-            item_id: Item ID
-            is_reliable: True for reliable, False for unreliable
-
-        Returns:
-            True if updated successfully
-        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -1493,23 +1426,10 @@ class RawDataManager:
             conn.close()
 
     def recalculate_placement_confidence(self, item_id: int) -> bool:
-        """
-        Recalculate placement_confidence for an item based on its semantic data.
-
-        Uses evaluate_item_placement() function from memory.py to determine
-        if the item is correctly placed in its current category/product.
-
-        Args:
-            item_id: Item ID to recalculate
-
-        Returns:
-            True if recalculation succeeded
-        """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
 
-            # Fetch item data with product and category info
             cursor.execute("""
                 SELECT ri.title, ri.description, ri.price, 
                        p.key as product_key, c.name as category_name,
@@ -1544,7 +1464,6 @@ class RawDataManager:
                 logger.warning("evaluate_item_placement not found, defaulting to reliable")
                 is_reliable = True
 
-            # Update database
             cursor.execute("""
                 UPDATE raw_items 
                 SET placement_confidence = ? 
@@ -1560,15 +1479,6 @@ class RawDataManager:
             conn.close()
 
     def bulk_recalculate_confidence(self, item_ids: List[int]) -> int:
-        """
-        Bulk recalculate placement_confidence for multiple items.
-
-        Args:
-            item_ids: List of item IDs
-
-        Returns:
-            Number of successfully recalculated items
-        """
         count = 0
         for item_id in item_ids:
             if self.recalculate_placement_confidence(item_id):
@@ -1576,18 +1486,13 @@ class RawDataManager:
         return count
 
     def empty_trash(self) -> int:
-        """Полная очистка корзины."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            # Удаляем элементы
             cursor.execute("DELETE FROM raw_items WHERE is_deleted = 1")
             items_deleted = cursor.rowcount
             
-            # Удаляем продукты
             cursor.execute("DELETE FROM products WHERE is_deleted = 1")
-            
-            # Удаляем категории
             cursor.execute("DELETE FROM categories WHERE is_deleted = 1")
             
             conn.commit()

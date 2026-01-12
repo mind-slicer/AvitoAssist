@@ -203,12 +203,33 @@ class SpacyFeatureExtractor:
         rent_keywords = {'аренда', 'сдам', 'прокат', 'скупка', 'ремонт', 'обслуживание', 'диагностика', 'выкуп'}
         if not rent_keywords.isdisjoint(lemmas_set):
             return 'SERVICE', {'SERVICE': 1000.0}
-
-        # --- PHASE 2: SYSTEM DETECTOR (Implicit Laptop/PC) ---
-        # Эта фаза ищет "скрытые" ноутбуки/ПК, где нет слова "ноутбук", но есть Бренд + CPU + GPU
-        # Пример: "Asus ROG Strix i7 12700H RTX 3060" -> Это точно не просто видеокарта.
         
-        # 1. Расширенный список вендоров, которые делают готовые устройства
+        # --- PHASE 2: ACCESSORY/PART FORCED START (EARLY INTERCEPT) ---
+        # Перехватываем "Запчасти для..." ДО того, как сработает System Detector
+        
+        acc_starters = (
+            'коробка', 'упаковка', 'box', 
+            'держатель', 'подставка', 'кронштейн', 
+            'кабель', 'провод', 'шнур', 'переходник', 'удлинитель', 
+            'райзер', 'riser', 'планка', 'мост', 'шлейф', 'заглушка', 'винты', 'крепеж', 'крепление', 'бекплейт', 'backplate',
+            'топкейс', 'корпус для', 'клавиатура', 'матрица', 'аккумулятор', 'батарея', 'зарядка', 'блок питания для', 'петли'
+        )
+        # Очищаем от прилагательных перед проверкой
+        adjectives_strip = r'^(новая|новый|новые|игровая|игровой|б\/у|бу|продам|продается|мощная|топовая|нерабочая|неисправная|faulty|оригинальная)\s+'
+        stripped_start = re.sub(adjectives_strip, '', clean_title).strip()
+
+        if stripped_start.startswith(acc_starters):
+            return 'ACCESSORY', {'ACCESSORY': 2000.0}
+
+        cool_starters = (
+            'кулер', 'вентилятор', 'вертушка', 'радиатор', 'охлаждение', 
+            'сво', 'сжо', 'водянка', 'система', 'с/охл', 'охлад', 'турбина', 'кожух',
+            'fan', 'cooler', 'heatsink'
+        )
+        if stripped_start.startswith(cool_starters):
+            return 'COOLING', {'COOLING': 2000.0}
+
+        # --- PHASE 3: SYSTEM DETECTOR (Implicit Laptop/PC) ---
         sys_vendors = ['asus', 'msi', 'acer', 'hp', 'lenovo', 'dell', 'thunderobot', 'machenike', 'xiaomi', 'huawei', 'honor', 'gigabyte', 'ardor', 'osio', 'tecno', 'infinix', 'apple']
         has_top_vendor = any(v in clean_title for v in sys_vendors)
         
@@ -216,10 +237,6 @@ class SpacyFeatureExtractor:
         has_gpu_strong = any(g in clean_title for g in ['rtx', 'gtx', 'rx 6', 'rx 7', 'radeon', 'geforce'])
         has_storage_ram = any(s in clean_title for s in ['gb', 'гб', 'ssd', 'ram', 'озу'])
 
-        # Логика:
-        # А) Бренд + CPU + GPU (Игровой ноут/ПК) -> Gigabyte ... i5 ... RTX 3050
-        # Б) Бренд + CPU + Память (Офисный ноут) -> Osio ... N200 ... 8Gb
-        
         if has_top_vendor and has_cpu_strong:
              is_system = False
              if has_gpu_strong:
@@ -228,76 +245,53 @@ class SpacyFeatureExtractor:
                  is_system = True
             
              if is_system:
-                 # Если есть экран или мобильные признаки - ноутбук, иначе ПК
                  mobile_cues = ['15.6', '17.3', '14.0', '16.1', '14"', 'ips', 'oled', 'battery', 'батарея', 'ultrabook', 'ультрабук', 'tb', 'thin']
                  if any(cue in clean_title for cue in mobile_cues):
                      return 'LAPTOP', {'LAPTOP': 5000.0}
                  
-                 # По умолчанию считаем ноутбуком (чаще встречаются), если нет слова "системник"
-                 # Ardor Gaming - может быть монитором, но presence of CPU kills monitor logic via Banned keywords later, but here we enforce Laptop/PC
                  if 'системн' not in clean_title and 'пк' not in clean_title.split() and 'desktop' not in clean_title:
                      return 'LAPTOP', {'LAPTOP': 4500.0}
                  else:
                      return 'PC_BUILD', {'PC_BUILD': 4500.0}
 
-        # --- CLEAN START STRING (Remove adjectives like "new", "gaming") ---
-        adjectives_strip = r'^(новая|новый|новые|игровая|игровой|б\/у|бу|продам|продается|мощная|топовая|нерабочая|неисправная|faulty)\s+'
-        stripped_start = re.sub(adjectives_strip, '', clean_title).strip()
-        
-        # --- PHASE 3: FORCED START DETECTOR (Modifiers) ---
-        acc_starters = (
-            'коробка', 'коробки', 'каробка', 'упаковка', 'box', 
-            'держатель', 'подставка', 'кронштейн', 
-            'кабель', 'провод', 'шнур', 'переходник', 'удлинитель', 
-            'райзер', 'riser', 'планка', 'мост', 'шлейф', 'заглушка', 'винты', 'болты', 'крепеж', 'крепление', 'бекплейт', 'backplate',
-            'топкейс', 'корпус для', 'клавиатура', 'матрица'
-        )
-        if stripped_start.startswith(acc_starters):
-            return 'ACCESSORY', {'ACCESSORY': 2000.0}
-            
-        cool_starters = (
-            'кулер', 'вентилятор', 'вертушка', 'радиатор', 'охлаждение', 
-            'сво', 'сжо', 'водянка', 'система', 'с/охл', 'охлад', 'турбина', 'кожух',
-            'fan', 'cooler', 'heatsink'
-        )
-        if stripped_start.startswith(cool_starters):
-            return 'COOLING', {'COOLING': 2000.0}
-        
         # --- PHASE 4: LAPTOP DETECTOR ---
-        laptop_rules = self.category_rules['LAPTOP']
+        laptop_rules = self.category_rules.get('LAPTOP', {})
         is_laptop = False
         
-        # Strong keywords check (включая "ультрабуки" и т.д.)
-        for kw in laptop_rules['strong_keywords']:
-            if kw in lemmas_set or kw in clean_title: # Check raw title too for things like "hp 15s"
-                is_laptop = True
-                break
+        # Explicit keywords
+        if laptop_rules:
+            for kw in laptop_rules.get('strong_keywords', []):
+                if kw in lemmas_set or kw in clean_title:
+                    is_laptop = True
+                    break
         
-        # Доп. проверка по комбинации бренд + экран
+        # Brand + Screen context
         if not is_laptop:
             has_laptop_brand = any(b in lemmas_set for b in self.VENDORS)
             has_screen = any(kw in lemmas_set for kw in ['ips', '144hz', 'дюймов', 'экран'])
             if has_laptop_brand and has_screen:
                 is_laptop = True
         
-        # Проверка Banned для Laptop
+        # Strict Banned Check for Laptop
         if is_laptop:
-            if not any(ban in clean_title for ban in laptop_rules['banned_keywords']):
+            # Расширенный список запретов для надежности, даже если JSON не подгрузился
+            local_bans = ['разбор', 'запчасти', 'матрица', 'клавиатура', 'топкейс', 'поддон', 'петли', 'шлейф', 'аккумулятор', 'батарея', 'кулер', 'зарядка']
+            json_bans = laptop_rules.get('banned_keywords', [])
+            all_bans = set(local_bans + json_bans)
+            
+            if not any(ban in clean_title for ban in all_bans):
                 return 'LAPTOP', {'LAPTOP': 1500.0}
 
         # --- PHASE 5: MONITOR DETECTOR ---
-        monitor_strong = self.category_rules['MONITOR']['strong_keywords']
+        monitor_strong = self.category_rules.get('MONITOR', {}).get('strong_keywords', [])
         if any(kw in lemmas_set for kw in monitor_strong) or any(kw in clean_title for kw in monitor_strong):
-             # Защита от "Видеокарта на 2 монитора"
-             # Ищем паттерн "на ... монитор"
              context_ban = re.search(r'\bна\s+\d*\s*монитор', clean_title)
              if not context_ban:
                  if 'матрица' not in lemmas_set and 'разбита' not in lemmas_set:
                      return 'MONITOR', {'MONITOR': 1000.0}
 
         # --- PHASE 6: PC BUILD / BUNDLE ---
-        pc_strong = self.category_rules['PC_BUILD']['strong_keywords']
-        # Проверяем на точное совпадение "пк" как отдельного слова
+        pc_strong = self.category_rules.get('PC_BUILD', {}).get('strong_keywords', [])
         if any(kw in clean_title for kw in pc_strong) or re.search(r'\bпк\b', clean_title):
              return 'PC_BUILD', {'PC_BUILD': 1000.0}
 
@@ -319,7 +313,6 @@ class SpacyFeatureExtractor:
             banned_keys = rules.get("banned_keywords", [])
             base_priority = rules.get("priority", 10)
 
-            # Banned Check (STRICTLY ON TITLE ONLY)
             is_banned = False
             for ban in banned_keys:
                 if ban in clean_title:
@@ -330,7 +323,6 @@ class SpacyFeatureExtractor:
                 scores[cat_name] = -1000.0
                 continue
 
-            # Scoring
             score = 0
             for kw in strong_keys:
                 if kw in lemmas_set:
@@ -338,7 +330,6 @@ class SpacyFeatureExtractor:
                 elif len(kw) > 3 and kw in clean_title:
                     score += 50
             
-            # Special logic: RAM needs "GB" or "DDR"
             if cat_name == 'RAM' and score > 0:
                  if not any(x in clean_title for x in ['ddr', 'gb', 'гб']):
                      score = 0
@@ -355,15 +346,12 @@ class SpacyFeatureExtractor:
         best_category = max(valid_scores, key=valid_scores.get)
 
         # 1. Защита компонентов от Систем (Storage/RAM vs Laptop/PC)
-        # Если победил компонент, но есть признаки CPU+GPU или Бренд+CPU, это подозрительно
         if best_category in ['STORAGE', 'RAM', 'PSU', 'COOLING', 'CASE', 'ACCESSORY']:
             has_cpu = any(c in clean_title for c in ['ryzen', 'core i', 'intel i', 'amd r'])
             has_gpu = any(g in clean_title for g in ['rtx', 'gtx', 'radeon', 'geforce'])
             
             if has_cpu or has_gpu:
-                # Это не просто диск, это система с диском
                 scores[best_category] = -500.0
-                # Пытаемся понять, это ПК или Ноут
                 if any(x in clean_title for x in ['ноутбук', 'laptop', 'экран', 'ips']):
                     return 'LAPTOP', scores
                 else:
@@ -383,11 +371,9 @@ class SpacyFeatureExtractor:
              if scores.get('CPU', 0) > 0 or scores.get('STORAGE', 0) > 0:
                  scores['RAM'] = -1000.0
              
-        # Re-evaluate after punishments
         valid_scores = {k: v for k, v in scores.items() if v > 0}
         if not valid_scores:
-            # Fallback if everything was banned (e.g. "Laptop with SSD")
-            if 'LAPTOP' in scores and scores['LAPTOP'] > -2000: # If it wasn't explicitly banned
+            if 'LAPTOP' in scores and scores['LAPTOP'] > -2000:
                  return 'LAPTOP', scores
             return "MISC", scores
 
@@ -395,15 +381,12 @@ class SpacyFeatureExtractor:
         
         # --- POST-SELECTION CORRECTION ---
         
-        # If PC_BUILD selected, but looks like a single GPU ("MSI RTX 4060")
         if best_category == 'PC_BUILD':
             pc_words = ['системный', 'блок', 'пк', 'компьютер', 'сборка', 'station', 'server', 'desktop', 'rig', 'ферма']
-            # Проверяем, есть ли слова ПК. Если нет, и есть GPU - это GPU.
             if not any(w in clean_title for w in pc_words):
                  if scores.get('GPU', 0) > 0:
                      return 'GPU', scores
                      
-        # Catch-all for Laptops missed earlier
         if best_category in ['RAM', 'CPU', 'GPU']:
             laptop_cues = ['ноутбук', 'laptop', 'ips', 'screen', 'экран', 'дюйм', 'tb', '15s', 'machcreator']
             if any(cue in clean_title for cue in laptop_cues):
