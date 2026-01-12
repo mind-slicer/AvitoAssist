@@ -5,6 +5,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from app.config import BASE_APP_DIR
 
+
 class SingletonMeta(type(QObject)):
     _instances = {}
     
@@ -12,6 +13,7 @@ class SingletonMeta(type(QObject)):
         if cls not in cls._instances:
             cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
+
 
 class LogManager(QObject, metaclass=SingletonMeta):
     ui_log_signal = pyqtSignal(str, str, str, bool)

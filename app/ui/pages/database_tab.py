@@ -1,12 +1,15 @@
+import re
+from collections import Counter
+
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QTreeWidget, QTreeWidgetItem, QTableWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+    QScrollArea, QFrame, QTreeWidget, QTreeWidgetItem, QTableWidget, 
     QTableWidgetItem, QLineEdit, QComboBox, QSplitter, QToolBar,
     QMessageBox, QTabWidget, QAbstractItemView, QFormLayout,
-    QStyledItemDelegate, QStyle, QStyleOptionButton
+    QStyledItemDelegate, QStyle, QTreeWidgetItemIterator
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint, QSize
-from PyQt6.QtGui import QAction, QPainter, QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QSize
+from PyQt6.QtGui import QAction, QColor
 
 from app.ui.styles import Components, Palette, Spacing
 from app.ui.styles.typography import TextPresets, Typography
@@ -19,132 +22,68 @@ class TreeItemDelegate(QStyledItemDelegate):
     """
     Делегат для отображения кнопок удаления в дереве.
     """
-    
-    delete_clicked = pyqtSignal(object)  # Сигнал при клике на удаление
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.hovered_item = None
-    
+    delete_clicked = pyqtSignal(object)
+
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
         
-        # Рисуем кнопку удаления только при hover
+        # Строгая проверка типа: рисуем ТОЛЬКО для категорий, брендов и продуктов
+        data = index.data(Qt.ItemDataRole.UserRole)
+        if not data or data.get('type') not in ('category', 'brand_group', 'product_key'):
+            return
+
         if option.state & QStyle.StateFlag.State_MouseOver:
-            # Кнопка в правом углу
-            btn_size = 20
+            # Динамический размер кнопки, чтобы избежать "срезания" на узких строках
+            item_height = option.rect.height()
+            btn_size = min(18, item_height - 4) 
+            
             btn_rect = QRect(
-                option.rect.right() - btn_size - 4,
-                option.rect.top() + (option.rect.height() - btn_size) // 2,
+                option.rect.right() - btn_size - 8,
+                option.rect.top() + (item_height - btn_size) // 2,
                 btn_size,
                 btn_size
             )
-            
-            # Фон кнопки
+            painter.setRenderHint(painter.RenderHint.Antialiasing)
             painter.setBrush(QColor(Palette.ERROR))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(btn_rect, 3, 3)
+            painter.drawRoundedRect(btn_rect, 4, 4)
             
-            # Иконка "X"
             painter.setPen(QColor("white"))
-            painter.setFont(painter.font())
-            painter.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "✖")
-    
+            font = painter.font()
+            font.setBold(True)
+            font.setPointSize(8)
+            painter.setFont(font)
+            painter.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "✕")
+
     def editorEvent(self, event, model, option, index):
         if event.type() == event.Type.MouseButtonRelease:
-            # Проверяем клик по кнопке удаления
-            btn_size = 20
+            data = index.data(Qt.ItemDataRole.UserRole)
+            if not data or data.get('type') not in ('category', 'brand_group', 'product_key'):
+                return False
+
+            item_height = option.rect.height()
+            btn_size = min(18, item_height - 4)
             btn_rect = QRect(
-                option.rect.right() - btn_size - 4,
-                option.rect.top() + (option.rect.height() - btn_size) // 2,
+                option.rect.right() - btn_size - 8,
+                option.rect.top() + (item_height - btn_size) // 2,
                 btn_size,
                 btn_size
             )
-            
             if btn_rect.contains(event.pos()):
                 self.delete_clicked.emit(index)
                 return True
-        
         return super().editorEvent(event, model, option, index)
-
-
-class TableItemDelegate(QStyledItemDelegate):
-    """
-    Делегат для кнопок удаления/перемещения в таблице.
-    """
     
-    delete_clicked = pyqtSignal(int)  # row
-    move_clicked = pyqtSignal(int)    # row
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-    
-    def paint(self, painter, option, index):
-        # Не рисуем ничего, кнопки будут в отдельной колонке
-        pass
-    
-    def createEditor(self, parent, option, index):
-        # Создаем виджет с кнопками
-        from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton
-        
-        widget = QWidget(parent)
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(4)
-        
-        # Кнопка перемещения
-        btn_move = QPushButton("➜")
-        btn_move.setFixedSize(24, 24)
-        btn_move.setToolTip("Переместить в другой продукт")
-        btn_move.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Palette.BG_DARK_3};
-                border: 1px solid {Palette.PRIMARY};
-                color: {Palette.PRIMARY};
-                border-radius: 4px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)};
-            }}
-        """)
-        btn_move.clicked.connect(lambda: self.move_clicked.emit(index.row()))
-        
-        # Кнопка удаления
-        btn_delete = QPushButton("🗑")
-        btn_delete.setFixedSize(24, 24)
-        btn_delete.setToolTip("Удалить элемент")
-        btn_delete.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Palette.BG_DARK_3};
-                border: 1px solid {Palette.ERROR};
-                color: {Palette.ERROR};
-                border-radius: 4px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {Palette.with_alpha(Palette.ERROR, 0.2)};
-            }}
-        """)
-        btn_delete.clicked.connect(lambda: self.delete_clicked.emit(index.row()))
-        
-        layout.addWidget(btn_move)
-        layout.addWidget(btn_delete)
-        layout.addStretch()
-        
-        return widget
-
 
 class DatabaseTab(QWidget):
-    item_selected = pyqtSignal(dict)
     recultivate_requested = pyqtSignal()
-    
+
     def __init__(self, memory_manager, parent=None):
         super().__init__(parent)
         self.memory = memory_manager
         self._init_ui()
         self._load_data()
-    
+
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -179,7 +118,7 @@ class DatabaseTab(QWidget):
         toolbar.addAction(clear_action)
         
         toolbar.addSeparator()
-    
+
         # Кнопка очистки корзины
         empty_trash_action = QAction("🗑️ Очистить корзину", self)
         empty_trash_action.triggered.connect(self._empty_trash)
@@ -194,8 +133,9 @@ class DatabaseTab(QWidget):
 
         # === Left Panel ===
         self.left_panel = QFrame()
-        self.left_panel.setMinimumWidth(400)  # Увеличено с 370
+        self.left_panel.setMinimumWidth(400) # Увеличено с 370
         self.left_panel.setStyleSheet(Components.panel())
+        
         left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
         left_layout.setSpacing(Spacing.SM)
@@ -204,9 +144,10 @@ class DatabaseTab(QWidget):
         stats_frame = QFrame()
         stats_frame.setStyleSheet(f"QFrame {{ background-color: {Palette.BG_DARK_2}; border-radius: {Spacing.RADIUS_NORMAL}px; padding: 12px; }}")
         stats_layout = QVBoxLayout(stats_frame)
+        
         self.stats_label = QLabel("Загрузка...")
         self.stats_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 11px; line-height: 1.4;")
-        self.stats_label.setWordWrap(True)  # Перенос слов
+        self.stats_label.setWordWrap(True) # Перенос слов
         stats_layout.addWidget(self.stats_label)
         left_layout.addWidget(stats_frame)
 
@@ -239,7 +180,7 @@ class DatabaseTab(QWidget):
         self.tree_delegate = TreeItemDelegate()
         self.tree_delegate.delete_clicked.connect(self._on_tree_item_delete)
         self.nav_tree.setItemDelegate(self.tree_delegate)
-        
+
         self.nav_tabs.addTab(self.nav_tree, "📂 Список")
 
         # 2. Graph
@@ -256,11 +197,12 @@ class DatabaseTab(QWidget):
         # === Center Panel (Tables) ===
         center_panel = QFrame()
         center_panel.setStyleSheet(Components.panel())
+        
         center_layout = QVBoxLayout(center_panel)
         center_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
         center_layout.setSpacing(Spacing.SM)
 
-        # Header с поиском по таблице (БЕЛОЕ ПОДЧЕРКИВАНИЕ)
+        # Header с поиском по таблице и кнопками действий
         header_widget = QWidget()
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -269,6 +211,43 @@ class DatabaseTab(QWidget):
         table_header = QLabel("ДАННЫЕ В БАЗЕ")
         table_header.setStyleSheet(Components.subsection_title())
         header_layout.addWidget(table_header)
+
+        # === НОВЫЕ КНОПКИ ДЕЙСТВИЙ ===
+        self.btn_move_selected = QPushButton("➜ Переместить выделенное")
+        self.btn_move_selected.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.PRIMARY};
+                color: {Palette.PRIMARY};
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-weight: bold;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ background-color: {Palette.with_alpha(Palette.PRIMARY, 0.2)}; }}
+            QPushButton:disabled {{ border-color: {Palette.BORDER_SOFT}; color: {Palette.TEXT_MUTED}; }}
+        """)
+        self.btn_move_selected.setEnabled(False)
+        self.btn_move_selected.clicked.connect(self._on_move_selected_clicked)
+        header_layout.addWidget(self.btn_move_selected)
+
+        self.btn_delete_selected = QPushButton("🗑 Отправить выделенное в корзину")
+        self.btn_delete_selected.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.ERROR};
+                color: {Palette.ERROR};
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-weight: bold;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ background-color: {Palette.with_alpha(Palette.ERROR, 0.2)}; }}
+            QPushButton:disabled {{ border-color: {Palette.BORDER_SOFT}; color: {Palette.TEXT_MUTED}; }}
+        """)
+        self.btn_delete_selected.setEnabled(False)
+        self.btn_delete_selected.clicked.connect(self._on_delete_selected_clicked)
+        header_layout.addWidget(self.btn_delete_selected)
 
         header_layout.addStretch()
 
@@ -293,24 +272,22 @@ class DatabaseTab(QWidget):
 
         # Raw Items Table
         self.raw_items_table = QTableWidget()
-        self.raw_items_table.setColumnCount(7)  # БЫЛО 6, СТАЛО 7
+        self.raw_items_table.setColumnCount(6) # БЫЛО 7 (удалили действия), СТАЛО 6
         self.raw_items_table.setHorizontalHeaderLabels([
-            "ID", "Заголовок", "Цена", "Город", "Дата", "Категории", "Действия"
+            "ID", "Заголовок", "Цена", "Город", "Дата", "Категории"
         ])
-        self.raw_items_table.horizontalHeader().setStretchLastSection(False)
+        self.raw_items_table.horizontalHeader().setStretchLastSection(True)
+        # Включаем множественное выделение строк
         self.raw_items_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.raw_items_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection) 
         self.raw_items_table.setStyleSheet(self._get_table_style())
+        # Подключаем сигнал изменения выделения для кнопок
+        self.raw_items_table.itemSelectionChanged.connect(self._update_action_buttons_state)
         self.raw_items_table.currentItemChanged.connect(self._on_raw_item_selection_changed)
-        
-        # Делегат для кнопок действий
-        self.table_delegate = TableItemDelegate()
-        self.table_delegate.delete_clicked.connect(self._on_table_item_delete)
-        self.table_delegate.move_clicked.connect(self._on_table_item_move)
-        self.raw_items_table.setItemDelegateForColumn(6, self.table_delegate)
-        
+
         self.table_tabs.addTab(self.raw_items_table, "📦 Сырые данные")
 
-        # Knowledge Table Tab Container (СИНИЙ ЦВЕТ - фильтр справа от таба)
+        # Knowledge Table Tab Container
         knowledge_tab_widget = QWidget()
         knowledge_tab_layout = QVBoxLayout(knowledge_tab_widget)
         knowledge_tab_layout.setContentsMargins(0, 0, 0, 0)
@@ -328,6 +305,7 @@ class DatabaseTab(QWidget):
 
         self.type_filter = QComboBox()
         self.type_filter.addItems(["Все", "Продукт", "Категория", "База данных", "Поведение ИИ", "Кастомное"])
+        
         # Маппинг русских имен на типы БД
         self._filter_type_map = {
             "Все": None,
@@ -337,6 +315,7 @@ class DatabaseTab(QWidget):
             "Поведение ИИ": "AI_BEHAVIOR",
             "Кастомное": "CUSTOM"
         }
+
         self.type_filter.setStyleSheet(f"""
             QComboBox {{ background: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border: 1px solid {Palette.BORDER_SOFT}; border-radius: 4px; padding: 6px 12px; min-width: 140px; }}
             QComboBox::drop-down {{ border: none; }}
@@ -345,7 +324,6 @@ class DatabaseTab(QWidget):
         self.type_filter.currentTextChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self.type_filter)
         filter_layout.addStretch()
-
         knowledge_tab_layout.addWidget(filter_widget)
 
         # Knowledge Table
@@ -356,8 +334,8 @@ class DatabaseTab(QWidget):
         self.knowledge_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.knowledge_table.setStyleSheet(self._get_table_style())
         self.knowledge_table.currentItemChanged.connect(self._on_knowledge_selection_changed)
+        
         knowledge_tab_layout.addWidget(self.knowledge_table)
-
         self.table_tabs.addTab(knowledge_tab_widget, "🧠 Знания ИИ")
 
         center_layout.addWidget(self.table_tabs)
@@ -367,6 +345,7 @@ class DatabaseTab(QWidget):
         right_panel = QFrame()
         right_panel.setFixedWidth(350)
         right_panel.setStyleSheet(Components.panel())
+        
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
         right_layout.setSpacing(Spacing.SM)
@@ -379,48 +358,14 @@ class DatabaseTab(QWidget):
         self.details_scroll.setWidgetResizable(True)
         self.details_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.details_scroll.setStyleSheet("background: transparent; border: none;")
-
+        
         self.details_container = QWidget()
         self.details_layout = QVBoxLayout(self.details_container)
         self.details_layout.setSpacing(Spacing.SM)
         self.details_scroll.setWidget(self.details_container)
-
+        
         right_layout.addWidget(self.details_scroll)
 
-        self.delete_btn = QPushButton("🗑️ Удалить")
-        self.delete_btn.setStyleSheet(Components.stop_button())
-        self.delete_btn.setEnabled(False)
-        self.delete_btn.clicked.connect(self._delete_selected)
-        right_layout.addWidget(self.delete_btn)
-        
-        # Кнопка восстановления (скрыта по умолчанию)
-        self.restore_btn = QPushButton("↺ Восстановить")
-        self.restore_btn.setStyleSheet(Components.start_button())
-        self.restore_btn.setEnabled(False)
-        self.restore_btn.setVisible(False)
-        self.restore_btn.clicked.connect(self._restore_selected)
-        right_layout.addWidget(self.restore_btn)
-        
-        # Кнопка окончательного удаления (скрыта по умолчанию)
-        self.permanent_delete_btn = QPushButton("⚠ Удалить навсегда")
-        self.permanent_delete_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Palette.ERROR};
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {Palette.with_alpha(Palette.ERROR, 0.8)};
-            }}
-        """)
-        self.permanent_delete_btn.setEnabled(False)
-        self.permanent_delete_btn.setVisible(False)
-        self.permanent_delete_btn.clicked.connect(self._permanent_delete_selected)
-        right_layout.addWidget(self.permanent_delete_btn)
-    
         self.cultivate_btn = QPushButton("🌱 Перекультивировать")
         self.cultivate_btn.setStyleSheet(Components.start_button())
         self.cultivate_btn.setEnabled(False)
@@ -438,7 +383,7 @@ class DatabaseTab(QWidget):
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
         self.splitter.setSizes([420, 800, 350])
-    
+
     def _get_table_style(self):
         return f"""
             QTableWidget {{ background: transparent; border: none; gridline-color: {Palette.BORDER_SOFT}; }}
@@ -449,10 +394,9 @@ class DatabaseTab(QWidget):
         """Load all data from the database."""
         if not self.memory:
             return
-        
+            
         # --- NEW HIERARCHY LOADING ---
         hierarchy = self.memory.raw_data.get_hierarchy_data()
-        
         self.nav_tree.clear()
         
         # Root items
@@ -468,54 +412,55 @@ class DatabaseTab(QWidget):
         # === КОРЗИНА (после разделителя) ===
         separator = QTreeWidgetItem([""])
         separator.setFlags(Qt.ItemFlag.NoItemFlags)
+        separator.setData(0, Qt.ItemDataRole.UserRole, {'type': 'separator'})
         separator.setBackground(0, QColor(Palette.DIVIDER))
         separator.setSizeHint(0, QSize(0, 2))
         self.nav_tree.addTopLevelItem(separator)
-
+        
         # Узел корзины
         trash_count = len(self.memory.raw_data.get_trash_items())
         trash_node = QTreeWidgetItem([f"🗑️ Корзина ({trash_count})"])
         trash_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'trash'})
         trash_node.setForeground(0, QColor(Palette.TEXT_MUTED))
         self.nav_tree.addTopLevelItem(trash_node)
-
+        
         # Iterate Categories
         for cat_name, brands in hierarchy.items():
-            cat_node = QTreeWidgetItem([f"📂 {cat_name}"])
+            # Считаем общий счетчик категории для корректной инициализации
+            cat_total = sum(p['count'] for b in brands.values() for p in b)
+            cat_node = QTreeWidgetItem([f"📂 {cat_name} ({cat_total})"])
             cat_node.setData(0, Qt.ItemDataRole.UserRole, {
                 'type': 'category',
-                'name': cat_name
+                'name': cat_name,
+                'count': cat_total # <-- ТЕПЕРЬ СОХРАНЯЕМ СЧЕТЧИК
             })
             self.nav_tree.addTopLevelItem(cat_node)
             
-            # Iterate Brands
             for brand_name, products in brands.items():
-                # Если бренд пустой, добавляем продукты прямо в категорию (или в папку Misc)
                 parent_for_prod = cat_node
-                
                 if brand_name != 'NO_BRAND':
-                    brand_node = QTreeWidgetItem([f"🏭 {brand_name}"])
-                    brand_node.setData(0, Qt.ItemDataRole.UserRole, {'type': 'brand_group'}) # Dummy type
+                    brand_total = sum(p['count'] for p in products)
+                    brand_node = QTreeWidgetItem([f"🏭 {brand_name} ({brand_total})"])
+                    brand_node.setData(0, Qt.ItemDataRole.UserRole, {
+                        'type': 'brand_group',
+                        'count': brand_total # <-- СОХРАНЯЕМ
+                    })
                     cat_node.addChild(brand_node)
                     parent_for_prod = brand_node
                 
-                # Iterate Products
                 for prod in products:
-                    name = prod['name']
-                    # Если имя все равно None (хотя SQL должен был исправить), ставим заглушку
-                    if not name or str(name).lower() == 'none':
-                        name = prod['key'] or "Unknown Product"
-                        
+                    name = prod['name'] or prod['key'] or "Unknown"
                     count = prod['count']
                     
                     prod_item = QTreeWidgetItem([f"📦 {name} ({count})"])
                     prod_item.setData(0, Qt.ItemDataRole.UserRole, {
-                        'type': 'product_key',
+                        'type': 'product_key', 
                         'key': prod['key'],
-                        'id': prod['id']
+                        'id': prod['id'],
+                        'count': count # <-- КРИТИЧЕСКИЙ ФИКС: ТЕПЕРЬ ПРОДУКТ ЗНАЕТ СВОЙ СЧЕТЧИК
                     })
                     parent_for_prod.addChild(prod_item)
-
+        
         # -----------------------------
         
         all_items_node.setExpanded(True)
@@ -530,9 +475,10 @@ class DatabaseTab(QWidget):
         
         self.graph_widget.load_data(knowledge)
         self._update_stats()
-    
+
     def _populate_raw_items_table(self, items: list):
         """Populate the raw items table."""
+        # ОТКЛЮЧАЕМ ОБНОВЛЕНИЯ UI ДЛЯ СКОРОСТИ
         self.raw_items_table.setUpdatesEnabled(False)
         self.raw_items_table.setRowCount(0)
         
@@ -541,7 +487,10 @@ class DatabaseTab(QWidget):
             self.raw_items_table.insertRow(row)
             
             # ID
-            self.raw_items_table.setItem(row, 0, QTableWidgetItem(str(item.get('id', ''))))
+            id_item = QTableWidgetItem(str(item.get('id', '')))
+            # Store full data in the first column
+            id_item.setData(Qt.ItemDataRole.UserRole, item)
+            self.raw_items_table.setItem(row, 0, id_item)
             
             # Title (truncated)
             title = item.get('title', '')[:50] + '...' if len(item.get('title', '')) > 50 else item.get('title', '')
@@ -590,57 +539,335 @@ class DatabaseTab(QWidget):
             
             self.raw_items_table.setItem(row, 5, QTableWidgetItem(display_str))
             
-            # Store full data
-            self.raw_items_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, item)
+            # УДАЛЕНО: Создание виджетов кнопок для каждого ряда
         
-            # === КОЛОНКА ДЕЙСТВИЙ ===
-            # Создаем виджет с кнопками
-            actions_widget = QWidget()
-            actions_layout = QHBoxLayout(actions_widget)
-            actions_layout.setContentsMargins(2, 2, 2, 2)
-            actions_layout.setSpacing(4)
-
-            # Кнопка перемещения
-            btn_move = QPushButton("➜")
-            btn_move.setFixedSize(24, 24)
-            btn_move.setToolTip("Переместить")
-            btn_move.setStyleSheet(f"""
-                QPushButton {{
-                    background: {Palette.BG_DARK_3}; border: 1px solid {Palette.PRIMARY};
-                    color: {Palette.PRIMARY}; border-radius: 4px; font-weight: bold;
-                }}
-                QPushButton:hover {{ background: {Palette.with_alpha(Palette.PRIMARY, 0.2)}; }}
-            """)
-            btn_move.clicked.connect(lambda checked, r=row: self._on_table_item_move(r))
-
-            # Кнопка удаления
-            btn_del = QPushButton("🗑")
-            btn_del.setFixedSize(24, 24)
-            btn_del.setToolTip("В корзину")
-            btn_del.setStyleSheet(f"""
-                QPushButton {{
-                    background: {Palette.BG_DARK_3}; border: 1px solid {Palette.ERROR};
-                    color: {Palette.ERROR}; border-radius: 4px; font-weight: bold;
-                }}
-                QPushButton:hover {{ background: {Palette.with_alpha(Palette.ERROR, 0.2)}; }}
-            """)
-            btn_del.clicked.connect(lambda checked, r=row: self._on_table_item_delete(r))
-
-            actions_layout.addWidget(btn_move)
-            actions_layout.addWidget(btn_del)
-            actions_layout.addStretch()
-
-            self.raw_items_table.setCellWidget(row, 6, actions_widget)
-
         self.raw_items_table.resizeColumnsToContents()
-        self.raw_items_table.setColumnWidth(6, 80)
-
         self.raw_items_table.setUpdatesEnabled(True)
+        # Сбрасываем состояние кнопок
+        self._update_action_buttons_state()
+
+    def _update_action_buttons_state(self):
+        """Активирует кнопки и меняет текст в зависимости от контекста (Корзина/Обычный)."""
+        selected_items = self.raw_items_table.selectedItems()
+        has_selection = len(selected_items) > 0
+        
+        self.btn_move_selected.setEnabled(has_selection)
+        self.btn_delete_selected.setEnabled(has_selection)
+
+        if not has_selection:
+            self.btn_move_selected.setText("Переместить")
+            self.btn_delete_selected.setText("В корзину")
+            return
+
+        # Определяем контекст по первому элементу (корзина или нет)
+        is_trash_mode = False
+        first_row = selected_items[0].row()
+        item_data = self.raw_items_table.item(first_row, 0).data(Qt.ItemDataRole.UserRole)
+        if item_data and item_data.get('deleted_at'):
+            is_trash_mode = True
+
+        # Считаем количество уникальных строк
+        unique_rows = len(set(i.row() for i in selected_items))
+        is_plural = unique_rows > 1
+
+        # Текст для перемещения (всегда одинаковый, т.к. из корзины перемещение = восстановление в категорию)
+        if is_plural:
+            self.btn_move_selected.setText(f"➜ Переместить выделенное ({unique_rows})")
+        else:
+            self.btn_move_selected.setText("➜ Переместить")
+
+        # Текст для удаления/восстановления
+        if is_trash_mode:
+            # Режим корзины -> Кнопка становится "Восстановить"
+            self.btn_delete_selected.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {Palette.BG_DARK_3};
+                    border: 1px solid {Palette.SUCCESS};
+                    color: {Palette.SUCCESS};
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-weight: bold;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)}; }}
+            """)
+            if is_plural:
+                self.btn_delete_selected.setText(f"↺ Восстановить выделенное ({unique_rows})")
+            else:
+                self.btn_delete_selected.setText("↺ Восстановить")
+        else:
+            # Обычный режим -> Кнопка "В корзину"
+            self.btn_delete_selected.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {Palette.BG_DARK_3};
+                    border: 1px solid {Palette.ERROR};
+                    color: {Palette.ERROR};
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-weight: bold;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ background-color: {Palette.with_alpha(Palette.ERROR, 0.2)}; }}
+            """)
+            if is_plural:
+                self.btn_delete_selected.setText(f"🗑 Отправить выделенное в корзину ({unique_rows})")
+            else:
+                self.btn_delete_selected.setText("🗑 В корзину")
+
+    def _find_tree_item_by_data(self, parent_item, key, value):
+        """Рекурсивный поиск элемента дерева по значению в UserRole."""
+        if parent_item is None:
+            # Поиск по всем top-level items
+            for i in range(self.nav_tree.topLevelItemCount()):
+                result = self._find_tree_item_by_data(self.nav_tree.topLevelItem(i), key, value)
+                if result:
+                    return result
+            return None
+        
+        # Проверяем текущий элемент
+        data = parent_item.data(0, Qt.ItemDataRole.UserRole)
+        if data and data.get(key) == value:
+            return parent_item
+        
+        # Проверяем детей
+        for i in range(parent_item.childCount()):
+            result = self._find_tree_item_by_data(parent_item.child(i), key, value)
+            if result:
+                return result
+        
+        return None
+
+    def _update_tree_product_counter(self, product_id: int, delta: int):
+        item = self._find_tree_item_by_data(None, 'id', product_id)
+        if not item: return
+
+        def update_node_text(node, d):
+            data = node.data(0, Qt.ItemDataRole.UserRole)
+            # Если в UserRole нет count (старый баг), берем 0, иначе реальное число
+            current_count = data.get('count', 0)
+            new_count = max(0, current_count + d)
+            data['count'] = new_count
+            node.setData(0, Qt.ItemDataRole.UserRole, data)
+            
+            # Обновляем текст, сохраняя префикс (иконку и имя)
+            current_text = node.text(0)
+            if ' (' in current_text:
+                base_text = current_text.split(' (')[0]
+                node.setText(0, f"{base_text} ({new_count})")
+            return new_count
+
+        new_prod_count = update_node_text(item, delta)
+        
+        # Обновляем родителей
+        p = item.parent()
+        while p:
+            update_node_text(p, delta)
+            p = p.parent()
+
+        # Удаляем узел только если это РЕАЛЬНЫЙ ноль и это узел продукта
+        if new_prod_count <= 0:
+            parent = item.parent()
+            if parent:
+                parent.removeChild(item)
+
+    def _restore_tree_product_if_missing(self, product_id: int):
+        """Восстанавливает продукт в дереве, если он был удален."""
+        # Проверяем, существует ли продукт в дереве
+        existing = self._find_tree_item_by_data(None, 'id', product_id)
+        if existing:
+            return
+        
+        # Продукта нет - нужно восстановить из БД
+        conn = self.memory.raw_data._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.id, p.key, COALESCE(p.display_name, p.key) as name,
+                       p.brand, c.name as category_name,
+                       COUNT(ri.id) as item_count
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                LEFT JOIN raw_items ri ON p.id = ri.product_id AND ri.is_deleted = 0
+                WHERE p.id = ?
+                GROUP BY p.id
+            """, (product_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return
+            
+            product_data = {
+                'id': row['id'],
+                'key': row['key'],
+                'name': row['name'],
+                'brand': row['brand'] or 'NO_BRAND',
+                'category': row['category_name'],
+                'count': row['item_count']
+            }
+            
+            # Находим категорию
+            cat_item = self._find_tree_item_by_data(None, 'name', product_data['category'])
+            if not cat_item:
+                # Категория не найдена - создаем (edge case)
+                cat_item = QTreeWidgetItem([f"📂 {product_data['category']}"])
+                cat_item.setData(0, Qt.ItemDataRole.UserRole, {
+                    'type': 'category',
+                    'name': product_data['category']
+                })
+                self.nav_tree.addTopLevelItem(cat_item)
+            
+            # Находим/создаем бренд
+            brand_name = product_data['brand'].upper()
+            brand_item = None
+            
+            if brand_name != 'NO_BRAND':
+                # Ищем бренд среди детей категории
+                for i in range(cat_item.childCount()):
+                    child = cat_item.child(i)
+                    child_data = child.data(0, Qt.ItemDataRole.UserRole)
+                    if child_data and child_data.get('type') == 'brand_group':
+                        # Проверяем по тексту (т.к. у brand_group нет name в data)
+                        if child.text(0) == f"🏭 {brand_name}":
+                            brand_item = child
+                            break
+                
+                if not brand_item:
+                    brand_item = QTreeWidgetItem([f"🏭 {brand_name}"])
+                    brand_item.setData(0, Qt.ItemDataRole.UserRole, {'type': 'brand_group'})
+                    cat_item.addChild(brand_item)
+            else:
+                brand_item = cat_item
+            
+            # Создаем продукт
+            product_data['count'] = 0
+            prod_item = QTreeWidgetItem([f"📦 {product_data['name']} (0)"])
+            prod_item.setData(0, Qt.ItemDataRole.UserRole, {
+                'type': 'product_key',
+                'key': product_data['key'],
+                'id': product_data['id']
+            })
+            brand_item.addChild(prod_item)
+            
+        finally:
+            conn.close()
     
+    def _remove_rows_visually(self, rows: set, delta: int = -1):
+        """
+        Мгновенно удаляет строки из таблицы и обновляет счетчики в дереве.
+        delta: -1 для удаления/перемещения (уменьшить), +1 для восстановления (увеличить)
+        """
+        product_ids_to_update = Counter()
+        
+        for row in rows:
+            id_item = self.raw_items_table.item(row, 0)
+            if not id_item: continue
+            data = id_item.data(Qt.ItemDataRole.UserRole)
+            if not data: continue
+            
+            # Определяем, какой ID использовать (текущий или оригинальный для корзины)
+            pid = data.get('product_id') or data.get('original_product_id')
+            if pid:
+                product_ids_to_update[pid] += 1
+
+        # Удаляем строки из таблицы UI
+        for row in sorted(rows, reverse=True):
+            self.raw_items_table.removeRow(row)
+        
+        # Обновляем счетчики в дереве
+        for pid, count in product_ids_to_update.items():
+            self._update_tree_product_counter(pid, delta * count)
+
+        # Обновляем счетчик корзины
+        trash_item = self._find_tree_item_by_data(None, 'type', 'trash')
+        if trash_item:
+            match = re.match(r'.*\((\d+)\)', trash_item.text(0))
+            if match:
+                curr = int(match.group(1))
+                # Если мы удаляем (delta -1), в корзину ПРИБАВЛЯЕМ. Если восстанавливаем (delta +1), УБАВЛЯЕМ.
+                trash_delta = len(rows) if delta < 0 else -len(rows)
+                # Если мы в режиме "Корзина" и удаляем из нее навсегда, то просто убавляем
+                # Но для простоты текущей логики:
+                new_val = max(0, curr + trash_delta)
+                trash_item.setText(0, f"🗑️ Корзина ({new_val})")
+
+        self._update_stats()
+        self._clear_details()
+        self._update_action_buttons_state()
+
+    def _on_move_selected_clicked(self):
+        selected_items = self.raw_items_table.selectedItems()
+        if not selected_items: return
+
+        rows = set(item.row() for item in selected_items)
+        item_ids = []
+        for row in rows:
+            data = self.raw_items_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if data: item_ids.append(data.get('id'))
+
+        if not item_ids: return
+
+        hierarchy = self.memory.raw_data.get_hierarchy_data()
+        first_data = self.raw_items_table.item(list(rows)[0], 0).data(Qt.ItemDataRole.UserRole)
+        current_prod_id = first_data.get('product_id')
+
+        dialog = MoveItemDialog(hierarchy, current_prod_id, self)
+        if dialog.exec():
+            target_prod_id = dialog.get_selected_product_id()
+            if target_prod_id:
+                count = self.memory.raw_data.move_items_to_product(item_ids, target_prod_id)
+                if count > 0:
+                    logger.success(f"Перемещено {count} элементов")
+                    
+                    # 1. Сначала уменьшаем счетчики СТАРЫХ продуктов и удаляем строки
+                    self._remove_rows_visually(rows, delta=-1)
+                    
+                    # 2. Затем увеличиваем счетчик НОВОГО продукта
+                    target_item = self._find_tree_item_by_data(None, 'id', target_prod_id)
+                    if not target_item:
+                        self._restore_tree_product_if_missing(target_prod_id)
+                    else:
+                        self._update_tree_product_counter(target_prod_id, count)
+
+    def _on_delete_selected_clicked(self):
+        selected_items = self.raw_items_table.selectedItems()
+        if not selected_items: return
+
+        rows = set(item.row() for item in selected_items)
+        item_ids = [self.raw_items_table.item(r, 0).data(Qt.ItemDataRole.UserRole).get('id') for r in rows]
+        
+        is_trash_mode = any(self.raw_items_table.item(r, 0).data(Qt.ItemDataRole.UserRole).get('deleted_at') for r in rows)
+
+        if not item_ids: return
+
+        if is_trash_mode:
+            # ВОССТАНОВЛЕНИЕ
+            count = self.memory.raw_data.restore_items(item_ids)
+            if count > 0:
+                logger.success(f"Восстановлено {count} элементов")
+                
+                # 1. Убеждаемся, что узлы продуктов существуют в дереве (если они были удалены)
+                pids = set()
+                for row in rows:
+                    data = self.raw_items_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                    if data.get('original_product_id'): pids.add(data['original_product_id'])
+                
+                for pid in pids:
+                    self._restore_tree_product_if_missing(pid)
+                
+                # 2. Используем универсальный метод для инкремента счетчиков (+1) и удаления строк из таблицы
+                # Мы передаем delta=1, чтобы _remove_rows_visually ПРИБАВИЛ к счетчикам продуктов
+                self._remove_rows_visually(rows, delta=1)
+        else:
+            # УДАЛЕНИЕ В КОРЗИНУ (уже работает, оставляем вызов _remove_rows_visually с delta=-1)
+            if QMessageBox.question(self, "Подтверждение", f"Удалить {len(item_ids)} элементов?") == QMessageBox.StandardButton.Yes:
+                count = self.memory.raw_data.soft_delete_items(item_ids)
+                if count > 0:
+                    logger.success(f"Перемещено в корзину: {count}")
+                    self._remove_rows_visually(rows, delta=-1)
+
     def _populate_knowledge_table(self, chunks: list):
         """Populate the knowledge table."""
         from PyQt6.QtGui import QColor
-        
         self.knowledge_table.setRowCount(0)
         
         for chunk in chunks:
@@ -659,7 +886,6 @@ class DatabaseTab(QWidget):
                 'AI_BEHAVIOR': '🤖',
                 'CUSTOM': '📝'
             }
-
             type_names = {
                 'PRODUCT': 'Продукт',
                 'CATEGORY': 'Категория',
@@ -667,9 +893,11 @@ class DatabaseTab(QWidget):
                 'AI_BEHAVIOR': 'Поведение ИИ',
                 'CUSTOM': 'Кастомное'
             }
+            
             chunk_type = chunk.get('chunk_type', 'UNKNOWN')
             icon = type_icons.get(chunk_type, '📝')
             name = type_names.get(chunk_type, chunk_type)
+            
             self.knowledge_table.setItem(row, 1, QTableWidgetItem(f"{icon} {name}"))
             
             # Key
@@ -694,50 +922,49 @@ class DatabaseTab(QWidget):
             
             # Store full data
             self.knowledge_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, chunk)
-    
+
     def _update_stats(self):
         """Update statistics display."""
         if not self.memory:
             return
-
+            
         try:
             raw_stats = self.memory.raw_data.get_statistics()
             knowledge_stats = self.memory.knowledge.get_statistics()
-
+            
             stats_text = (
                 f"📦 Товаров: {raw_stats.get('total_items', 0)}\n"
                 f"📁 Категорий: {raw_stats.get('total_categories', 0)}\n"
                 f"🧠 Чанков: {knowledge_stats.get('total_chunks', 0)}\n"
                 f"✅ Готовых: {knowledge_stats.get('by_status', {}).get('READY', 0)}"
             )
-
             self.stats_label.setText(stats_text)
         except Exception as e:
             logger.error(f"Failed to update stats: {e}")
-    
+
     def _on_tree_item_clicked(self, item, column):
         """Handle tree item click."""
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
             return
-
+            
         item_type = data.get('type')
-
+        
         if item_type == 'all_items':
             items = self.memory.get_raw_items(limit=1000)
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
-
+            
         elif item_type == 'all_knowledge':
             chunks = self.memory.get_knowledge(limit=1000)
             self._populate_knowledge_table(chunks)
             self.table_tabs.setCurrentIndex(1)
-
+            
         elif item_type == 'category':
             items = self.memory.get_raw_items(category=data.get('name'), limit=1000)
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
-
+            
         elif item_type == 'brand_group':
             # ИСПРАВЛЕНИЕ: при клике на бренд (например, ACER) показываем все товары этого бренда
             brand_items = []
@@ -748,52 +975,31 @@ class DatabaseTab(QWidget):
                 if child_data and child_data.get('type') == 'product_key':
                     items = self.memory.get_items_for_product_key(child_data.get('key'))
                     brand_items.extend(items)
-
+            
             self._populate_raw_items_table(brand_items)
             self.table_tabs.setCurrentIndex(0)
-
+            
         elif item_type == 'trash':
             # Показываем элементы из корзины
             trash_items = self.memory.raw_data.get_trash_items()
             self._populate_raw_items_table(trash_items)
             self.table_tabs.setCurrentIndex(0)
-
+            
         elif item_type == 'product_key':
             items = self.memory.get_items_for_product_key(data.get('key'))
             self._populate_raw_items_table(items)
             self.table_tabs.setCurrentIndex(0)
-    
+
     def _on_raw_item_selection_changed(self, current, previous):
-        """Handle raw item selection change (mouse or keyboard)."""
-        if not current:
-            return
-        
+        """Обновлен: убрано управление кнопками, которые мы удалили."""
+        if not current: return
         row = current.row()
         id_item = self.raw_items_table.item(row, 0)
         if id_item:
             data = id_item.data(Qt.ItemDataRole.UserRole)
             if data:
                 self._show_details(data, 'raw_item')
-                
-                # Проверяем, из корзины ли элемент
-                is_deleted = data.get('deleted_at') is not None
-                
-                if is_deleted:
-                    # Элемент в корзине - показываем кнопки восстановления
-                    self.delete_btn.setVisible(False)
-                    self.restore_btn.setVisible(True)
-                    self.restore_btn.setEnabled(True)
-                    self.permanent_delete_btn.setVisible(True)
-                    self.permanent_delete_btn.setEnabled(True)
-                    self.cultivate_btn.setEnabled(False)
-                else:
-                    # Обычный элемент
-                    self.delete_btn.setVisible(True)
-                    self.delete_btn.setEnabled(True)
-                    self.restore_btn.setVisible(False)
-                    self.permanent_delete_btn.setVisible(False)
-                    self.cultivate_btn.setEnabled(False)
-    
+
     def _on_knowledge_selection_changed(self, current, previous):
         """Handle knowledge chunk selection change (mouse or keyboard)."""
         if not current:
@@ -820,31 +1026,30 @@ class DatabaseTab(QWidget):
         
         if not data:
             return
-        
+            
         self.current_selection = {'data': data, 'type': data_type}
         
         if data_type == 'raw_item':
             self._render_raw_item_details(data)
         elif data_type == 'knowledge':
             self._render_knowledge_details(data)
-    
+
     def _render_raw_item_details(self, item: dict):
         """Render raw item details with modern UI."""
-        
         # 1. Title Section
         title = QLabel(item.get('title', 'Unknown'))
         title.setStyleSheet(TextPresets.h3())
         title.setWordWrap(True)
         self.details_layout.addWidget(title)
-
+        
         # 2. Price Section (Prominent)
         price_val = item.get('price', 0)
         if price_val:
             price_lbl = QLabel(f"{price_val} ₽")
             price_lbl.setStyleSheet(f"""
-                font-family: {Typography.UI}; 
-                font-size: 18px; 
-                font-weight: {Typography.WEIGHT_BOLD}; 
+                font-family: {Typography.UI};
+                font-size: 18px;
+                font-weight: {Typography.WEIGHT_BOLD};
                 color: {Palette.PRIMARY};
                 margin-bottom: 4px;
             """)
@@ -852,35 +1057,35 @@ class DatabaseTab(QWidget):
 
         # Separator
         self.details_layout.addWidget(self._create_divider())
-
+        
         # 3. Metadata Grid (Form Layout)
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(6)         # Вертикальный отступ между строками
+        form_layout.setSpacing(6) # Вертикальный отступ между строками
         form_layout.setHorizontalSpacing(12) # Горизонтальный отступ между Label и Value
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-
+        
         # Helper for rows
         def add_row(label_text, value_text, is_link=False):
             if not value_text: return
-            
             lbl = QLabel(f"{label_text}:")
             lbl.setStyleSheet(TextPresets.label()) # Серый, капсом, моноширинный
             
             val = QLabel()
             if is_link:
                 # Кликабельная ссылка
-                val.setText(f'<a href="{value_text}" style="color: {Palette.PRIMARY}; text-decoration: none;">Открыть объявление ↗</a>')
+                val.setText(f'Открыть объявление ↗')
                 val.setOpenExternalLinks(True)
                 val.setCursor(Qt.CursorShape.PointingHandCursor)
                 val.setStyleSheet(f"font-family: {Typography.UI}; font-size: {Typography.SIZE_MD}px;")
+                val.setText(f'<a href="{value_text}" style="color: {Palette.PRIMARY}; text-decoration: none;">Открыть объявление ↗</a>')
             else:
                 val.setText(str(value_text))
                 val.setStyleSheet(TextPresets.body())
                 val.setWordWrap(True)
                 val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
+            
             form_layout.addRow(lbl, val)
 
         add_row("ID", item.get('id'))
@@ -893,7 +1098,7 @@ class DatabaseTab(QWidget):
         add_row("ССЫЛКА", item.get('link'), is_link=True)
         
         self.details_layout.addWidget(form_widget)
-
+        
         # 4. Description Section
         desc_text = item.get('description')
         if desc_text:
@@ -905,15 +1110,15 @@ class DatabaseTab(QWidget):
             
             desc_lbl = QLabel(desc_text) # Без обрезки текста
             desc_lbl.setStyleSheet(f"""
-                font-family: {Typography.UI}; 
-                font-size: {Typography.SIZE_MD}px; 
+                font-family: {Typography.UI};
+                font-size: {Typography.SIZE_MD}px;
                 line-height: {Typography.LINE_RELAXED};
                 color: {Palette.TEXT};
             """)
             desc_lbl.setWordWrap(True)
             desc_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             self.details_layout.addWidget(desc_lbl)
-        
+
         # 5. Tags Section
         categories = item.get('categories', [])
         product_keys = item.get('product_keys', [])
@@ -925,10 +1130,10 @@ class DatabaseTab(QWidget):
             tags_widget.setStyleSheet(f"color: {Palette.TEXT_SECONDARY}; font-size: {Typography.SIZE_SM}px; font-style: italic;")
             tags_widget.setWordWrap(True)
             self.details_layout.addWidget(tags_widget)
-
+            
         # Spacer at bottom to push content up if needed
         self.details_layout.addStretch()
-    
+
     def _render_knowledge_details(self, chunk: dict):
         """Render knowledge chunk details with modern UI."""
         # 1. Title
@@ -952,7 +1157,7 @@ class DatabaseTab(QWidget):
         status_layout.setContentsMargins(0, 8, 0, 8)
         status_layout.setSpacing(8)
         
-        badge = QLabel(f"  {status}  ")
+        badge = QLabel(f" {status} ")
         badge_color = status_colors.get(status, Palette.TEXT)
         badge.setStyleSheet(f"""
             background-color: {Palette.with_alpha(badge_color, 0.15)};
@@ -967,14 +1172,14 @@ class DatabaseTab(QWidget):
         self.details_layout.addWidget(status_container)
 
         self.details_layout.addWidget(self._create_divider())
-
+        
         # 3. Metadata Form
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(4)
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-
+        
         def add_row(label, value):
             if not value: return
             lbl = QLabel(f"{label}:")
@@ -1017,7 +1222,7 @@ class DatabaseTab(QWidget):
         line.setFrameShadow(QFrame.Shadow.Sunken)
         line.setStyleSheet(f"background-color: {Palette.DIVIDER}; max-height: 1px; margin: 8px 0;")
         return line
-    
+
     def _on_nav_tab_changed(self, index):
         """
         0 = Список (фиксированный, узкий)
@@ -1025,32 +1230,26 @@ class DatabaseTab(QWidget):
         """
         sizes = self.splitter.sizes()
         if not sizes: return
-        
         total_width = sum(sizes)
         right_width = sizes[2] if len(sizes) > 2 else 350
         
         if index == 1: # Граф
             # Разрешаем левой панели тянуться
             self.splitter.setStretchFactor(0, 1)
-            self.left_panel.setMaximumWidth(16777215) 
-            
+            self.left_panel.setMaximumWidth(16777215)
             # 45% ширины
             new_left = int(total_width * 0.45)
             remain = total_width - new_left - right_width
-            
             self.splitter.setSizes([new_left, remain, right_width])
             
             if hasattr(self, 'graph_widget'):
                 self.graph_widget.wake_up_physics()
-                
         else: # Список
             # Запрещаем левой панели тянуться (она станет фиксированной)
             self.splitter.setStretchFactor(0, 0)
-            
             # Фиксированная ширина (чуть больше, 400px)
             target_left = 400
             remain = total_width - target_left - right_width
-            
             self.splitter.setSizes([target_left, remain, right_width])
 
     def _on_graph_node_selected(self, chunk_id):
@@ -1061,15 +1260,17 @@ class DatabaseTab(QWidget):
             self._show_details(chunk, 'knowledge')
 
     def _on_search(self, txt):
-        if not txt: 
+        if not txt:
             self._load_data()
             return
+            
         self._populate_raw_items_table(self.memory.get_raw_items(search_query=txt, limit=100))
+        
         # Filter knowledge locally
         all_k = self.memory.get_knowledge(limit=1000)
         filt = [c for c in all_k if txt.lower() in str(c).lower()]
         self._populate_knowledge_table(filt)
-    
+
     def _on_filter_changed(self, text: str):
         """Handle filter by type."""
         if text == "Все":
@@ -1077,24 +1278,24 @@ class DatabaseTab(QWidget):
         else:
             chunks = self.memory.get_knowledge(chunk_type=text, limit=1000)
         self._populate_knowledge_table(chunks)
-    
+
     def _on_nav_search(self, text: str):
         """Поиск по навигации (Список/Граф)."""
         current_tab = self.nav_tabs.currentIndex()
-
-        if current_tab == 0:  # Список (дерево)
+        
+        if current_tab == 0: # Список (дерево)
             if not text:
                 # Показать все элементы
                 for i in range(self.nav_tree.topLevelItemCount()):
                     self._show_tree_item_recursive(self.nav_tree.topLevelItem(i), True)
                 return
-
+            
             # Фильтруем дерево
             text_lower = text.lower()
             for i in range(self.nav_tree.topLevelItemCount()):
                 self._filter_tree_item(self.nav_tree.topLevelItem(i), text_lower)
-
-        elif current_tab == 1:  # Граф
+                
+        elif current_tab == 1: # Граф
             # Поиск в графе (если реализовано в KnowledgeGraphWidget)
             if hasattr(self.graph_widget, 'filter_nodes'):
                 self.graph_widget.filter_nodes(text)
@@ -1109,33 +1310,33 @@ class DatabaseTab(QWidget):
         """Фильтрация элементов дерева по тексту."""
         item_text = item.text(0).lower()
         match = search_text in item_text
-
+        
         # Проверяем детей
         child_match = False
         for i in range(item.childCount()):
             if self._filter_tree_item(item.child(i), search_text):
                 child_match = True
-
+        
         # Показываем, если совпадает сам элемент или хотя бы один ребенок
         visible = match or child_match
         item.setHidden(not visible)
-
+        
         # Разворачиваем если есть совпадение в детях
         if child_match:
             item.setExpanded(True)
-
+            
         return visible
 
     def _on_table_search(self, text: str):
         """Поиск по всем столбцам текущей таблицы."""
         current_tab = self.table_tabs.currentIndex()
         text_lower = text.lower()
-
-        if current_tab == 0:  # Сырые данные
+        
+        if current_tab == 0: # Сырые данные
             table = self.raw_items_table
-        else:  # Знания ИИ
+        else: # Знания ИИ
             table = self.knowledge_table
-
+            
         if not text:
             # Показать все строки
             for row in range(table.rowCount()):
@@ -1157,80 +1358,44 @@ class DatabaseTab(QWidget):
         # Очищаем поиск при переключении
         self.table_search_edit.clear()
 
-    def _delete_selected(self):
-        """Delete selected item/chunk."""
-        if not hasattr(self, 'current_selection') or not self.current_selection:
-            return
-        
-        data = self.current_selection['data']
-        data_type = self.current_selection['type']
-        
-        confirm = QMessageBox.question(
-            self,
-            "Подтверждение",
-            f"Удалить выбранный {data_type}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-        
-        try:
-            if data_type == 'raw_item':
-                self.memory.delete_raw_items([data.get('id')])
-            elif data_type == 'knowledge':
-                self.memory.delete_knowledge(data.get('id'))
-            
-            self._refresh_data()
-            self._clear_details()
-            logger.success(f"{data_type} deleted successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to delete: {e}")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить: {e}")
-    
     def _recultivate(self):
         if not hasattr(self, 'current_selection') or self.current_selection['type'] != 'knowledge': return
         data = self.current_selection['data']
-
         # Обновляем статус в БД
         self.memory.knowledge.update_chunk_status(data.get('id'), 'PENDING')
-        
         # Обновляем UI таблицы
         self._refresh_data()
         
         # Сигнализируем, что пора запускать нейросеть
         logger.info(f"Запрошена перекультивация из БД для чанка {data.get('id')}")
         self.recultivate_requested.emit()
-    
+
     def _clear_details(self):
-        """Clear the details panel."""
+        """Очистка деталей и сброс selection."""
         while self.details_layout.count():
             item = self.details_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
         self.current_selection = None
-        self.delete_btn.setEnabled(False)
         self.cultivate_btn.setEnabled(False)
-    
+
     def _on_tree_item_delete(self, index):
         """Удаление элемента из дерева (категория/продукт)."""
         item = self.nav_tree.itemFromIndex(index)
         if not item:
             return
-        
+            
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
             return
-        
+            
         item_type = data.get('type')
         
         # Подтверждение
         if item_type == 'category':
             cat_name = data.get('name')
             reply = QMessageBox.question(
-                self,
+                self, 
                 "Удалить категорию?",
                 f"Переместить категорию '{cat_name}' и все её продукты в корзину?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
@@ -1240,11 +1405,11 @@ class DatabaseTab(QWidget):
                 deleted_count = self.memory.raw_data.soft_delete_category(cat_id)
                 logger.success(f"Категория '{cat_name}' и {deleted_count} элементов перемещены в корзину")
                 self._refresh_data()
-        
+                
         elif item_type == 'brand_group':
             # Удаляем все продукты бренда
             reply = QMessageBox.question(
-                self,
+                self, 
                 "Удалить бренд?",
                 "Переместить все продукты этого бренда в корзину?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
@@ -1258,15 +1423,14 @@ class DatabaseTab(QWidget):
                         prod_id = child_data.get('id')
                         deleted = self.memory.raw_data.soft_delete_product(prod_id)
                         total_deleted += deleted
-                
                 logger.success(f"{total_deleted} элементов перемещены в корзину")
                 self._refresh_data()
-        
+                
         elif item_type == 'product_key':
             prod_name = data.get('key')
             prod_id = data.get('id')
             reply = QMessageBox.question(
-                self,
+                self, 
                 "Удалить продукт?",
                 f"Переместить продукт '{prod_name}' и все его элементы в корзину?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
@@ -1275,112 +1439,14 @@ class DatabaseTab(QWidget):
                 deleted_count = self.memory.raw_data.soft_delete_product(prod_id)
                 logger.success(f"Продукт '{prod_name}' и {deleted_count} элементов перемещены в корзину")
                 self._refresh_data()
-    
-    def _on_table_item_delete(self, row: int):
-        """Удаление отдельного элемента из таблицы."""
-        id_item = self.raw_items_table.item(row, 0)
-        if not id_item:
-            return
-        
-        data = id_item.data(Qt.ItemDataRole.UserRole)
-        if not data:
-            return
-        
-        item_id = data.get('id')
-        title = data.get('title', 'Unknown')[:50]
-        
-        reply = QMessageBox.question(
-            self,
-            "Удалить элемент?",
-            f"Переместить '{title}...' в корзину?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            success = self.memory.raw_data.soft_delete_item(item_id)
-            if success:
-                logger.success(f"Элемент перемещен в корзину")
-                self._refresh_data()
-            else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось удалить элемент")
-    
-    def _on_table_item_move(self, row: int):
-        """Перемещение элемента в другой продукт."""
-        id_item = self.raw_items_table.item(row, 0)
-        if not id_item:
-            return
-        
-        data = id_item.data(Qt.ItemDataRole.UserRole)
-        if not data:
-            return
-        
-        item_id = data.get('id')
-        current_product_id = data.get('product_id') if 'product_id' in data else None
-        
-        # Получаем иерархию для диалога
-        hierarchy = self.memory.raw_data.get_hierarchy_data()
-        
-        # Открываем диалог выбора
-        dialog = MoveItemDialog(hierarchy, current_product_id, self)
-        if dialog.exec():
-            target_product_id = dialog.get_selected_product_id()
-            if target_product_id:
-                success = self.memory.raw_data.move_item_to_product(item_id, target_product_id)
-                if success:
-                    logger.success(f"Элемент перемещен в новый продукт")
-                    self._refresh_data()
-                else:
-                    QMessageBox.warning(self, "Ошибка", "Не удалось переместить элемент")
-
-    def _restore_selected(self):
-        """Восстановление элемента из корзины."""
-        if not hasattr(self, 'current_selection') or not self.current_selection:
-            return
-        
-        data = self.current_selection['data']
-        item_id = data.get('id')
-        
-        success = self.memory.raw_data.restore_item(item_id)
-        if success:
-            logger.success("Элемент восстановлен")
-            self._refresh_data()
-            self._clear_details()
-        else:
-            QMessageBox.warning(self, "Ошибка", "Не удалось восстановить элемент")
-    
-    def _permanent_delete_selected(self):
-        """Окончательное удаление из корзины."""
-        if not hasattr(self, 'current_selection') or not self.current_selection:
-            return
-        
-        data = self.current_selection['data']
-        item_id = data.get('id')
-        title = data.get('title', 'Unknown')[:50]
-        
-        reply = QMessageBox.warning(
-            self,
-            "ОПАСНО",
-            f"Удалить '{title}...' НАВСЕГДА?\n\nЭто действие нельзя отменить!",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            success = self.memory.raw_data.permanent_delete_item(item_id)
-            if success:
-                logger.success("Элемент удален навсегда")
-                self._refresh_data()
-                self._clear_details()
-            else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось удалить")
 
     def _empty_trash(self):
         """Полная очистка корзины."""
         trash_count = len(self.memory.raw_data.get_trash_items())
-        
         if trash_count == 0:
             QMessageBox.information(self, "Корзина пуста", "В корзине нет элементов")
             return
-        
+            
         reply = QMessageBox.warning(
             self,
             "Очистить корзину?",
@@ -1395,48 +1461,98 @@ class DatabaseTab(QWidget):
             self._clear_details()
 
     def _refresh_data(self):
-        """Refresh all data."""
+        """Перезагрузить данные, сохраняя состояние дерева."""
+        # 1. Сохраняем состояние раскрытых элементов
+        expanded_ids = self._save_tree_state()
+        
+        # 2. Перезагружаем данные
         self._load_data()
-    
+        
+        # 3. Восстанавливаем состояние
+        self._restore_tree_state(expanded_ids)
+        
+        # 4. Сбрасываем выбор
+        self._clear_details()
+
+    def _save_tree_state(self) -> set:
+        """Сохраняет уникальные идентификаторы раскрытых элементов дерева."""
+        expanded = set()
+        iterator = QTreeWidgetItemIterator(self.nav_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item.isExpanded():
+                key = self._get_item_unique_key(item)
+                if key:
+                    expanded.add(key)
+            iterator += 1
+        return expanded
+
+    def _restore_tree_state(self, expanded_ids: set):
+        """Восстанавливает раскрытие элементов."""
+        iterator = QTreeWidgetItemIterator(self.nav_tree)
+        while iterator.value():
+            item = iterator.value()
+            key = self._get_item_unique_key(item)
+            if key in expanded_ids:
+                item.setExpanded(True)
+            iterator += 1
+
+    def _get_item_unique_key(self, item: QTreeWidgetItem) -> str:
+        """Генерирует уникальный ключ для элемента дерева."""
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data: return None
+        
+        itype = data.get('type')
+        if itype == 'category':
+            return f"cat:{data.get('name')}"
+        elif itype == 'brand_group':
+            # Бренд уникален в рамках категории
+            parent = item.parent()
+            parent_name = parent.data(0, Qt.ItemDataRole.UserRole).get('name') if parent else "root"
+            return f"brand:{parent_name}:{item.text(0)}"
+        elif itype == 'product_key':
+            return f"prod:{data.get('id')}"
+        elif itype == 'trash':
+            return "system:trash"
+        elif itype == 'all_items':
+            return "system:all_items"
+        
+        return None
+
     def _export_data(self):
         """Export database to JSON."""
         from PyQt6.QtWidgets import QFileDialog
-        
         filepath, _ = QFileDialog.getSaveFileName(
             self, "Экспорт базы данных", "", "JSON файлы (*.json)"
         )
-        
         if not filepath:
             return
-        
+            
         try:
             self.memory.export_all(BASE_APP_DIR)
             QMessageBox.information(self, "Успех", "База данных экспортирована")
         except Exception as e:
             logger.error(f"Export failed: {e}")
             QMessageBox.critical(self, "Ошибка", f"Экспорт не удался: {e}")
-    
+
     def _import_data(self):
         """Import database from JSON."""
         from PyQt6.QtWidgets import QFileDialog
-        
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Импорт базы данных", "", "JSON файлы (*.json)"
         )
-        
         if not filepath:
             return
-        
+            
         confirm = QMessageBox.question(
-            self,
-            "Подтверждение",
+            self, 
+            "Подтверждение", 
             "Импорт добавит данные к существующим. Продолжить?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        
+            
         try:
             self.memory.import_all(raw_path=filepath, clear_first=False)
             self._refresh_data()
@@ -1444,7 +1560,7 @@ class DatabaseTab(QWidget):
         except Exception as e:
             logger.error(f"Import failed: {e}")
             QMessageBox.critical(self, "Ошибка", f"Импорт не удался: {e}")
-    
+
     def _clear_database(self):
         """Clear the entire database."""
         confirm = QMessageBox(
@@ -1453,10 +1569,9 @@ class DatabaseTab(QWidget):
             "Вы уверены, что хотите ОЧИСТИТЬ ВСЮ БАЗУ ДАННЫХ?\n\nЭто действие НЕЛЬЗЯ отменить!",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        
         if confirm.exec() != QMessageBox.StandardButton.Yes:
             return
-        
+            
         # Double confirm with typed text
         confirm2 = QMessageBox(
             QMessageBox.Icon.Critical,
@@ -1475,7 +1590,7 @@ class DatabaseTab(QWidget):
         except Exception as e:
             logger.error(f"Clear failed: {e}")
             QMessageBox.critical(self, "Ошибка", f"Очистка не удалась: {e}")
-    
+
     def refresh_data(self):
         """Public method to refresh data (called from outside)."""
         self._refresh_data()
