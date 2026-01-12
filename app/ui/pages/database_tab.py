@@ -249,6 +249,29 @@ class DatabaseTab(QWidget):
         self.btn_delete_selected.clicked.connect(self._on_delete_selected_clicked)
         header_layout.addWidget(self.btn_delete_selected)
 
+        self.btn_toggle_confidence = QPushButton("🔄 Надежность")
+        self.btn_toggle_confidence.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_3};
+                border: 1px solid {Palette.WARNING};
+                color: {Palette.WARNING};
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-weight: bold;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {Palette.with_alpha(Palette.WARNING, 0.2)};
+            }}
+            QPushButton:disabled {{
+                border-color: {Palette.BORDER_SOFT};
+                color: {Palette.TEXT_MUTED};
+            }}
+        """)
+        self.btn_toggle_confidence.setEnabled(False)
+        self.btn_toggle_confidence.clicked.connect(self.on_toggle_confidence_clicked)
+        header_layout.addWidget(self.btn_toggle_confidence)
+
         header_layout.addStretch()
 
         # Поиск по всем столбцам таблицы
@@ -272,9 +295,9 @@ class DatabaseTab(QWidget):
 
         # Raw Items Table
         self.raw_items_table = QTableWidget()
-        self.raw_items_table.setColumnCount(6) # БЫЛО 7 (удалили действия), СТАЛО 6
+        self.raw_items_table.setColumnCount(7)
         self.raw_items_table.setHorizontalHeaderLabels([
-            "ID", "Заголовок", "Цена", "Город", "Дата", "Категории"
+            "ID", "Заголовок", "Цена", "Город", "Дата", "Категории", "🔒"
         ])
         self.raw_items_table.horizontalHeader().setStretchLastSection(True)
         # Включаем множественное выделение строк
@@ -478,7 +501,6 @@ class DatabaseTab(QWidget):
 
     def _populate_raw_items_table(self, items: list):
         """Populate the raw items table."""
-        # ОТКЛЮЧАЕМ ОБНОВЛЕНИЯ UI ДЛЯ СКОРОСТИ
         self.raw_items_table.setUpdatesEnabled(False)
         self.raw_items_table.setRowCount(0)
         
@@ -538,8 +560,31 @@ class DatabaseTab(QWidget):
                     display_str = f"[{main_cat}]"
             
             self.raw_items_table.setItem(row, 5, QTableWidgetItem(display_str))
-            
-            # УДАЛЕНО: Создание виджетов кнопок для каждого ряда
+
+            confidence = item.get("placement_confidence", 1)
+            is_deleted = item.get("is_deleted", 0) or item.get("deleted_at")
+
+            confidence_item = QTableWidgetItem()
+            confidence_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            confidence_item.setData(Qt.ItemDataRole.UserRole, item)
+
+            if is_deleted:
+                # In trash - gray lock icon
+                confidence_item.setText("🗑️")
+                confidence_item.setBackground(QColor(Palette.BG_DARK_3))
+                confidence_item.setForeground(QColor(Palette.TEXT_MUTED))
+            elif confidence == 1:
+                # Reliable - green checkmark
+                confidence_item.setText("✓")
+                confidence_item.setForeground(QColor(Palette.SUCCESS))
+                confidence_item.setBackground(QColor(Palette.with_alpha(Palette.SUCCESS, 0.15)))
+            else:
+                # Unreliable - red cross
+                confidence_item.setText("✗")
+                confidence_item.setForeground(QColor(Palette.ERROR))
+                confidence_item.setBackground(QColor(Palette.with_alpha(Palette.ERROR, 0.15)))
+
+            self.raw_items_table.setItem(row, 6, confidence_item)
         
         self.raw_items_table.resizeColumnsToContents()
         self.raw_items_table.setUpdatesEnabled(True)
@@ -550,13 +595,15 @@ class DatabaseTab(QWidget):
         """Активирует кнопки и меняет текст в зависимости от контекста (Корзина/Обычный)."""
         selected_items = self.raw_items_table.selectedItems()
         has_selection = len(selected_items) > 0
-        
+
         self.btn_move_selected.setEnabled(has_selection)
         self.btn_delete_selected.setEnabled(has_selection)
 
         if not has_selection:
             self.btn_move_selected.setText("Переместить")
             self.btn_delete_selected.setText("В корзину")
+            self.btn_toggle_confidence.setText("🔄 Надежность")  # ✅ Сброс текста
+            self.btn_toggle_confidence.setEnabled(False)  # ✅ Отключить кнопку
             return
 
         # Определяем контекст по первому элементу (корзина или нет)
@@ -613,6 +660,38 @@ class DatabaseTab(QWidget):
                 self.btn_delete_selected.setText(f"🗑 Отправить выделенное в корзину ({unique_rows})")
             else:
                 self.btn_delete_selected.setText("🗑 В корзину")
+
+        # ✅ NEW: Update confidence toggle button state
+        self.btn_toggle_confidence.setEnabled(has_selection and not is_trash_mode)
+
+        if has_selection and not is_trash_mode:
+            # Count reliable/unreliable in selection
+            reliable_count = 0
+            unreliable_count = 0
+            rows = set(i.row() for i in selected_items)
+
+            for row in rows:
+                data = self.raw_items_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                if data:
+                    confidence = data.get("placement_confidence", 1)
+                    if confidence == 1:
+                        reliable_count += 1
+                    else:
+                        unreliable_count += 1
+
+            # Debug log
+            logger.dev(f"Selection: {reliable_count} reliable, {unreliable_count} unreliable")
+
+            # Determine action based on majority
+            if reliable_count > unreliable_count:
+                self.btn_toggle_confidence.setText(f"✗ Отметить ненадежными ({unique_rows})")
+            elif unreliable_count > reliable_count:
+                self.btn_toggle_confidence.setText(f"✓ Отметить надежными ({unique_rows})")
+            else:
+                # Equal or mixed - show toggle
+                self.btn_toggle_confidence.setText(f"🔄 Переключить ({unique_rows})")
+        else:
+            self.btn_toggle_confidence.setText("🔄 Надежность")
 
     def _find_tree_item_by_data(self, parent_item, key, value):
         """Рекурсивный поиск элемента дерева по значению в UserRole."""
@@ -864,6 +943,72 @@ class DatabaseTab(QWidget):
                 if count > 0:
                     logger.success(f"Перемещено в корзину: {count}")
                     self._remove_rows_visually(rows, delta=-1)
+
+    def on_toggle_confidence_clicked(self):
+        """Toggle placement_confidence for selected items."""
+        selected_items = self.raw_items_table.selectedItems()
+        if not selected_items:
+            return
+
+        rows = set(item.row() for item in selected_items)
+        item_data_map = {}  # row -> (item_id, current_confidence)
+
+        for row in rows:
+            data = self.raw_items_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if data:
+                if data.get("deleted_at") or data.get("is_deleted"):
+                    continue
+                item_id = data.get("id")
+                confidence = data.get("placement_confidence", 1)
+                item_data_map[row] = (item_id, confidence, data)
+
+        if not item_data_map:
+            QMessageBox.warning(self, "Ошибка", "Нельзя изменить надежность элементов в корзине!")
+            return
+
+        # Determine new state based on majority
+        current_confidences = [conf for (_, conf, _) in item_data_map.values()]
+        reliable_count = sum(1 for c in current_confidences if c == 1)
+        new_confidence = 0 if reliable_count >= len(current_confidences) / 2 else 1
+
+        # Confirm action
+        action_text = "надежными" if new_confidence == 1 else "ненадежными"
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение",
+            f"Пометить {len(item_data_map)} элементов как {action_text}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Update in database
+        success_count = 0
+        for row, (item_id, old_confidence, full_data) in item_data_map.items():
+            if self.memory.raw_data.update_item_confidence(item_id, new_confidence == 1):
+                success_count += 1
+
+                # ✅ Update only the confidence cell (column 6)
+                confidence_item = self.raw_items_table.item(row, 6)
+                if confidence_item:
+                    if new_confidence == 1:
+                        confidence_item.setText("✓")
+                        confidence_item.setForeground(QColor(Palette.SUCCESS))
+                        confidence_item.setBackground(QColor(Palette.with_alpha(Palette.SUCCESS, 0.15)))
+                    else:
+                        confidence_item.setText("✗")
+                        confidence_item.setForeground(QColor(Palette.ERROR))
+                        confidence_item.setBackground(QColor(Palette.with_alpha(Palette.ERROR, 0.15)))
+
+                # ✅ Update UserRole data
+                full_data["placement_confidence"] = new_confidence
+                self.raw_items_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, full_data)
+
+        logger.success(f"✅ Обновлен статус надежности для {success_count}/{len(item_data_map)} элементов")
+
+        # ✅ Update button state
+        self._update_action_buttons_state()
 
     def _populate_knowledge_table(self, chunks: list):
         """Populate the knowledge table."""

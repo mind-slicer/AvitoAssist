@@ -12,6 +12,131 @@ from dataclasses import dataclass
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
+
+def evaluate_item_placement(
+    title: str,
+    description: str,
+    product_key: str,
+    category: str,
+    brand: str = "",
+    model: str = ""
+) -> bool:
+    """
+    Evaluate if an item is correctly placed in its category/product.
+    
+    This function checks if the item's title and description match
+    the expected category and product key without using neural networks.
+    
+    Args:
+        title: Item title
+        description: Item description
+        product_key: Product key from semantic_data
+        category: Category name (GPU, CPU, LAPTOP, etc.)
+        brand: Brand from semantic_data
+        model: Model from semantic_data
+    
+    Returns:
+        True if placement is reliable, False if suspicious
+    """
+    
+    # 1. Basic validation
+    if not title or not product_key or not category:
+        return False
+    
+    title_lower = title.lower()
+    desc_lower = (description or "").lower()
+    combined_text = f"{title_lower} {desc_lower}"
+    
+    # 2. Category keyword mapping
+    category_keywords = {
+        "GPU": ["видеокарта", "видеокарт", "gpu", "rtx", "gtx", "radeon", "geforce", "rx ", "arc "],
+        "CPU": ["процессор", "cpu", "ryzen", "core i", "intel", "amd", "xeon", "pentium", "celeron"],
+        "RAM": ["память", "ram", "озу", "ddr", "оперативн"],
+        "STORAGE": ["ssd", "hdd", "накопитель", "жесткий", "nvme", "m.2", "диск"],
+        "LAPTOP": ["ноутбук", "laptop", "lenovo", "asus", "hp", "dell", "acer", "macbook"],
+        "MOTHERBOARD": ["материнская", "мат. плата", "материнка", "motherboard", "сокет", "socket"],
+        "PSU": ["блок питания", "psu", "power supply", "бп ", "watts"],
+        "MONITOR": ["монитор", "display", "экран", "дисплей"],
+        "COOLING": ["кулер", "охлаждение", "вентилятор", "cooling", "cooler"],
+        "CASE": ["корпус", "case"],
+        "ACCESSORY": ["кабель", "cable", "мышь", "mouse", "клавиатур"],
+        "PCBUILD": ["сборка", "системный блок", "компьютер", "pc build"],
+    }
+    
+    # Check if current category keywords are present
+    current_keywords = category_keywords.get(category, [])
+    has_category_match = any(kw in combined_text for kw in current_keywords)
+    
+    # Check for conflicts with other categories
+    conflicting_categories = 0
+    conflicting_cats = []
+    for cat, keywords in category_keywords.items():
+        if cat != category:
+            if any(kw in combined_text for kw in keywords):
+                conflicting_categories += 1
+                conflicting_cats.append(cat)
+    
+    # 3. Critical category rules
+    if category in ["GPU", "CPU", "LAPTOP", "MOTHERBOARD"]:
+        # Laptop in GPU category = unreliable
+        if category == "GPU" and any(kw in combined_text for kw in ["ноутбук", "laptop"]):
+            return False
+        
+        # GPU mentioned separately in LAPTOP = unreliable
+        if category == "LAPTOP" and "видеокарта" in combined_text and "ноутбук" not in combined_text:
+            return False
+        
+        # Critical categories must have explicit match
+        if not has_category_match:
+            return False
+    
+    # 4. Product key validation
+    if "unknown" in product_key.lower() and category not in ["ACCESSORY", "MISC", "SERVICE"]:
+        # Unknown product keys are suspicious for hardware
+        return False
+    
+    if product_key.startswith(category.lower() + "-") and len(product_key) < 10:
+        # Very short product keys are suspicious
+        return False
+    
+    # 5. Brand/Model consistency check
+    if brand and len(brand) > 2:
+        if brand.lower() not in combined_text:
+            # Brand not found in text - suspicious for critical categories
+            if category in ["GPU", "CPU", "LAPTOP"]:
+                return False
+    
+    if model and len(model) > 2:
+        model_clean = model.replace("-", "").replace(" ", "").lower()
+        text_clean = combined_text.replace("-", "").replace(" ", "")
+        if model_clean not in text_clean:
+            # Model not found - suspicious for GPU/CPU
+            if category in ["GPU", "CPU"]:
+                return False
+    
+    # 6. Final decision logic
+    result = None
+    if has_category_match and conflicting_categories <= 1:
+        result = True
+    elif conflicting_categories >= 2:
+        result = False
+    elif category in ["ACCESSORY", "MISC", "SERVICE", "COOLING", "CASE"]:
+        result = True
+    else:
+        result = has_category_match
+    
+    # Debug logging for first few items
+    if title:  # Simple check to avoid spam
+        from app.core.log_manager import logger
+        logger.dev(
+            f"Confidence eval: '{title[:30]}...' -> {category} -> "
+            f"{'RELIABLE' if result else 'UNRELIABLE'} "
+            f"(match={has_category_match}, conflicts={conflicting_categories})"
+        )
+    
+    return result
+
+
 class StatisticsCache:
     def __init__(self, ttl_seconds=60):
         self.ttl = ttl_seconds
@@ -45,7 +170,7 @@ class AddItemResult:
         return self.status
 
 class RawDataManager:
-    SCHEMA_VERSION = 8
+    SCHEMA_VERSION = 9
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -156,6 +281,7 @@ class RawDataManager:
                 is_deleted INTEGER DEFAULT 0,
                 deleted_at TEXT,
                 original_product_id INTEGER,
+                placement_confidence INTEGER DEFAULT 1,
                 analyzed_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -242,6 +368,13 @@ class RawDataManager:
                 logger.info("Миграция v8: добавлена поддержка мягкого удаления (корзина)")
             except Exception as e:
                 logger.error(f"Migration to v8 failed: {e}")
+        if from_version < 9:
+            try:
+                # Add placement_confidence column (1=reliable, 0=unreliable)
+                cursor.execute("ALTER TABLE raw_items ADD COLUMN placement_confidence INTEGER DEFAULT 1")
+                logger.info("✅ v9: Added placement_confidence column to raw_items")
+            except Exception as e:
+                logger.error(f"Migration to v9 failed: {e}")
 
     def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
         with self._cache_lock:
@@ -536,6 +669,30 @@ class RawDataManager:
                 
                 result = AddItemResult(raw_item_id, "created", False)
 
+            if result.status in ("created", "updated"):
+                try:
+                    # Вызываем пересчет ДО коммита, чтобы сохранить в той же транзакции
+                    title = item.get("title", "")
+                    description = item.get("description", "")
+
+                    is_reliable = evaluate_item_placement(
+                        title=title,
+                        description=description,
+                        product_key=p_key,
+                        category=cat_name,
+                        brand=brand or "",
+                        model=model or ""
+                    )
+
+                    cursor.execute("""
+                        UPDATE raw_items 
+                        SET placement_confidence = ? 
+                        WHERE id = ?
+                    """, (1 if is_reliable else 0, raw_item_id))
+
+                except Exception as e:
+                    logger.warning(f"Could not calculate placement_confidence: {e}")
+
             if own_connection:
                 conn.commit()
 
@@ -572,7 +729,8 @@ class RawDataManager:
                     prod.key as clean_product_key,
                     prod.brand,
                     prod.model,
-                    c.name as category_name
+                    c.name as category_name,
+                    ri.placement_confidence, ri.is_deleted, ri.deleted_at
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
                 LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
@@ -823,7 +981,7 @@ class RawDataManager:
             cursor = conn.cursor()
             query = """
                 SELECT ri.*, cit.name as city, sel.seller_link_id as seller_id, prod.key as clean_product_key,
-                       c.name as category_name
+                       c.name as category_name, ri.placement_confidence
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
                 LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
@@ -1250,7 +1408,8 @@ class RawDataManager:
                     prod.key as clean_product_key,
                     prod.brand,
                     prod.model,
-                    c.name as category_name
+                    c.name as category_name,
+                    ri.placement_confidence, ri.is_deleted
                 FROM raw_items ri
                 LEFT JOIN cities cit ON ri.city_id = cit.id
                 LEFT JOIN sellers sel ON ri.seller_table_id = sel.id
@@ -1289,6 +1448,14 @@ class RawDataManager:
             params = [target_product_id] + item_ids
             cursor.execute(query, params)
             count = cursor.rowcount
+
+            logger.info(f"Recalculating placement_confidence for {count} moved items...")
+            recalculated = 0
+            for item_id in item_ids:
+                if self.recalculate_placement_confidence(item_id):
+                    recalculated += 1
+            logger.success(f"✓ {recalculated}/{count} items recalculated")
+
             conn.commit()
             self._stats_cache.invalidate()
             return count
@@ -1297,6 +1464,116 @@ class RawDataManager:
             return 0
         finally:
             conn.close()
+
+    def update_item_confidence(self, item_id: int, is_reliable: bool) -> bool:
+        """
+        Manually update placement_confidence flag for a single item.
+
+        Args:
+            item_id: Item ID
+            is_reliable: True for reliable, False for unreliable
+
+        Returns:
+            True if updated successfully
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE raw_items 
+                SET placement_confidence = ? 
+                WHERE id = ?
+            """, (1 if is_reliable else 0, item_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating confidence for item {item_id}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def recalculate_placement_confidence(self, item_id: int) -> bool:
+        """
+        Recalculate placement_confidence for an item based on its semantic data.
+
+        Uses evaluate_item_placement() function from memory.py to determine
+        if the item is correctly placed in its current category/product.
+
+        Args:
+            item_id: Item ID to recalculate
+
+        Returns:
+            True if recalculation succeeded
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+
+            # Fetch item data with product and category info
+            cursor.execute("""
+                SELECT ri.title, ri.description, ri.price, 
+                       p.key as product_key, c.name as category_name,
+                       p.brand, p.model
+                FROM raw_items ri
+                LEFT JOIN products p ON ri.product_id = p.id
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE ri.id = ?
+            """, (item_id,))
+
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            title = row[0] or ""
+            description = row[1] or ""
+            product_key = row[3] or ""
+            category = row[4] or "MISC"
+            brand = row[5] or ""
+            model = row[6] or ""
+
+            try:
+                is_reliable = evaluate_item_placement(
+                    title=title,
+                    description=description,
+                    product_key=product_key,
+                    category=category,
+                    brand=brand,
+                    model=model
+                )
+            except ImportError:
+                logger.warning("evaluate_item_placement not found, defaulting to reliable")
+                is_reliable = True
+
+            # Update database
+            cursor.execute("""
+                UPDATE raw_items 
+                SET placement_confidence = ? 
+                WHERE id = ?
+            """, (1 if is_reliable else 0, item_id))
+
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error recalculating confidence for item {item_id}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def bulk_recalculate_confidence(self, item_ids: List[int]) -> int:
+        """
+        Bulk recalculate placement_confidence for multiple items.
+
+        Args:
+            item_ids: List of item IDs
+
+        Returns:
+            Number of successfully recalculated items
+        """
+        count = 0
+        for item_id in item_ids:
+            if self.recalculate_placement_confidence(item_id):
+                count += 1
+        return count
 
     def empty_trash(self) -> int:
         """Полная очистка корзины."""
