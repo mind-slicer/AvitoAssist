@@ -384,6 +384,11 @@ class ChunkCard(QFrame):
         self.desc_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.4;")
         self.content_ui.addWidget(self.desc_label)
 
+        #self.time_label = QLabel()
+        #self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        #self.time_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 9px;")
+        #self.content_ui.addWidget(self.time_label)
+
         # Footer Layout (Reason + Circles)
         footer = QHBoxLayout()
         footer.setSpacing(15)
@@ -447,10 +452,26 @@ class ChunkCard(QFrame):
         content_obj = chunk_data.get('content')
         size_kb = len(json.dumps(content_obj)) / 1024 if content_obj else 0
         
+        time_str = "Только что"
+        last_upd_iso = chunk_data.get('last_updated')
+        
+        if last_upd_iso:
+            try:
+                dt = datetime.fromisoformat(last_upd_iso)
+                delta = datetime.now() - dt
+                total_sec = int(delta.total_seconds())
+                
+                if total_sec < 60: time_str = "Только что"
+                elif total_sec < 3600: time_str = f"{total_sec // 60} мин. назад"
+                elif total_sec < 86400: time_str = f"{total_sec // 3600} ч. назад"
+                else: time_str = f"{total_sec // 86400} дн. назад"
+            except:
+                time_str = "Время неизвестно"
+
         if created_at == updated_at:
             meta_text = f"📅 Создан: {created_at} • 💾 {size_kb:.1f} KB"
         else:
-            meta_text = f"📅 Создан: {created_at} • 🔄 Обновлен: {updated_at} • 💾 {size_kb:.1f} KB"
+            meta_text = f"📅 Создан: {created_at} • 🔄 Обновлен: {time_str} | {updated_at} • 💾 {size_kb:.1f} KB"
              
         self.meta_label.setText(meta_text)
 

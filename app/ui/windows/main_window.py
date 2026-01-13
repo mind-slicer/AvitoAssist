@@ -27,6 +27,7 @@ from app.ui.widgets.results_area import ResultsAreaWidget
 from app.ui.widgets.progress_and_logs_panel import ProgressAndLogsPanel
 from app.ui.styles import Components, Palette, Spacing, Typography
 from app.ui.widgets.category_selection_dialog import CategorySelectionDialog
+from app.ui.widgets.ai_control_panel import CultivationMonitorWidget
 from app.core.log_manager import logger
 
 
@@ -109,6 +110,12 @@ class MainWindow(QWidget):
         self.controller.set_progress_callback(self._on_parser_progress)
         self.controller.ai_result_ready.connect(self._on_ai_result_with_memory)
 
+        self.controller.ensure_ai_manager()
+        self.controller.chunk_manager = ChunkCultivationManager(
+            memory_manager=self.memory_manager,
+            ai_manager=self.controller.ai_manager
+        )
+
         self._neuro_filtered: Dict[int, List[Dict]] = {}
         
         self.queue_manager = QueueStateManager()
@@ -140,13 +147,6 @@ class MainWindow(QWidget):
         QTimer.singleShot(100, self._check_ai_availability)
         QTimer.singleShot(0, self.apply_initial_geometry)
         self._load_queue_to_ui(0)
-
-        self.controller.ensure_ai_manager()
-    
-        self.controller.chunk_manager = ChunkCultivationManager(
-            memory_manager=self.memory_manager,
-            ai_manager=self.controller.ai_manager
-        )
 
         if hasattr(self, 'memory_panel'):
             self.memory_panel.set_managers(
@@ -290,29 +290,16 @@ class MainWindow(QWidget):
         # --- STATS CONTAINER (MODIFIED) ---
         stats_container = QWidget()
         stats_layout = QHBoxLayout(stats_container)
+        stats_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         stats_layout.setContentsMargins(0, 0, 0, 0)
         stats_layout.setSpacing(Spacing.MD)
-        
-        # NEW WIP PLACEHOLDER
-        wip_frame = QFrame()
-        wip_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Palette.BG_DARK_2};
-                border: 1px dashed {Palette.BORDER_SOFT};
-                border-radius: {Spacing.RADIUS_NORMAL}px;
-            }}
-        """)
-        wip_frame.setFixedHeight(120) # Приличный размер
-        wip_layout = QVBoxLayout(wip_frame)
-        wip_label = QLabel("WIP (Work In Progress)")
-        wip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        wip_label.setStyleSheet(Typography.style(
-            family=Typography.MONO, size=Typography.SIZE_XL, 
-            weight=Typography.WEIGHT_BOLD, color=Palette.TEXT_MUTED
-        ))
-        wip_layout.addWidget(wip_label)
-        
-        stats_layout.addWidget(wip_frame)
+
+        monitor = CultivationMonitorWidget(self.controller.chunk_manager)
+        monitor.setFixedWidth(350)
+        self.monitor_container = QVBoxLayout()
+        self.monitor_container.addWidget(monitor)
+
+        stats_layout.addWidget(monitor)
 
         self.search_widget.attach_ai_stats(stats_container)
 

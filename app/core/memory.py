@@ -189,6 +189,31 @@ class MemoryManager:
             )
             diag.save_session()
 
+        try:
+            from app.core.text_utils import FeatureExtractor
+            
+            # Извлекаем семантические данные
+            semantic = FeatureExtractor.extract_semantic_data(item.get('title', ''))
+            product_key = semantic.get('product_key')
+            cluster_key = semantic.get('cluster_key')
+            
+            # Инкремент для PRODUCT чанка
+            if product_key:
+                chunk = self.knowledge.get_chunk_by_key_and_type(product_key, 'PRODUCT')
+                if chunk and chunk.get('status') in ['READY', 'ACCUMULATING']:
+                    self.knowledge.increment_data_count(chunk['id'], count=1)
+                    logger.dev(f"📈 PRODUCT чанк {chunk['id']} ({product_key}): +1 новый item", level="DEBUG")
+            
+            # Инкремент для CATEGORY чанка
+            if cluster_key:
+                cat_chunk = self.knowledge.get_chunk_by_key_and_type(cluster_key, 'CATEGORY')
+                if cat_chunk and cat_chunk.get('status') in ['READY', 'ACCUMULATING']:
+                    self.knowledge.increment_data_count(cat_chunk['id'], count=1)
+                    logger.dev(f"📈 CATEGORY чанк {cat_chunk['id']} ({cluster_key}): +1 новый item", level="DEBUG")
+            
+        except Exception as e:
+            logger.dev(f"Failed to increment chunk counters: {e}", level="DEBUG")
+
         return result.status in ['created', 'updated']
 
     def get_raw_items(self, category: Optional[str] = None,

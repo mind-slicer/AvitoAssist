@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Optional, Dict
 from datetime import datetime
 import json
+import random
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
@@ -28,6 +29,7 @@ class ChunkStatus(Enum):
 class ChunkCultivationTrigger(Enum):
     TIME_ELAPSED = "TIME_ELAPSED"
     DATA_VOLUME = "DATA_VOLUME"
+    MARKET_DEVIATION = "MARKET_DEVIATION"
     LLM_DECISION = "LLM_DECISION"
     USER_BUTTON = "USER_BUTTON"
 
@@ -43,14 +45,14 @@ class ChunkCultivationManager(QObject):
 
         self._cultivation_timer = QTimer(self)
         self._cultivation_timer.timeout.connect(self._check_triggers)
-        self._cultivation_timer.start(60_000)
+        self._cultivation_timer.start(30_000) 
 
         self._integrity_timer = QTimer(self)
         self._integrity_timer.timeout.connect(self.validate_chunks_integrity)
         self._integrity_timer.start(300_000)
 
-        self.default_time_threshold = 30 * 60
-        self.default_data_threshold = 30
+        self.default_time_threshold = 120
+        self.default_data_threshold = 10
 
     def validate_chunks_integrity(self): # TODO
         logger.dev("Запуск проверки целостности знаний...", level="DEBUG")
@@ -120,14 +122,34 @@ class ChunkCultivationManager(QObject):
             QTimer.singleShot(1000, self._process_cultivation_queue)
 
     def check_and_cultivate(self):
+        # 1. Сначала подхватываем то, что уже ждет очереди (создано вручную или детектором)
         pending_chunks = self.memory.get_pending_chunks()
-        if not pending_chunks:
-            return
+        if pending_chunks:
+            for chunk in pending_chunks:
+                # Если чанк уже в PENDING, не проверяем триггеры — просто запускаем
+                # Но проверяем, не в очереди ли он уже
+                if not any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                    self._initiate_cultivation(chunk, ChunkCultivationTrigger.USER_BUTTON)
 
-        for chunk in pending_chunks:
-            trigger = self._evaluate_triggers(chunk)
-            if trigger:
-                self._initiate_cultivation(chunk, trigger)
+        # 2. Проверяем "протухание" ГОТОВЫХ чанков (чего раньше не было)
+        ready_chunks = self.memory.knowledge.get_ready_chunks()
+        if ready_chunks:
+            for chunk in ready_chunks:
+                # Если чанк уже в очереди на культивацию, пропускаем проверку
+                if any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                    continue
+                
+                trigger = self._evaluate_triggers(chunk)
+                if trigger:
+                    chunk_key = chunk.get('chunk_key', 'unknown')
+                    logger.info(
+                        f"🔄 ТРИГГЕР [{trigger.value}] сработал для '{chunk_key}'", 
+                        token="ai-cult"
+                    )
+                    # Принудительно ставим PENDING и запускаем
+                    self.memory.update_chunk_status(chunk['id'], ChunkStatus.PENDING.value)
+                    self.chunk_status_changed.emit(chunk['id'], ChunkStatus.PENDING.value)
+                    self._initiate_cultivation(chunk, trigger)
 
     def create_pending_chunk(self, chunk_type, chunk_key: str, title: str) -> int:
         if isinstance(chunk_type, Enum):
@@ -182,30 +204,98 @@ class ChunkCultivationManager(QObject):
             logger.error(f"ChunkCultivationManager timer error: {e}")
 
     def _evaluate_triggers(self, chunk: Dict) -> Optional[ChunkCultivationTrigger]:
-        if self._check_time_trigger(chunk):
-            return ChunkCultivationTrigger.TIME_ELAPSED
-        
+        """Проверяет триггеры в порядке приоритета"""
+
+        # Приоритет 1: Накопление данных (легкая проверка)
         if self._check_data_volume_trigger(chunk):
             return ChunkCultivationTrigger.DATA_VOLUME
-            
+
+        # Приоритет 2: Время (легкая проверка)
+        if self._check_time_trigger(chunk):
+            return ChunkCultivationTrigger.TIME_ELAPSED
+
+        # Приоритет 3: Аномалия цен (средняя сложность)
         if self._check_market_deviation(chunk):
-            logger.warning(f"Чанк {chunk.get('id')} устарел из-за изменения цен!", token="ai-cult")
-            return ChunkCultivationTrigger.DATA_VOLUME
-            
+            return ChunkCultivationTrigger.MARKET_DEVIATION
+
+        # Приоритет 4: Решение LLM (тяжелая проверка, только если сервер готов)
+        if self.ai and self.ai._server_ready:
+            if self._check_llm_decision_trigger(chunk):
+                return ChunkCultivationTrigger.LLM_DECISION
+
         return None
 
     def _check_time_trigger(self, chunk: Dict) -> bool:
         last_attempt = chunk.get("last_cultivation_attempt")
-        if not last_attempt: return True
+        if not last_attempt: 
+            return True # Если никогда не обновлялся — пора
+
         try:
             dt_last = datetime.fromisoformat(last_attempt)
             elapsed = (datetime.now() - dt_last).total_seconds()
-            return elapsed > self.default_time_threshold
-        except: return True
+            
+            # Добавляем "джиттер" (случайный разброс +/- 20%), 
+            # чтобы все чанки не обновлялись одновременно в одну секунду.
+            # Для каждого чанка генерируем уникальный seed на основе ID, 
+            # чтобы порог был стабильным для конкретного чанка, но разным для всех.
+            random.seed(chunk.get('id', 0))
+            jitter_percent = random.uniform(-0.20, 0.20)
+            threshold_with_jitter = self.default_time_threshold * (1.0 + jitter_percent)
+            
+            return elapsed > threshold_with_jitter
+        except Exception: 
+            return True
 
     def _check_data_volume_trigger(self, chunk: Dict) -> bool:
         new_count = chunk.get("new_data_items_count") or 0
-        return new_count >= self.default_data_threshold
+        if new_count >= self.default_data_threshold:
+            logger.dev(f"Trigger Volume: {new_count} new items (threshold {self.default_data_threshold}) for chunk {chunk.get('id')}", level="DEBUG")
+            return True
+        return False
+
+    def _check_market_deviation(self, chunk: Dict) -> bool:
+        """Проверяет, не ушел ли рынок далеко от сохраненных знаний."""
+        try:
+            # Пропускаем, если чанк не является ПРОДУКТОМ (для категорий сложнее считать)
+            if chunk.get('chunk_type') != 'PRODUCT':
+                return False
+
+            content = chunk.get('content') or {}
+            if isinstance(content, str): content = json.loads(content)
+            
+            # Достаем сохраненную среднюю цену
+            stored_avg = content.get('analysis', {}).get('price_analysis', {}).get('avg', 0)
+            if not stored_avg or stored_avg < 100: 
+                return False
+                
+            key = chunk.get('chunk_key')
+            
+            # Берем последние 10 сырых товаров
+            items = self.memory.find_similar_items(key, limit=10)
+            if not items or len(items) < 3: 
+                return False
+            
+            prices = [i['price'] for i in items if i.get('price', 0) > 0]
+            if not prices: return False
+            
+            current_avg = sum(prices) / len(prices)
+            
+            # Считаем отклонение
+            deviation = abs(current_avg - stored_avg) / stored_avg
+            
+            # Порог 25%
+            if deviation > 0.25:
+                logger.info(
+                    f"📈 Аномалия цены для {key}: Было ~{stored_avg}, Стало ~{int(current_avg)} (Diff: {int(deviation*100)}%)", 
+                    token="ai-cult"
+                )
+                return True
+                
+        except Exception as e:
+            # logger.warning(f"Deviation check error for {chunk.get('id')}: {e}")
+            return False
+            
+        return False
 
     def _initiate_cultivation(self, chunk: Dict, trigger: ChunkCultivationTrigger, user_instructions: str = ""):
         chunk_id = chunk.get("id")
@@ -367,41 +457,6 @@ class ChunkCultivationManager(QObject):
 
             logger.error(f"Чанк {chunk_id} сбой: {error_msg}...", token="ai-cult")
 
-    def _check_market_deviation(self, chunk: Dict) -> bool:
-        """Проверяет, не ушел ли рынок далеко от сохраненных знаний."""
-        try:
-            content = chunk.get('content') or {}
-            if isinstance(content, str): content = json.loads(content)
-            
-            stored_avg = content.get('analysis', {}).get('price_analysis', {}).get('avg', 0)
-            if not stored_avg: 
-                return False
-                
-            key = chunk.get('chunk_key')
-            chunk_type = chunk.get('chunk_type')
-            
-            if chunk_type == 'PRODUCT':
-                # FIX: Используем прямой запрос к items для надежности
-                items = self.memory.find_similar_items(key, limit=20)
-                
-                # Если по ключу продукта ничего не нашли (например, ключ изменился), отклонения нет (нет данных)
-                if not items: 
-                    return False
-                
-                prices = [i['price'] for i in items if i.get('price', 0) > 0]
-                if len(prices) < 5: return False
-                
-                current_avg = sum(prices) / len(prices)
-                
-                deviation = abs(current_avg - stored_avg) / stored_avg
-                return deviation > 0.25
-                
-        except Exception as e:
-            # logger.warning(f"Deviation check error for {chunk.get('id')}: {e}")
-            return False
-            
-        return False
-
     def _extract_chunk_text(self, chunk_key: str, chunk_type: str) -> str:
         chunk = self.memory.knowledge.get_chunk_by_key_and_type(chunk_key, chunk_type)
         if chunk and chunk.get('status') == 'READY':
@@ -510,3 +565,256 @@ class ChunkCultivationManager(QObject):
         
         logger.info("Сканирование базы на новые знания...", token="ai-det")
         SmartChunkDetector.create_missing_chunks(self.memory, self)
+
+    # --- UI HELPERS ---
+
+    def get_monitor_data(self) -> Dict:
+        """Возвращает данные для виджета мониторинга"""
+        next_check_in = 0
+        if self._cultivation_timer and self._cultivation_timer.isActive():
+            next_check_in = self._cultivation_timer.remainingTime() // 1000
+        
+        # Безопасное получение данных AI
+        queue_len = 0
+        active_workers = 0
+        is_cultivating = False
+        
+        if self.ai:
+            queue_len = len(getattr(self.ai, '_cultivation_queue', []))
+            active_workers = len(getattr(self.ai, '_chunk_workers', {}))
+            is_cultivating = getattr(self.ai, '_is_cultivating_now', False)
+        
+        # Новые данные
+        nearest_time = self._get_nearest_time_trigger()
+        market_deviations = self._get_pending_market_deviations()
+        
+        return {
+            "next_check": next_check_in,
+            "queue_size": queue_len,
+            "active_workers": active_workers,
+            "is_cultivating": is_cultivating,
+            "nearest_time_trigger": nearest_time,
+            "pending_market_deviations": market_deviations,
+            "config": {
+                "poll_interval": self._cultivation_timer.interval() // 1000,  # НОВОЕ
+                "time_threshold": self.default_time_threshold,
+                "data_threshold": self.default_data_threshold,
+                "integrity_interval": self._integrity_timer.interval() // 1000  # НОВОЕ
+            }
+        }
+
+    def _get_nearest_time_trigger(self) -> Optional[Dict]:
+        """Находит чанк, который обновится раньше всех по TIME_ELAPSED"""
+        ready_chunks = self.memory.knowledge.get_ready_chunks()
+
+        nearest = None
+        min_time_left = float('inf')
+
+        for chunk in ready_chunks:
+            # Пропускаем чанки уже в очереди
+            if any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                continue
+
+            last_attempt = chunk.get("last_cultivation_attempt")
+            if not last_attempt:
+                continue
+            
+            try:
+                # Рассчитываем порог с джиттером (детерминированно)
+                random.seed(chunk.get('id', 0))
+                jitter_percent = random.uniform(-0.20, 0.20)
+                threshold = self.default_time_threshold * (1.0 + jitter_percent)
+
+                # Сколько прошло времени
+                dt_last = datetime.fromisoformat(last_attempt)
+                elapsed = (datetime.now() - dt_last).total_seconds()
+
+                # Сколько осталось до срабатывания
+                time_left = threshold - elapsed
+
+                if 0 < time_left < min_time_left:
+                    min_time_left = time_left
+                    nearest = {
+                        "chunk_title": chunk.get('title', 'Unknown'),
+                        "seconds_left": int(time_left),
+                        "chunk_id": chunk['id']
+                    }
+            except Exception as e:
+                logger.dev(f"Error calculating time trigger for chunk {chunk.get('id')}: {e}", level="DEBUG")
+                continue
+            
+        return nearest
+
+    def _get_pending_market_deviations(self) -> List[Dict]:
+        """Находит чанки с аномальными ценами"""
+        ready_chunks = self.memory.knowledge.get_ready_chunks()
+
+        deviations = []
+        for chunk in ready_chunks:
+            if chunk.get('chunk_type') != 'PRODUCT':
+                continue
+            
+            # Пропускаем чанки уже в очереди
+            if any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                continue
+            
+            try:
+                content = chunk.get('content')
+                if isinstance(content, str):
+                    content = json.loads(content)
+
+                stored_avg = content.get('analysis', {}).get('price_analysis', {}).get('avg', 0)
+
+                if not stored_avg or stored_avg < 100:
+                    continue
+                
+                key = chunk.get('chunk_key')
+                items = self.memory.find_similar_items(key, limit=10)
+                prices = [i['price'] for i in items if i.get('price', 0) > 0]
+
+                if len(prices) < 3:
+                    continue
+                
+                current_avg = sum(prices) / len(prices)
+                deviation = ((current_avg - stored_avg) / stored_avg) * 100
+
+                # Показываем отклонения >15%
+                if abs(deviation) > 15:
+                    deviations.append({
+                        "chunk_title": chunk.get('title', 'Unknown'),
+                        "deviation_percent": round(deviation, 1),
+                        "chunk_id": chunk['id'],
+                        "stored_avg": int(stored_avg),
+                        "current_avg": int(current_avg)
+                    })
+            except Exception as e:
+                logger.dev(f"Error calculating deviation for chunk {chunk.get('id')}: {e}", level="DEBUG")
+                continue
+            
+        # Сортируем по величине отклонения
+        return sorted(deviations, key=lambda x: abs(x["deviation_percent"]), reverse=True)[:3]
+
+    def _check_llm_decision_trigger(self, chunk: Dict) -> bool:
+        """LLM решает, нужно ли обновлять чанк (реальный запрос)"""
+
+        # Условия для запроса LLM
+        new_count = chunk.get("new_data_items_count") or 0
+        if new_count < 3:  # Слишком мало новых данных
+            return False
+
+        # Проверяем качество текущего чанка
+        content = chunk.get('content')
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except:
+                content = {}
+
+        data_sufficiency = content.get('data_sufficiency', 'MEDIUM')
+
+        # Если LLM ранее отметил недостаток данных - спрашиваем снова
+        if data_sufficiency != 'LOW' and new_count < 5:
+            return False
+
+        # Формируем запрос к LLM
+        chunk_key = chunk.get('chunk_key')
+        chunk_type = chunk.get('chunk_type')
+        summary = content.get('summary', '') if isinstance(content, dict) else ''
+
+        # Получаем новые данные
+        new_items = []
+        if chunk_type == 'PRODUCT':
+            new_items = self.memory.find_similar_items(chunk_key, limit=5)
+
+        if not new_items:
+            return False
+
+        # Формируем промпт для LLM
+        prompt = self._build_llm_decision_prompt(chunk, new_items, summary)
+
+        try:
+            # Синхронный вызов LLM (быстрый запрос)
+            from app.core.ai.llama_client import LlamaClient
+            import asyncio
+
+            port = self.ai.server_manager.get_port()
+            client = LlamaClient(port)
+
+            messages = [
+                {"role": "system", "content": "Ты аналитик данных. Ответь ТОЛЬКО 'YES' или 'NO'."},
+                {"role": "user", "content": prompt}
+            ]
+
+            # Быстрый запрос с таймаутом
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            response = loop.run_until_complete(
+                asyncio.wait_for(
+                    client.chat_completion(
+                        model=self.ai._model_name,
+                        messages=messages,
+                        params={"temperature": 0.1, "max_tokens": 10}
+                    ),
+                    timeout=5.0
+                )
+            )
+            loop.close()
+
+            if response and 'YES' in response.upper():
+                logger.info(f"🤖 LLM_DECISION: Чанк {chunk['id']} требует обновления", token="ai-cult")
+                return True
+            else:
+                logger.dev(f"LLM_DECISION: Чанк {chunk['id']} актуален (ответ: {response})", level="DEBUG")
+                return False
+
+        except Exception as e:
+            logger.dev(f"LLM_DECISION error for chunk {chunk['id']}: {e}", level="DEBUG")
+            return False
+
+    def _build_llm_decision_prompt(self, chunk: Dict, new_items: List[Dict], old_summary: str) -> str:
+        """Формирует промпт для LLM_DECISION"""
+
+        new_count = len(new_items)
+        avg_price = sum(i['price'] for i in new_items if i.get('price', 0) > 0) / max(1, len([i for i in new_items if i.get('price', 0) > 0]))
+
+        titles_sample = "\n".join([f"- {i.get('title', '')[:50]} ({i.get('price', 0)}₽)" for i in new_items[:3]])
+
+        return f"""ЗАДАЧА: Определить, нужно ли обновлять аналитический отчет.
+
+    ТЕКУЩИЙ ОТЧЕТ:
+    {old_summary[:200]}...
+
+    НОВЫЕ ДАННЫЕ ({new_count} лотов, средняя цена: {int(avg_price)}₽):
+    {titles_sample}
+
+    ВОПРОС: Содержат ли новые данные значимую информацию, противоречащую старому отчету или существенно дополняющую его?
+
+    Ответь 'YES' если обновление необходимо (новые тренды, аномалии цен, изменение характеристик).
+    Ответь 'NO' если новые данные подтверждают существующий анализ."""
+
+    def update_config(self, time_threshold: int, data_threshold: int):
+        """Обновление настроек из UI."""
+        self.default_time_threshold = time_threshold
+        self.default_data_threshold = data_threshold
+        logger.info(f"Настройки культивации обновлены: Time={time_threshold}s, Data={data_threshold} items", token="ai-conf")
+
+    def update_config_full(self, config: Dict):
+        """Обновление всех настроек из UI"""
+
+        # Частота опроса
+        poll_interval = config.get('poll_interval', 30) * 1000  # в миллисекунды
+        if self._cultivation_timer.interval() != poll_interval:
+            self._cultivation_timer.setInterval(poll_interval)
+            logger.info(f"⏱️ Частота опроса изменена: {poll_interval // 1000}с", token="ai-conf")
+
+        # Срок актуальности чанка
+        self.default_time_threshold = config.get('time_threshold', 120)
+
+        # Порог новых данных
+        self.default_data_threshold = config.get('data_threshold', 10)
+
+        # Проверка целостности
+        integrity_interval = config.get('integrity_interval', 300) * 1000
+        if self._integrity_timer.interval() != integrity_interval:
+            self._integrity_timer.setInterval(integrity_interval)
+            logger.info(f"🔒 Интервал целостности изменен: {integrity_interval // 1000}с", token="ai-conf")
