@@ -4,6 +4,7 @@ from typing import Optional, Dict
 from datetime import datetime
 import json
 import random
+import statistics
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
@@ -411,7 +412,7 @@ class ChunkCultivationManager(QObject):
                 final_status = ChunkStatus.ACCUMULATING.value
                 status_text = "Ожидание данных"
 
-            # 2. Сохраняем данные в БД (как и раньше)
+            # 2. Сохраняем данные в БД
             chunk_info = self.memory.get_chunk_by_id(chunk_id)
             source_hash = None
             if chunk_info:
@@ -422,13 +423,40 @@ class ChunkCultivationManager(QObject):
                 else:
                     source_hash = self.memory.raw_data.calculate_data_signature(product_key=key)
 
-            self.memory.update_chunk_content(chunk_id, content, summary=summary, source_hash=source_hash)
+            from app.core.text_utils import FeatureExtractor
+            import numpy as np
+
+            embedding_blob = None
+            vector_text = f"{chunk_info.get('title', '')} {summary}"
+            vec = FeatureExtractor.get_string_vector(vector_text)
+            if vec is not None:
+                embedding_blob = vec.astype(np.float32).tobytes()
+
+            self.memory.update_chunk_content(chunk_id, content, summary=summary, source_hash=source_hash, embedding_blob=embedding_blob)
             self.memory.update_chunk_status(chunk_id, final_status)
             
+            # --- [NEW] Сохраняем снепшот истории ---
+            try:
+                analysis = content.get('analysis', {})
+                price_analysis = analysis.get('price_analysis', {})
+                if not price_analysis and 'price_analysis' in content:
+                     price_analysis = content['price_analysis']
+
+                stats_snapshot = {
+                    'avg': price_analysis.get('avg', 0),
+                    'sufficiency': data_sufficiency,
+                    'phase': analysis.get('market_phase', 'UNKNOWN')
+                }
+                # Вызов метода сохранения в историю (убедись, что он есть в KnowledgeManager)
+                if hasattr(self.memory.knowledge, 'save_history_snapshot'):
+                    self.memory.knowledge.save_history_snapshot(chunk_id, stats_snapshot)
+            except Exception as e:
+                logger.error(f"Failed to save history snapshot for {chunk_id}: {e}")
+            # ---------------------------------------
+
             # 3. Отправляем сигналы в UI
             self.chunk_status_changed.emit(chunk_id, final_status)
             
-            # Используем status_text для финального сообщения прогресса
             progress_message = f"{status_text}: {formation_reason[:40]}..." if formation_reason else status_text
             self.chunk_progress.emit(chunk_id, 100, progress_message)
 
@@ -436,7 +464,7 @@ class ChunkCultivationManager(QObject):
                 self.cultivation_ready.emit(chunk_id)
                 logger.success(f"Чанк {chunk_id} готов. Причина: {formation_reason}", token="ai-cult")
         else:
-            # Блок обработки ошибок остается без изменений
+            # Обработка ошибок (без изменений)
             error_msg = result.get("error") or "unknown"
             self.chunk_progress.emit(chunk_id, 0, f"Ошибка: {error_msg[:20]}...")
 
@@ -445,16 +473,18 @@ class ChunkCultivationManager(QObject):
                  return
 
             chunk = self.memory.get_chunk_by_id(chunk_id)
-            retry_count = chunk.get('retry_count', 0) + 1
-            MAX_RETRIES = 3
+            # Защита от None, если чанк был удален в процессе
+            if chunk:
+                retry_count = chunk.get('retry_count', 0) + 1
+                MAX_RETRIES = 3
 
-            if retry_count < MAX_RETRIES:
-                self.memory.update_chunk_with_retry(chunk_id, ChunkStatus.PENDING.value, retry_count)
-                logger.warning(f"Chunk {chunk_id} retry {retry_count}/{MAX_RETRIES}", token="ai-cult")
-            else:
-                self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
-                self.chunk_status_changed.emit(chunk_id, ChunkStatus.FAILED.value)
-
+                if retry_count < MAX_RETRIES:
+                    self.memory.update_chunk_with_retry(chunk_id, ChunkStatus.PENDING.value, retry_count)
+                    logger.warning(f"Chunk {chunk_id} retry {retry_count}/{MAX_RETRIES}", token="ai-cult")
+                else:
+                    self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
+                    self.chunk_status_changed.emit(chunk_id, ChunkStatus.FAILED.value)
+            
             logger.error(f"Чанк {chunk_id} сбой: {error_msg}...", token="ai-cult")
 
     def _extract_chunk_text(self, chunk_key: str, chunk_type: str) -> str:
@@ -470,11 +500,13 @@ class ChunkCultivationManager(QObject):
         return ""
 
     def _build_cultivation_prompt(self, chunk: Dict) -> str:
+        import statistics # Убедись что импорт есть в файле
+        
         chunk_type = str(chunk.get("chunk_type", "")).upper()
+        chunk_id = chunk.get("id")
         chunk_key = chunk.get("chunk_key")
-        chunk_title = chunk.get("title", "")
-
-        # 1. Загрузка истории (без изменений)
+        
+        # 1. Загрузка истории (предыдущий контент чанка)
         prev_summary = ""
         if chunk.get("content"):
              try:
@@ -482,7 +514,7 @@ class ChunkCultivationManager(QObject):
                  prev_summary = prev_content.get("main_description") or prev_content.get("summary") or ""
              except: pass
 
-        # 2. Загрузка интересов (без изменений)
+        # 2. Загрузка интересов пользователя
         user_interests = ""
         try:
             import os
@@ -492,49 +524,113 @@ class ChunkCultivationManager(QObject):
                 with open(path, "r", encoding="utf-8") as f: user_interests = f.read().strip()
         except: pass
 
-        # --- 3. ЛОГИКА СВЯЗЕЙ (LINKING STRATEGY) ---
+        # --- 3. ЛОГИКА СВЯЗЕЙ (НОВАЯ) ---
         linked_context = ""
-
-        if chunk_type == "PRODUCT":
-            # PRODUCT -> Родителем является CATEGORY (Cluster)
-            from app.core.text_utils import FeatureExtractor
-            semantic = FeatureExtractor.extract_semantic_data(chunk_title or chunk_key)
-            cluster_key = semantic.get('cluster_key')
-            if cluster_key:
-                linked_context = self._extract_chunk_text(cluster_key, "CATEGORY")
         
-        elif chunk_type == "CATEGORY":
-            # CATEGORY -> Глобальный контекст из DATABASE
-            linked_context = self._extract_chunk_text("general", "DATABASE")
-            
-        elif chunk_type == "DATABASE":
-            # DATABASE -> Контекст пользователя из AI_BEHAVIOR
-            linked_context = self._extract_chunk_text("user_behavior", "AI_BEHAVIOR")
-            
-        elif chunk_type == "AI_BEHAVIOR":
-            # AI_BEHAVIOR -> Контекст рынка из DATABASE
-            linked_context = self._extract_chunk_text("general", "DATABASE")
+        # Пытаемся получить родителя из БД (Честная связь)
+        parent_id = chunk.get('parent_chunk_id')
+        if parent_id:
+            parent_chunk = self.memory.get_chunk_by_id(parent_id)
+            if parent_chunk:
+                p_content = parent_chunk.get('content')
+                if isinstance(p_content, str):
+                    try: p_content = json.loads(p_content)
+                    except: p_content = {}
+                elif not p_content:
+                    p_content = {}
+                
+                # Формируем контекст из родителя
+                p_status = p_content.get('display_status', 'N/A')
+                p_desc = p_content.get('main_description', '') or p_content.get('summary', '')
+                linked_context = f"[РОДИТЕЛЬСКИЙ КОНТЕКСТ ({parent_chunk.get('chunk_type')})]\nСтатус: {p_status}\nСуть: {p_desc[:500]}..."
+
+        # Fallback для глобальных типов, если родитель не задан (для обратной совместимости)
+        if not linked_context:
+            if chunk_type == "CATEGORY":
+                linked_context = self._extract_chunk_text("general", "DATABASE")
+            elif chunk_type == "DATABASE":
+                linked_context = self._extract_chunk_text("user_behavior", "AI_BEHAVIOR")
+            elif chunk_type == "AI_BEHAVIOR":
+                linked_context = self._extract_chunk_text("general", "DATABASE")
 
         # --- 4. СБОРКА ПРОМПТА ---
 
         if chunk_type == "PRODUCT":
-            items = self.memory.find_similar_items(chunk_key, limit=50)
+            # 1. HARD MATH
+            raw_items = self.memory.find_similar_items(chunk_key, limit=1000)
+            
+            # Фильтруем явные выбросы
+            valid_prices = [i['price'] for i in raw_items if i.get('price', 0) > 100 and not i.get('is_outlier', 0)]
+            
+            math_block = {
+                "count": len(valid_prices),
+                "min": 0, "max": 0, "avg": 0, "med": 0, "q25": 0
+            }
+            
+            if valid_prices:
+                math_block["min"] = min(valid_prices)
+                math_block["max"] = max(valid_prices)
+                math_block["avg"] = int(statistics.mean(valid_prices))
+                math_block["med"] = int(statistics.median(valid_prices))
+                math_block["q25"] = int(sorted(valid_prices)[int(len(valid_prices)*0.25)])
+
+            # 2. SMART SAMPLING
+            sorted_items = sorted(raw_items, key=lambda x: x['price'])
+            sample_items = []
+            
+            if sorted_items:
+                sample_items.extend([i for i in sorted_items if i['price'] > 100][:3]) # Cheap
+                sample_items.extend(sorted_items[-3:]) # Expensive
+                mid = len(sorted_items) // 2
+                sample_items.extend(sorted_items[max(0, mid-1):min(len(sorted_items), mid+2)]) # Median
+                
+                # Fresh
+                by_date = sorted(raw_items, key=lambda x: x.get('analyzed_at', ''), reverse=True)
+                sample_items.extend(by_date[:5])
+            
+            # Dedup samples
+            seen_ids = set()
+            unique_samples = []
+            for item in sample_items:
+                if item['id'] not in seen_ids:
+                    unique_samples.append(item)
+                    seen_ids.add(item['id'])
+
+            # 3. HISTORY
+            history_text = ""
+            try:
+                if hasattr(self.memory.knowledge, 'get_chunk_history'):
+                    history = self.memory.knowledge.get_chunk_history(chunk_id)
+                    history_text = "\n".join([f"{h['recorded_at'][:10]}: Avg={h['avg_price']}" for h in history])
+            except Exception: pass
+
             return ChunkCultivationPrompts.build_product_cultivation_prompt(
-                chunk_key, items, 
+                chunk_key, 
+                unique_samples, 
+                math_block=math_block,
+                history_block=history_text,
                 previous_context=prev_summary,
                 user_interests=user_interests,
                 user_instructions=chunk.get('user_instructions', ''),
-                linked_context=linked_context # <--
+                linked_context=linked_context
             )
 
         if chunk_type == "CATEGORY":
             all_chunks = self.memory.knowledge.get_chunks_by_type("PRODUCT")
-            sub_chunks = [c for c in all_chunks if c.get('chunk_key', '').startswith(chunk_key) and c.get('status') == 'READY']
+            # Теперь ищем детей по parent_id, а не по ключу!
+            # Но у нас список all_chunks — это просто словари.
+            # Если в dict есть parent_chunk_id, используем его.
+            sub_chunks = [c for c in all_chunks if c.get('parent_chunk_id') == chunk_id and c.get('status') == 'READY']
+            
+            # Fallback на ключи, если база старая
+            if not sub_chunks:
+                sub_chunks = [c for c in all_chunks if c.get('chunk_key', '').startswith(chunk_key) and c.get('status') == 'READY']
+
             return ChunkCultivationPrompts.build_category_cultivation_prompt(
                 chunk_key, sub_chunks, 
                 previous_context=prev_summary,
                 user_interests=user_interests,
-                linked_context=linked_context # <--
+                linked_context=linked_context
             )
 
         if chunk_type == "DATABASE":
@@ -546,7 +642,7 @@ class ChunkCultivationManager(QObject):
             vocab = self.memory.raw_data.get_database_vocabulary(limit=60)
             return ChunkCultivationPrompts.build_database_cultivation_prompt(
                 db_stats, vocab, 
-                linked_context=linked_context # <--
+                linked_context=linked_context
             )
 
         if chunk_type == "AI_BEHAVIOR":
@@ -555,7 +651,7 @@ class ChunkCultivationManager(QObject):
                 actions, 
                 user_interests=user_interests,
                 previous_context=prev_summary,
-                linked_context=linked_context # <--
+                linked_context=linked_context
             )
 
         raise ValueError(f"Unknown chunk type: {chunk_type}")

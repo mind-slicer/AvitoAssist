@@ -9,6 +9,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from collections import Counter
 from dataclasses import dataclass
+import numpy as np
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
@@ -220,7 +221,7 @@ class AddItemResult:
         return self.status
 
 class RawDataManager:
-    SCHEMA_VERSION = 9
+    SCHEMA_VERSION = 10
     DB_FILENAME = "memory_raw_data.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -234,13 +235,13 @@ class RawDataManager:
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA cache_size = -64000")
-        conn.execute("PRAGMA mmap_size = 268435456")
-        conn.execute("PRAGMA temp_store = MEMORY")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA cache_size = -64000;")
+        conn.execute("PRAGMA mmap_size = 268435456;")
+        conn.execute("PRAGMA temp_store = MEMORY;")
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA busy_timeout = 10000;")
         return conn
 
     def _ensure_db_exists(self):
@@ -249,7 +250,7 @@ class RawDataManager:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
             if cursor.fetchone() is None:
-                logger.info("Creating fresh PURE v7 database schema")
+                logger.info("Creating fresh PURE database schema")
                 cursor.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY DEFAULT 1)")
                 cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (self.SCHEMA_VERSION,))
                 self._create_all_tables(cursor)
@@ -313,6 +314,8 @@ class RawDataManager:
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             )
         """)
+        
+        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS raw_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,10 +335,16 @@ class RawDataManager:
                 deleted_at TEXT,
                 original_product_id INTEGER,
                 placement_confidence INTEGER DEFAULT 1,
+                
+                is_outlier INTEGER DEFAULT 0,  -- <--- ДОБАВЛЕНО
+                embedding BLOB,                -- <--- ДОБАВЛЕНО
+                
                 analyzed_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # -------------------------
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -350,6 +359,14 @@ class RawDataManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 action_type TEXT NOT NULL,
                 details TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS product_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alias_key TEXT UNIQUE NOT NULL,
+                target_product_key TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -369,6 +386,10 @@ class RawDataManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_deleted ON raw_items(is_deleted, deleted_at DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_deleted ON products(is_deleted)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_deleted ON categories(is_deleted)")
+        
+        # Новые индексы тоже полезно добавить сразу
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_aliases_key ON product_aliases(alias_key)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_outlier ON raw_items(is_outlier)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
         if from_version < 2:
@@ -419,6 +440,65 @@ class RawDataManager:
                 logger.info("✅ v9: Added placement_confidence column to raw_items")
             except Exception as e:
                 logger.error(f"Migration to v9 failed: {e}")
+        if from_version < 10:
+            try:
+                # 1. Таблица алиасов
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS product_aliases (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        alias_key TEXT UNIQUE NOT NULL,
+                        target_product_key TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # 2. Поля для аналитики и векторов
+                cursor.execute("ALTER TABLE raw_items ADD COLUMN is_outlier INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE raw_items ADD COLUMN embedding BLOB")
+                
+                # 3. Индексы
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_aliases_key ON product_aliases(alias_key)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_raw_items_outlier ON raw_items(is_outlier)")
+                
+                logger.info("✅ v10: Added aliases, embeddings, and outlier detection columns")
+            except Exception as e:
+                logger.error(f"Migration to v10 failed: {e}")
+
+    def resolve_product_key(self, raw_key: str) -> str:
+        """Проверяет, есть ли для ключа алиас. Если нет - возвращает исходный."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT target_product_key FROM product_aliases WHERE alias_key = ?", (raw_key,))
+            row = cursor.fetchone()
+            return row[0] if row else raw_key
+        finally:
+            conn.close()
+
+    # Проверка на выброс (Hard Math)
+    def _check_is_outlier(self, price: int, category: str, cursor: sqlite3.Cursor) -> bool:
+        if price <= 100: return True # Мусорные цены
+        
+        try:
+            cursor.execute("""
+                SELECT AVG(ri.price) 
+                FROM raw_items ri
+                JOIN products p ON ri.product_id = p.id
+                JOIN categories c ON p.category_id = c.id
+                WHERE c.name = ? AND ri.price > 100 AND ri.is_deleted = 0
+                ORDER BY ri.analyzed_at DESC LIMIT 100
+            """, (category,))
+            row = cursor.fetchone()
+            if not row or not row[0]: return False
+            
+            avg_price = row[0]
+            
+            if price < avg_price * 0.2 or price > avg_price * 10.0:
+                return True
+                
+        except Exception:
+            return False
+        return False
 
     def get_or_create_city(self, name: str, cursor: sqlite3.Cursor) -> int:
         with self._cache_lock:
@@ -577,16 +657,19 @@ class RawDataManager:
             else:
                 cursor = external_cursor
 
+            # 1. Генерация AD ID
             ad_id = str(item.get('id') or item.get('ad_id') or self._extract_ad_id(item.get('link', '')) or "")
             if not ad_id:
                 unique_str = f"{item.get('title')}_{item.get('seller_id')}_{item.get('city')}"
                 ad_id = hashlib.md5(unique_str.encode('utf-8')).hexdigest()
 
+            # 2. Извлечение базовых полей
             title = item.get('title', '')
             price = item.get('price', 0)
             city_str = item.get('city', 'Неизвестно')
             seller_str = item.get('seller_id', '')
 
+            # 3. Кеширование внешних ключей (City/Seller)
             if '_city_id_cached' in item:
                 city_id = item.pop('_city_id_cached')
             else:
@@ -597,6 +680,7 @@ class RawDataManager:
             else:
                 seller_db_id = self.get_or_create_seller(seller_str, cursor)
 
+            # 4. Обработка семантики (NLP)
             product_id = None
             semantic = item.get('semantic_data')
             
@@ -604,14 +688,28 @@ class RawDataManager:
                 logger.error(f"Элемент '{title}' ({ad_id}) добавлен БЕЗ 'semantic_data'! БЛОКИРОВАН.")
                 return AddItemResult(-1, "error", False)
 
-            p_key = semantic.get('product_key', 'misc_unknown')
+            # --- [NEW] Векторизация (Embeddings) ---
+            embedding_blob = None
+            if 'embedding_vector' in semantic and semantic['embedding_vector'] is not None:
+                try:
+                    # Конвертируем numpy array в bytes для BLOB
+                    embedding_blob = semantic['embedding_vector'].astype(np.float32).tobytes()
+                except Exception as e:
+                    logger.warning(f"Embedding conversion failed for {ad_id}: {e}")
+
+            # --- [NEW] Алиасы (Product Key Resolution) ---
+            raw_p_key = semantic.get('product_key', 'misc_unknown')
+            p_key = self.resolve_product_key(raw_p_key) # Приводим к каноническому виду
+
             cat_name = semantic.get('category', 'MISC')
             brand = semantic.get('brand')
             model = semantic.get('model')
             clean_name = semantic.get('clean_name')
 
+            # 5. Привязка к Product/Category
             cat_id = self.get_or_create_category(cat_name, cursor)
             
+            # Ищем продукт по УЖЕ нормализованному ключу
             cursor.execute("SELECT id FROM products WHERE key = ?", (p_key,))
             p_row = cursor.fetchone()
             if p_row:
@@ -623,6 +721,13 @@ class RawDataManager:
                 """, (p_key, clean_name, brand, model, cat_id))
                 product_id = cursor.lastrowid
 
+            # --- [NEW] Детекция выбросов (Outlier Detection) ---
+            is_outlier = 0
+            if price > 0:
+                if self._check_is_outlier(price, cat_name, cursor):
+                    is_outlier = 1
+
+            # 6. Проверка существования записи (Upsert Logic)
             cursor.execute("""
                 SELECT id, price, analyzed_at FROM raw_items WHERE ad_id = ?
                 ORDER BY analyzed_at DESC LIMIT 1
@@ -633,10 +738,12 @@ class RawDataManager:
             current_time = datetime.now().isoformat()
 
             if existing:
+                # --- UPDATE SCENARIO ---
                 raw_item_id = existing[0]
                 old_price = existing[1]
                 last_analyzed = existing[2]
                 
+                # Троттлинг обновлений (не чаще раза в минуту)
                 if last_analyzed:
                     try:
                         last_dt = datetime.fromisoformat(last_analyzed)
@@ -649,51 +756,61 @@ class RawDataManager:
                 price_changed = (price_diff_percent >= 0.01 and price > 0)
 
                 if price_changed:
+                    # Записываем историю цен
                     cursor.execute("""
                         INSERT INTO price_history (raw_item_id, price, recorded_at)
                         VALUES (?, ?, ?)
                     """, (raw_item_id, old_price, current_time))
                     
+                    # Полное обновление, включая embedding и is_outlier
                     cursor.execute("""
                         UPDATE raw_items SET
                         title = ?, price = ?, description = ?, condition = ?,
                         views = ?, date_text = ?, link = ?, analyzed_at = ?,
-                        city_id = ?, seller_table_id = ?, product_id = ?
+                        city_id = ?, seller_table_id = ?, product_id = ?,
+                        embedding = ?, is_outlier = ?
                         WHERE id = ?
                     """, (
                         title, price, item.get('description'), item.get('condition'),
                         item.get('views', 0), item.get('date_text'), item.get('link'),
                         current_time,
                         city_id, seller_db_id, product_id,
+                        embedding_blob, is_outlier,
                         raw_item_id
                     ))
                     status = "updated"
                 else:
+                    # Легкое обновление (только метаданные)
                     cursor.execute("""
                         UPDATE raw_items SET
                         analyzed_at = ?, views = ?,
-                        city_id = ?, seller_table_id = ?, product_id = ?
+                        city_id = ?, seller_table_id = ?, product_id = ?,
+                        embedding = ?, is_outlier = ?
                         WHERE id = ?
                     """, (
                         current_time, item.get('views', 0),
                         city_id, seller_db_id, product_id,
+                        embedding_blob, is_outlier,
                         raw_item_id
                     ))
                     status = "skipped"
                 
                 result = AddItemResult(raw_item_id, status, price_changed)
             else:
+                # --- INSERT SCENARIO ---
                 cursor.execute("""
                     INSERT INTO raw_items (
                         ad_id, title, price, description, condition,
                         views, date_text, link, analyzed_at, created_at,
-                        city_id, seller_table_id, product_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        city_id, seller_table_id, product_id,
+                        embedding, is_outlier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     ad_id, title, price, item.get('description'), item.get('condition'),
                     item.get('views'), item.get('date_text'), item.get('link'),
                     current_time, current_time,
-                    city_id, seller_db_id, product_id
+                    city_id, seller_db_id, product_id,
+                    embedding_blob, is_outlier
                 ))
                 raw_item_id = cursor.lastrowid
                 
@@ -705,14 +822,13 @@ class RawDataManager:
                 
                 result = AddItemResult(raw_item_id, "created", False)
 
+            # 7. Расчет Placement Confidence (Smart Placement)
             if result.status in ("created", "updated"):
                 try:
-                    title = item.get("title", "")
-                    description = item.get("description", "")
-
+                    # Используем внешнюю функцию оценки (она должна быть импортирована)
                     is_reliable = evaluate_item_placement(
                         title=title,
-                        description=description,
+                        description=item.get("description", ""),
                         product_key=p_key,
                         category=cat_name,
                         brand=brand or "",

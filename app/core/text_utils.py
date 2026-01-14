@@ -157,6 +157,20 @@ class FeatureExtractor:
         return text.split()
     
     @staticmethod
+    def get_string_vector(text: str):
+        """Возвращает numpy-вектор для строки."""
+        if not text: return None
+        
+        extractor = SpacyFeatureExtractor()
+        if not hasattr(extractor, 'nlp'):
+            return None
+            
+        doc = extractor.nlp(text)
+        if doc and doc.has_vector:
+            return doc.vector
+        return None
+
+    @staticmethod
     def is_model_ready() -> bool:
         return hasattr(SpacyFeatureExtractor(), 'nlp')
 

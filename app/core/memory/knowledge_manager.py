@@ -18,7 +18,7 @@ from app.core.log_manager import logger
 
 
 class KnowledgeManager:
-    SCHEMA_VERSION = 4 # TODO
+    SCHEMA_VERSION = 5
     DB_FILENAME = "memory_knowledge.db"
 
     def __init__(self, db_path: Optional[str] = None):
@@ -32,11 +32,11 @@ class KnowledgeManager:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA cache_size = -32000")
-        conn.execute("PRAGMA mmap_size = 134217728")
-        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA cache_size = -32000;")
+        conn.execute("PRAGMA mmap_size = 134217728;")
+        conn.execute("PRAGMA temp_store = MEMORY;")
         
         return conn
 
@@ -91,6 +91,7 @@ class KnowledgeManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chunk_type TEXT NOT NULL,
                 chunk_key TEXT NOT NULL,
+                parent_chunk_id INTEGER REFERENCES ai_knowledge(id),
                 title TEXT,
                 content TEXT,
                 summary TEXT,
@@ -100,9 +101,23 @@ class KnowledgeManager:
                 last_cultivation_attempt TEXT,
                 retry_count INTEGER DEFAULT 0,
                 source_hash TEXT,
+                dependency_hash TEXT,
+                embedding BLOB,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(chunk_type, chunk_key)
+            )
+        """)
+        
+        # Исправлена опечатка AUTOINCREMENT
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id INTEGER,
+                recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                avg_price INTEGER,
+                data_sufficiency TEXT,
+                market_phase TEXT
             )
         """)
 
@@ -111,6 +126,7 @@ class KnowledgeManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_knowledge_chunk_key ON ai_knowledge(chunk_key)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_knowledge_type ON ai_knowledge(chunk_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_knowledge_priority ON ai_knowledge(priority)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_history_id ON chunk_history(chunk_id)")
 
     def _migrate_schema(self, cursor: sqlite3.Cursor, from_version: int, to_version: int):
         if from_version < 2:
@@ -122,7 +138,6 @@ class KnowledgeManager:
             except sqlite3.OperationalError:
                 pass
 
-        # --- ОБНОВЛЕННЫЙ БЛОК V4 ---
         if from_version < 4:
             logger.info("Migrating Knowledge DB to v4: Translating Enums to English")
             try:
@@ -149,11 +164,37 @@ class KnowledgeManager:
             except Exception as e:
                 logger.error(f"Migration v4 error: {e}")
 
+        # --- МИГРАЦИЯ V5 ---
+        if from_version < 5:
+            logger.info("Migrating Knowledge DB to v5: Graph, History & Embeddings")
+            try:
+                # Граф
+                cursor.execute("ALTER TABLE ai_knowledge ADD COLUMN parent_chunk_id INTEGER REFERENCES ai_knowledge(id)")
+                cursor.execute("ALTER TABLE ai_knowledge ADD COLUMN dependency_hash TEXT")
+                
+                # Вектора (RAG)
+                cursor.execute("ALTER TABLE ai_knowledge ADD COLUMN embedding BLOB")
+                
+                # История
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS chunk_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chunk_id INTEGER,
+                        recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        avg_price INTEGER,
+                        data_sufficiency TEXT,
+                        market_phase TEXT
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_history_id ON chunk_history(chunk_id)")
+            except Exception as e:
+                logger.error(f"Migration v5 error: {e}")
+
     # === Basic CRUD ===
 
     def add_knowledge(self, chunk_type: str, chunk_key: str, title: str,
                       content: Optional[Dict] = None, status: str = 'PENDING',
-                      priority: int = 1, source_hash: str = None) -> int:
+                      priority: int = 1, source_hash: str = None, parent_chunk_id: int = None) -> int:
 
         conn = self._get_connection()
         try:
@@ -167,6 +208,7 @@ class KnowledgeManager:
             existing = cursor.fetchone()
 
             if existing:
+                # При обновлении, если передан parent_chunk_id, обновляем и его
                 sql = """
                     UPDATE ai_knowledge SET
                         title = ?, content = ?, summary = NULL,
@@ -179,17 +221,25 @@ class KnowledgeManager:
                     sql += ", source_hash = ?"
                     params.append(source_hash)
                 
+                if parent_chunk_id is not None: # <--- [NEW LOGIC]
+                    sql += ", parent_chunk_id = ?"
+                    params.append(parent_chunk_id)
+                
                 sql += " WHERE id = ?"
                 params.append(existing[0])
                 
                 cursor.execute(sql, tuple(params))
                 return existing[0]
             else:
+                # При создании вставляем parent_chunk_id
                 cursor.execute("""
                     INSERT INTO ai_knowledge (
-                        chunk_type, chunk_key, title, content, status, priority, last_updated, source_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (chunk_type, chunk_key, title, content_json, status, priority, datetime.now().isoformat(), source_hash))
+                        chunk_type, chunk_key, title, content, status, priority, 
+                        last_updated, source_hash, parent_chunk_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (chunk_type, chunk_key, title, content_json, status, priority, 
+                      datetime.now().isoformat(), source_hash, parent_chunk_id)) # <--- [NEW PARAM]
+                
                 conn.commit()
                 self._stats_cache = None
                 return cursor.lastrowid
@@ -347,7 +397,7 @@ class KnowledgeManager:
 
     # === Updates ===
 
-    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None):
+    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None, embedding_blob: bytes = None):
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -355,6 +405,7 @@ class KnowledgeManager:
             if summary is None:
                 summary = content.get('summary') or content.get('analysis', {}).get('summary', '')
             
+            # Обновляем запрос, добавляя embedding
             sql = """
                 UPDATE ai_knowledge SET
                     content = ?, summary = ?, status = 'READY',
@@ -365,6 +416,10 @@ class KnowledgeManager:
             if source_hash:
                 sql += ", source_hash = ?"
                 params.append(source_hash)
+            
+            if embedding_blob:
+                sql += ", embedding = ?"
+                params.append(embedding_blob)
                 
             sql += " WHERE id = ?"
             params.append(chunk_id)
@@ -573,6 +628,125 @@ class KnowledgeManager:
             'pending_chunks': status_summary.get('PENDING', 0),
             'failed_chunks': status_summary.get('FAILED', 0)
         }
+
+    def find_relevant_chunks(self, query_text: str, limit: int = 3, min_similarity: float = 0.6) -> List[Dict]:
+        """
+        Ищет чанки по смыслу (векторам) с использованием Cosine Similarity.
+        Если векторов нет, откатывается на LIKE.
+        """
+        from app.core.text_utils import FeatureExtractor
+        import numpy as np
+        
+        # 1. Получаем вектор запроса
+        query_vec = FeatureExtractor.get_string_vector(query_text)
+        
+        # Если модель не загружена или вектора нет -> Fallback на LIKE
+        if query_vec is None:
+            return self._fallback_text_search(query_text, limit)
+            
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # 2. Выгружаем ID и Embeddings всех готовых чанков
+            # (Для базы < 10,000 чанков это очень быстро, < 100ms)
+            cursor.execute("SELECT id, embedding FROM ai_knowledge WHERE status = 'READY' AND embedding IS NOT NULL")
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return self._fallback_text_search(query_text, limit)
+            
+            # 3. Считаем Cosine Similarity через Numpy (векторизованно)
+            # Формируем матрицу векторов базы
+            db_vectors = []
+            ids = []
+            
+            for r in rows:
+                if r[1]: # Если blob не пустой
+                    vec = np.frombuffer(r[1], dtype=np.float32)
+                    if vec.shape == query_vec.shape:
+                        db_vectors.append(vec)
+                        ids.append(r[0])
+            
+            if not db_vectors:
+                return self._fallback_text_search(query_text, limit)
+
+            db_matrix = np.array(db_vectors)
+            
+            # Cosine Sim = (A . B) / (|A| * |B|)
+            # Spacy вектора обычно уже нормализованы, но для надежности посчитаем нормы
+            norm_query = np.linalg.norm(query_vec)
+            norm_db = np.linalg.norm(db_matrix, axis=1)
+            
+            dot_products = np.dot(db_matrix, query_vec)
+            similarities = dot_products / (norm_db * norm_query)
+            
+            # 4. Сортировка и фильтрация
+            # Получаем индексы топ-N результатов
+            top_indices = np.argsort(similarities)[::-1][:limit]
+            
+            results = []
+            for idx in top_indices:
+                score = similarities[idx]
+                if score >= min_similarity:
+                    chunk_id = ids[idx]
+                    # Загружаем полный чанк
+                    chunk = self.get_chunk_by_id(chunk_id)
+                    if chunk:
+                        chunk['_similarity'] = float(score) # Для дебага
+                        results.append(chunk)
+            
+            return results
+
+        except Exception as e:
+            logger.error(f"Vector search failed: {e}")
+            return self._fallback_text_search(query_text, limit)
+        finally:
+            conn.close()
+
+    def _fallback_text_search(self, query_text: str, limit: int) -> List[Dict]:
+        """Старый добрый SQL LIKE для подстраховки"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ai_knowledge 
+                WHERE status = 'READY' AND (
+                    title LIKE ? OR summary LIKE ?
+                ) ORDER BY priority DESC LIMIT ?
+            """, (f"%{query_text}%", f"%{query_text}%", limit))
+            return [self._chunk_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    # --- НОВЫЕ МЕТОДЫ: ГРАФ ---
+    def get_child_chunks(self, parent_id: int) -> List[Dict]:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM ai_knowledge WHERE parent_chunk_id = ?", (parent_id,))
+        return [self._chunk_from_row(r) for r in cursor.fetchall()]
+
+    def set_parent(self, child_id: int, parent_id: int):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE ai_knowledge SET parent_chunk_id = ? WHERE id = ?", (parent_id, child_id))
+        conn.commit()
+
+    # --- НОВЫЕ МЕТОДЫ: ИСТОРИЯ ---
+    def save_history_snapshot(self, chunk_id: int, stats: Dict):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO chunk_history (chunk_id, avg_price, data_sufficiency, market_phase)
+            VALUES (?, ?, ?, ?)
+        """, (chunk_id, stats.get('avg'), stats.get('sufficiency'), stats.get('phase')))
+        conn.commit()
+        
+    def get_chunk_history(self, chunk_id: int, limit: int = 5) -> List[Dict]:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM chunk_history WHERE chunk_id = ? ORDER BY recorded_at DESC LIMIT ?", (chunk_id, limit))
+        return [dict(r) for r in cursor.fetchall()]
 
     # === Export/Import ===
 

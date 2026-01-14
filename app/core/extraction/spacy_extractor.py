@@ -179,6 +179,10 @@ class SpacyFeatureExtractor:
                 brand_final = 'amd'
 
         model_final = model_info.get('full_model', '')
+        
+        embedding_vector = None
+        if doc and doc.has_vector:
+             embedding_vector = doc.vector
 
         semantic_data = {
             'category': category,
@@ -189,6 +193,7 @@ class SpacyFeatureExtractor:
             'brand': brand_final,
             'model': model_final,
             'features': features,
+            'embedding_vector': embedding_vector,
             'raw_tokens': lemmas
         }
 
@@ -603,7 +608,10 @@ class SpacyFeatureExtractor:
             if normalized_model:
                 parts.append(normalized_model)
 
-        parts = [p for p in parts if p] 
+        parts = [p for p in parts if p]
+
+        if len(parts) > 1:
+            parts = [parts[0]] + sorted(parts[1:])
 
         key = '_'.join(parts)
         key = re.sub(r'[^\w_]', '', key)

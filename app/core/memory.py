@@ -407,9 +407,9 @@ class MemoryManager:
 
     def add_knowledge(self, chunk_type: str, chunk_key: str, title: str,
                       content: Optional[Dict] = None, status: str = 'PENDING',
-                      priority: int = 1, source_hash: str = None) -> int:
+                      priority: int = 1, source_hash: str = None, parent_chunk_id: int = None) -> int:
         """Add or update knowledge chunk."""
-        return self.knowledge.add_knowledge(chunk_type, chunk_key, title, content, status, priority, source_hash)
+        return self.knowledge.add_knowledge(chunk_type, chunk_key, title, content, status, priority, source_hash, parent_chunk_id)
 
     def get_knowledge(self, chunk_id: Optional[int] = None,
                       chunk_key: Optional[str] = None,
@@ -428,9 +428,9 @@ class MemoryManager:
         """Delete chunk by id."""
         return self.knowledge.delete_knowledge(chunk_id)
 
-    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None):
+    def update_chunk_content(self, chunk_id: int, content: Dict, summary: Optional[str] = None, source_hash: str = None, embedding_blob: bytes = None):
         """Update chunk content."""
-        self.knowledge.update_chunk_content(chunk_id, content, summary, source_hash)
+        self.knowledge.update_chunk_content(chunk_id, content, summary, source_hash, embedding_blob)
 
     def update_chunk_status(self, chunk_id: int, status: str, progress: Optional[int] = None):
         """Update chunk status."""
@@ -461,8 +461,39 @@ class MemoryManager:
         return self.knowledge.get_statistics()
 
     def get_rag_context_for_item(self, title: str) -> Optional[Dict]:
-        """Get RAG context for item."""
-        return self.knowledge.get_rag_context_for_item(title)
+        """Get RAG context for item with Graph lookups."""
+        # 1. Базовый поиск
+        rag = self.knowledge.get_rag_context_for_item(title)
+        if not rag:
+            return None
+
+        # --- FIX START: Graph RAG (подтягивание компонентов) ---
+        # Если мы смотрим ПК (PC_BUILD), попробуем найти внутри CPU и GPU
+        knowledge_text = rag.get('knowledge', '')
+        
+        # Простая эвристика: если это PC_BUILD, ищем упоминания железа в заголовке
+        # и пытаемся найти их чанки
+        extra_context = []
+        lower_title = title.lower()
+        
+        if 'pc_build' in rag.get('chunk_key', '').lower() or 'системный' in lower_title:
+            # Ищем GPU
+            gpu_markers = ['rtx', 'gtx', 'rx', '3060', '3070', '4060', '4070', '1660']
+            for marker in gpu_markers:
+                if marker in lower_title:
+                    # Пытаемся найти чанк GPU по маркеру (упрощенно)
+                    # В идеале здесь нужен поиск через vector store, но пока через SQL LIKE
+                    found_chunks = self.knowledge.get_knowledge(chunk_type='PRODUCT', limit=5)
+                    for chunk in found_chunks:
+                        if marker in chunk['chunk_key'] and 'gpu' in chunk['chunk_key']:
+                             extra_context.append(f"Инфо о карте ({chunk['chunk_key']}): {chunk.get('summary', '')[:100]}...")
+                             break
+        
+        if extra_context:
+            rag['knowledge'] = knowledge_text + "\n\n[СВЯЗАННЫЕ КОМПОНЕНТЫ]:\n" + "\n".join(extra_context)
+        # --- FIX END ---
+
+        return rag
 
     def get_rag_status(self) -> Dict:
         """Get RAG status."""
@@ -482,10 +513,12 @@ class MemoryManager:
         """Get stats for product key (legacy method)."""
         return None
 
-    def find_similar_items(self, chunk_key: str, limit: int = 50) -> List[Dict]:
+    def find_similar_items(self, chunk_key: str, limit: int = 500) -> List[Dict]:
         """Find similar items (for cultivation prompts)."""
         items = self.raw_data.get_items_for_product_key(product_key=chunk_key)
-        return items[:limit]
+        if len(items) > limit:
+            return items[:limit] 
+        return items
 
     def export_all(self, base_dir: str = BASE_APP_DIR):
         """Export all data to JSON files."""

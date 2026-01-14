@@ -115,24 +115,12 @@ class ProjectMapper:
             else:
                 if item.endswith(".py"):
                     tree.add(f"📄 {item}")
-                elif item == "DEVELOPMENT.md":
-                    tree.add(f"📝 [green]{item}[/green]")
         return tree
 
     def run(self):
         total_start = time.time()
         console.print(Panel.fit("[bold magenta]Project Mapper[/bold magenta]"))
 
-        # --- ЭТАП 1: DEVELOPMENT.MD ---
-        if os.path.exists("DEVELOPMENT.md"):
-            with console.status("[bold green]Чтение документации..."):
-                with open("DEVELOPMENT.md", "r", encoding="utf-8") as f:
-                    self.repo_map.append(f"# DOCUMENTATION: DEVELOPMENT.md\n\n{f.read()}\n\n---")
-            console.print("✅ [bold green]ЭТАП 1:[/bold green] DEVELOPMENT.md интегрирован.")
-        else:
-            console.print("ℹ️  [bold yellow]ЭТАП 1:[/bold yellow] DEVELOPMENT.md не найден. [Пропущено]")
-
-        # --- ЭТАП 2: ДЕРЕВО ПРОЕКТА ---
         with console.status("[bold green]Сборка структуры каталогов..."):
             tree_obj = self.generate_tree(self.root_dir)
             from io import StringIO
@@ -141,7 +129,6 @@ class ProjectMapper:
             self.repo_map.append(f"# PROJECT STRUCTURE\n\n```text\n{tree_capture.file.getvalue()}\n```\n\n---")
         console.print("✅ [bold green]ЭТАП 2:[/bold green] Визуальная структура готова.")
 
-        # --- ЭТАП 3: DEAD CODE ---
         with console.status("[bold magenta]Запуск Dead Code Analysis (это может занять время)..."):
             report = self.get_deadcode_report()
             self.repo_map.append(f"# DEAD CODE ANALYSIS REPORT\n\n```text\n{report}\n```\n\n---")
@@ -151,7 +138,6 @@ class ProjectMapper:
         else:
             console.print("⚠️  [bold orange3]ЭТАП 3:[/bold orange3] Мертвый код обнаружен и внесен в отчет.")
 
-        # --- ЭТАП 4: АНАЛИЗ ФАЙЛОВ ---
         py_files = []
         for root, dirs, files in os.walk(self.root_dir):
             dirs[:] = [d for d in dirs if d not in self.ignore_list]

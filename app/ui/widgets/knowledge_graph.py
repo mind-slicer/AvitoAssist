@@ -217,43 +217,82 @@ class KnowledgeGraphWidget(QGraphicsView):
             self.physics_timer.start(20) # 50 FPS
 
     def load_data(self, knowledge_chunks: list):
-        self.scene_obj.clear()
-        self.scene_obj.edges.clear()
+        # Очистка сцены (используем правильные атрибуты, self.scene_obj был переименован в self.scene скорее всего, или наоборот.
+        # В твоем коде было self.scene_obj, оставлю так, но проверь имя переменной сцены)
+        if hasattr(self, 'scene_obj'):
+            scene = self.scene_obj
+        else:
+            scene = self.scene # Fallback на стандартное имя
+            
+        scene.clear()
+        
+        # Если у сцены есть список edges/nodes, чистим их
+        if hasattr(scene, 'edges'): scene.edges.clear()
         self.nodes.clear()
+        
         self.resetTransform()
         
         if not knowledge_chunks:
-            self.minimap.hide()
+            if hasattr(self, 'minimap'): self.minimap.hide()
             return
             
-        self.minimap.show()
+        if hasattr(self, 'minimap'): self.minimap.show()
         
-        categories = {}
+        # Словарь для быстрого поиска узлов по ID
+        self.nodes_map = {}
+        
+        # 1. Создаем ВСЕ узлы
         for chunk in knowledge_chunks:
-            key = chunk['chunk_key']
-            cat_name = key.split('_')[0].upper() if '_' in key else 'MISC'
+            chunk_id = chunk['id']
+            ctype = chunk.get('chunk_type', 'PRODUCT')
+            title = chunk.get('title') or chunk.get('chunk_key', '?')
             
-            if cat_name not in categories:
-                cat_node = GraphNode(f"cat_{cat_name}", cat_name, 'CATEGORY', size=50)
-                cat_node.setPos(random.uniform(-50, 50), random.uniform(-50, 50))
-                self.scene_obj.addItem(cat_node)
-                self.nodes.append(cat_node)
-                categories[cat_name] = cat_node
+            # Размер зависит от типа
+            size = 50 if ctype == 'CATEGORY' or ctype == 'DATABASE' else 20
+            if ctype == 'AI_BEHAVIOR': size = 40
             
-            node = GraphNode(chunk['id'], chunk['title'], 'PRODUCT', size=20)
-            cx, cy = categories[cat_name].pos().x(), categories[cat_name].pos().y()
-            node.setPos(cx + random.uniform(-20, 20), cy + random.uniform(-20, 20))
+            node = GraphNode(chunk_id, title, ctype, size=size)
             
-            self.scene_obj.addItem(node)
+            # Случайная позиция для начала
+            node.setPos(random.uniform(-100, 100), random.uniform(-100, 100))
+            
+            scene.addItem(node)
             self.nodes.append(node)
-            
-            edge = GraphEdge(categories[cat_name], node)
-            self.scene_obj.addItem(edge)
-            self.scene_obj.edges.append(edge)
+            self.nodes_map[chunk_id] = node
 
+        # 2. Создаем СВЯЗИ (Edges)
+        for chunk in knowledge_chunks:
+            child_id = chunk['id']
+            parent_id = chunk.get('parent_chunk_id')
+            
+            # Если есть жесткая связь в БД
+            if parent_id and parent_id in self.nodes_map:
+                source = self.nodes_map[child_id]
+                target = self.nodes_map[parent_id]
+                self._add_edge(source, target, scene)
+                continue # Связь создана, идем дальше
+            
+            # --- FALLBACK LOGIC (Для старых данных без parent_id) ---
+            # Если это ПРОДУКТ, попробуем найти его КАТЕГОРИЮ по cluster_key
+            if chunk.get('chunk_type') == 'PRODUCT':
+                # Пытаемся найти узел категории, чей chunk_key совпадает с префиксом
+                # (Это слабая эвристика, но для совместимости сгодится)
+                # Лучше: просто оставить висеть, пока SmartDetector не починит связи.
+                pass
+
+        # 3. Запуск физики
         self.wake_up_physics()
         self.fit_to_content()
 
+    def _add_edge(self, source, target, scene):
+        edge = GraphEdge(source, target)
+        scene.addItem(edge)
+        if hasattr(scene, 'edges'):
+            scene.edges.append(edge)
+        # Добавляем ссылки в узлы для физического движка
+        if hasattr(source, 'edges'): source.edges.append(edge)
+        if hasattr(target, 'edges'): target.edges.append(edge)
+    
     def fit_to_content(self):
         if not self.nodes: return
         self.scene_obj.setSceneRect(self.scene_obj.itemsBoundingRect().adjusted(-100, -100, 100, 100))

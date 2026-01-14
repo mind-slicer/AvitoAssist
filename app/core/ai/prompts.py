@@ -326,39 +326,46 @@ class ChunkCultivationPrompts:
 
     @staticmethod
     def build_product_cultivation_prompt(product_key: str, items: list, 
+                                         math_block: dict,
+                                         history_block: str = "",
                                          previous_context: str = "", 
                                          user_interests: str = "",
                                          user_instructions: str = "",
                                          linked_context: str = "") -> str:
         current_date = datetime.now().strftime("%d.%m.%Y")
-        
-        prices = [i.get('price', 0) for i in items if i.get('price', 0) > 100]
-        stats_hint = ""
-        if prices:
-            med = int(statistics.median(prices))
-            q25 = int(sorted(prices)[int(len(prices)*0.25)])
-            stats_hint = f"РАСЧЕТНАЯ СТАТИСТИКА: Median={med}, Q25={q25} (Твоя цель <= {q25})"
 
         items_text = ""
-        for item in items[:40]:
+        for item in items:
             items_text += f"- {item.get('title')} | {item.get('price')} руб. | {item.get('date_text')}\n"
 
         return f"""
         СЕГОДНЯ: {current_date}. РОЛЬ: Профессиональный скупщик техники. Цель — маржа 20-50%.
         ОБЪЕКТ: "{product_key}"
-        {stats_hint}
 
-        [ВХОДНЫЕ ДАННЫЕ]
-        1. ИНТЕРЕСЫ: "{user_interests}"
+        [ЖЕСТКАЯ МАТЕМАТИКА (Рассчитано алгоритмически, ИСТИНА)]
+        Всего лотов: {math_block.get('count')}
+        Минимум: {math_block.get('min')} | Максимум: {math_block.get('max')}
+        Средняя: {math_block.get('avg')} | Медиана: {math_block.get('med')}
+        Q25 (Цель покупки): {math_block.get('q25')}
+
+        [ДИНАМИКА (История прошлых анализов)]
+        {history_block if history_block else "Нет истории."}
+
+        [КОНТЕКСТ ЗАДАЧИ]
+        1. ИНТЕРЕСЫ ПОЛЬЗОВАТЕЛЯ: "{user_interests}"
         2. ИНСТРУКЦИИ: "{user_instructions}"
-        3. ЛОТЫ (raw_data):
+
+        [ВЫБОРКА ЛОТОВ (Только примеры для понимания дефектов/состояния)]
         {items_text}
 
         {ChunkCultivationPrompts._format_linked_block(linked_context)}
-        {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
 
-        ЗАДАЧА: Оцени ликвидность и цену (Q25).
-        ВЕСА: raw_data (база), linked_chunks (влияние категории), system_prompt (экспертиза).
+        [ПРОШЛЫЕ ВЫВОДЫ (Твоя память)]
+        {previous_context if previous_context else "Нет предыдущего анализа."}
+
+        ЗАДАЧА: Сравни "ЖЕСТКУЮ МАТЕМАТИКУ" с "ДИНАМИКОЙ". Изучи "ВЫБОРКУ ЛОТОВ". Оцени ликвидность и цену, сформируй финальный статус.
+
+        ВЕСА: raw_data (математика), history (тренд), linked_chunks (влияние категории), system_prompt (экспертиза).
         {ChunkCultivationPrompts.COMMON_FORMAT}
         """
     

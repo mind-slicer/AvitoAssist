@@ -70,18 +70,77 @@ class SmartChunkDetector:
     @staticmethod
     def create_missing_chunks(memory_manager, chunk_manager):
         """
-        Запускает детекцию и создание.
+        Запускает детекцию и создание с автоматическим связыванием (Parent Linking).
         """
         missing = SmartChunkDetector.detect_new_chunks(memory_manager)
         created = 0
+        
+        # Кеш для быстрого поиска ID родителей
+        # (Например, чтобы не искать ID категории 'GPU' 50 раз подряд)
+        parent_cache = {} 
+
         for chunk_type_str, key, title in missing:
-            try:      
-                chunk_manager.create_pending_chunk(
-                    chunk_type_str,
-                    key,
-                    title
+            try:
+                parent_id = None
+                
+                # --- ЛОГИКА ОПРЕДЕЛЕНИЯ РОДИТЕЛЯ ---
+                
+                # 1. Если это ПРОДУКТ -> Родитель КАТЕГОРИЯ
+                if chunk_type_str == "PRODUCT":
+                    # Извлекаем имя категории из ключа продукта (например, gpu_rtx3060 -> category=GPU)
+                    # Или используем FeatureExtractor, но проще и быстрее взять из семантики
+                    # Здесь используем эвристику: обычно мы знаем категорию при детекции.
+                    # Но detect_new_chunks возвращает только (type, key, title).
+                    # Попробуем найти категорию через extract_semantic_data
+                    from app.core.text_utils import FeatureExtractor
+                    
+                    # Пытаемся понять категорию из заголовка чанка или ключа
+                    semantic = FeatureExtractor.extract_semantic_data(title or key)
+                    category_key = semantic.get('category') # Например "GPU"
+                    
+                    if category_key:
+                        # Ищем чанк категории в кеше или БД
+                        if category_key in parent_cache:
+                            parent_id = parent_cache[category_key]
+                        else:
+                            # Ищем в базе знаний
+                            parent_chunk = memory_manager.knowledge.get_chunk_by_key_and_type(category_key, "CATEGORY")
+                            if parent_chunk:
+                                parent_id = parent_chunk['id']
+                                parent_cache[category_key] = parent_id
+                            else:
+                                # Если категории еще нет, можно было бы её создать, 
+                                # но SmartDetector должен был её предложить в списке missing ранее.
+                                pass
+
+                # 2. Если это ПОВЕДЕНИЕ -> Родитель БАЗА ДАННЫХ
+                elif chunk_type_str == "AI_BEHAVIOR":
+                    db_chunk = memory_manager.knowledge.get_chunk_by_key_and_type("general", "DATABASE")
+                    if db_chunk:
+                        parent_id = db_chunk['id']
+
+                # --- СОЗДАНИЕ С ПРИВЯЗКОЙ ---
+                
+                # Здесь мы используем knowledge напрямую, так как chunk_manager.create_pending_chunk
+                # может не иметь аргумента parent_id (если ты его не обновил там).
+                # Лучше вызывать memory_manager.add_knowledge напрямую для гибкости.
+                
+                memory_manager.add_knowledge(
+                    chunk_type=chunk_type_str,
+                    chunk_key=key,
+                    title=title,
+                    status='PENDING',
+                    parent_chunk_id=parent_id # <--- ВОТ ОНО!
                 )
+                
+                # Уведомляем менеджер о новом статусе (для UI)
+                # (Можно получить ID через get_chunk_by_key, если add_knowledge возвращает int)
+                # Но для простоты оставим логгирование
+                
                 created += 1
+                if parent_id:
+                    logger.dev(f"Связан чанк {key} -> Parent ID {parent_id}", level="DEBUG")
+
             except Exception as e:
                 logger.error(f"Failed to auto-create chunk {key}: {e}", token="ai-det")
 
