@@ -393,14 +393,8 @@ class ChunkCard(QFrame):
         footer = QHBoxLayout()
         footer.setSpacing(15)
         
-        self.reason_label = QLabel()
-        self.reason_label.setWordWrap(True)
-        self.reason_label.setMinimumWidth(10)
-        self.reason_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
-        
         self.circles = None
         
-        footer.addWidget(self.reason_label, 1, Qt.AlignmentFlag.AlignBaseline)
         self.content_ui.addLayout(footer)
         
         self.main_layout.addWidget(self.content_container)
@@ -497,23 +491,36 @@ class ChunkCard(QFrame):
             except: content = {}
         if not content: content = {}
         
-        # --- ИЗМЕНЕНИЕ: Статус в бэйдже ---
-        display_status = content.get('display_status', 'N/A')
-        # Убираем CapsLock, делаем Capitalize
-        clean_status = display_status.replace('_', ' ').strip()
-        if len(clean_status) > 1:
-            clean_status = clean_status[0].upper() + clean_status[1:].lower()
-            
-        self.status_badge.setText(clean_status)
-        self.status_badge.setVisible(True)
-        
-        # Цвет бэйджа в зависимости от текста (опционально)
-        # Если статус содержит "Low data" или "Warn" -> Yellow, иначе Green
-        if "data" in display_status.lower() or "мало" in display_status.lower():
-             self.status_badge.setStyleSheet(f"background-color: {Palette.with_alpha(Palette.WARNING, 0.2)}; color: {Palette.WARNING}; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold;")
+        target_status = content.get('target_status', '')
+        display_text = content.get('display_status', target_status) or 'N/A'
+
+        # Цвета и текст для новых статусов
+        status_styles = {
+            'NO_INTEREST': {
+                'text': 'НЕТ ИНТЕРЕСА', 
+                'style': f"background-color: {Palette.with_alpha(Palette.BG_DARK, 0.5)}; color: {Palette.TEXT_MUTED}; border: 1px solid {Palette.BORDER_SOFT};"
+            },
+            'HAS_OFFERS': {
+                'text': 'ЕСТЬ ПРЕДЛОЖЕНИЯ', 
+                'style': f"background-color: {Palette.with_alpha(Palette.WARNING, 0.15)}; color: {Palette.WARNING}; border: 1px solid {Palette.WARNING};"
+            },
+            'MAX_BENEFIT': {
+                'text': 'ВЫГОДНО', 
+                'style': f"background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)}; color: {Palette.SUCCESS}; border: 1px solid {Palette.SUCCESS};"
+            }
+        }
+
+        # Выбираем стиль
+        st = status_styles.get(target_status)
+        if st:
+            self.status_badge.setText(st['text'])
+            self.status_badge.setStyleSheet(st['style'] + " border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold;")
         else:
-             self.status_badge.setStyleSheet(f"background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)}; color: {Palette.SUCCESS}; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold;")
-        # ----------------------------------
+            # Fallback для старых статусов
+            self.status_badge.setText(display_text[:20])
+            self.status_badge.setStyleSheet(f"background-color: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border-radius: 4px; padding: 2px 6px; font-size: 10px;")
+        
+        self.status_badge.setVisible(True)
 
         # Thoughts
         thoughts = content.get('hidden_thought_process', '')
@@ -530,14 +537,6 @@ class ChunkCard(QFrame):
         if thoughts:
             self.thought_box = CollapsibleThought(thoughts)
             self.content_ui.insertWidget(0, self.thought_box)
-        
-        # Reason
-        reason_text = content.get('formation_reason') or ""
-        if reason_text:
-            # Делаем слово "ПРИЧИНА:" жирным для акцента
-            self.reason_label.setText(f"<b>ПРИЧИНА:</b> {reason_text}")
-        else:
-            self.reason_label.setText("")
         
         # Circles
         weights = content.get('influence_weights', {})
@@ -879,7 +878,7 @@ class AIMemoryPanel(QWidget):
 
         p_header = QHBoxLayout()
         self.prompt_combo = QComboBox()
-        self.prompt_combo.addItems(["🧠 Анализ объявлений", "🕷 Нейро-фильтр", "💬 Личность Чата"])
+        self.prompt_combo.addItems(["🧠 Анализ объявлений", "🕷 Нейро-фильтр", "💬 Личность Чата", "📚 Формирование Памяти"]) 
         self.prompt_combo.setStyleSheet(Components.styled_combobox())
         self.prompt_combo.currentIndexChanged.connect(self._on_prompt_changed)
         p_header.addWidget(self.prompt_combo, 1)
@@ -1026,7 +1025,10 @@ class AIMemoryPanel(QWidget):
     # --- Prompts & Settings Logic (Same as before) ---
 
     def _get_prompt_key(self, idx):
-        return ["analysis_behavior", "filter_behavior", "chat_behavior"][idx]
+        keys = ["analysis_behavior", "filter_behavior", "chat_behavior", "memory_generation_behavior"]
+        if 0 <= idx < len(keys):
+            return keys[idx]
+        return keys[0]
 
     def _on_prompt_changed(self, idx):
         self.current_prompt_key = self._get_prompt_key(idx)
@@ -1038,7 +1040,8 @@ class AIMemoryPanel(QWidget):
         desc_map = {
             "analysis_behavior": "Роль и стратегия при анализе таблицы. {interests_block} будет заменен на ваши интересы.",
             "filter_behavior": "Логика нейро-фильтра.",
-            "chat_behavior": "Системная инструкция для чата."
+            "chat_behavior": "Системная инструкция для чата.",
+            "memory_generation_behavior": "Системная роль 'Архивариуса'. Определяет, как ИИ сжимает данные в факты."
         }
         self.prompt_desc_lbl.setText(desc_map.get(self.current_prompt_key, ""))
 

@@ -54,11 +54,25 @@ class PromptManager:
 Отвечай кратко, по делу, без воды. Используй форматирование Markdown.
 """
 
+    # --- 4. MEMORY PROMPT ---
+    DEFAULT_MEMORY_BEHAVIOR = """Ты — объективный архивариус и аналитик базы данных.
+Твоя задача — не покупать, а фиксировать факты. Ты создаешь "слепок памяти" для будущих решений.
+
+ТВОИ ПРИНЦИПЫ:
+1. Опора на Raw Data (сырые данные): это твой главный источник. Если в данных нет дефектов, не выдумывай их.
+2. Игнорирование маркетинга: Слова "Игровой", "Мощный", "Топ" для тебя шум. Тебе важны цифры: цена, дата, характеристики.
+3. Связи (Context): Используй переданный контекст (родительскую категорию), чтобы понять, насколько текущий товар выбивается из общей картины или образует важные факты.
+4. Интересы (Interests): Сравнивай объект с интересами пользователя. Если это "RTX 4090", а пользователь ищет "офисные затычки" — интерес низкий.
+
+ТВОЯ ЦЕЛЬ:
+Сжать массив объявлений в сухую статистику: реальный диапазон цен (без оверпрайса), дефекты и "боль" (из описаний), уровень предложения (дефицит/профицит)."""
+
     def __init__(self):
         self.prompts = {
             "analysis_behavior": self.DEFAULT_ANALYSIS_BEHAVIOR,
             "filter_behavior": self.DEFAULT_FILTER_BEHAVIOR,
-            "chat_behavior": self.DEFAULT_CHAT_BEHAVIOR
+            "chat_behavior": self.DEFAULT_CHAT_BEHAVIOR,
+            "memory_generation_behavior": self.DEFAULT_MEMORY_BEHAVIOR
         }
         self.load()
 
@@ -92,7 +106,8 @@ class PromptManager:
         self.prompts = {
             "analysis_behavior": self.DEFAULT_ANALYSIS_BEHAVIOR,
             "filter_behavior": self.DEFAULT_FILTER_BEHAVIOR,
-            "chat_behavior": self.DEFAULT_CHAT_BEHAVIOR
+            "chat_behavior": self.DEFAULT_CHAT_BEHAVIOR,
+            "memory_generation_behavior": self.DEFAULT_MEMORY_BEHAVIOR
         }
         self.save()
 
@@ -294,27 +309,32 @@ class PromptBuilder:
 
 class ChunkCultivationPrompts:
     COMMON_FORMAT = """
-    ВАЖНО: Твой ответ должен быть СТРОГО валидным JSON. Без Markdown блоков.
+    ВАЖНО: Твой ответ должен быть СТРОГО валидным JSON. Без Markdown.
     
     СТРУКТУРА JSON:
-    {
-        "display_status": "Краткий статус (2-4 слова, например: 'Рынок перегрет' или 'Отличная точка входа'). Используй CapsLock для важных статусов",
-        "main_description": "Суть анализа. Факты, цены, ликвидность. Для человека.",
-        "hidden_thought_process": "Твои скрытые мысли. Анализ аномалий, почему сформировался именно такой статус, связь с другими чанками.",
-        "formation_reason": "Почему этот кластер вообще существует?",
+    {   
+        "target_status": "NO_INTEREST" | "HAS_OFFERS" | "MAX_BENEFIT",
+        "display_status": "Текст для бейджа (например: 'Дефицит', 'Оверпрайс', 'Выгодная ниша')",
+        "main_description": "Сухая аналитическая сводка. Разброс цен, состояние рынка, типичные дефекты.",
+        "hidden_thought_process": "Твои скрытые выводы. Почему ты выбрал такой статус? Какие аномалии заметил? Какова связь по весам влияния (influence_weights)?",
         "data_sufficiency": "LOW" | "MEDIUM" | "HIGH",
         "influence_weights": {
-            "system_prompt": 10,    // % влияния твоей базовой роли
-            "user_instructions": 0, // % влияния инструкций пользователя (если были)
-            "user_interests": 0,    // % влияния интересов пользователя
-            "linked_chunks": 0,     // % влияния прошлых знаний
-            "raw_data": 0          // % влияния самих данных
+            "raw_data": 80,         // % опоры на переданный список товаров
+            "system_prompt": 10,    // % влияния роли Архивариуса
+            "user_instructions": 0, // % влияния ручных инструкций
+            "user_interests": 5,    // % совпадения с интересами пользователя
+            "linked_context": 5     // % влияния родительских знаний (категории/БД)
         },
         "price_analysis": {
             "avg": 0, "med": 0, "q25": 0,
             "trend": "up" | "down" | "stable"
         }
     }
+
+    ЗНАЧЕНИЯ СТАТУСОВ:
+    - NO_INTEREST: Товар не соответствует интересам, цены завышены, или данных слишком мало.
+    - HAS_OFFERS: Рабочая лошадка. Есть предложения, цены в рынке.
+    - MAX_BENEFIT: Аномально низкие цены , дефицитный товар или идеальное попадание в интересы.
     """
 
     @staticmethod
@@ -325,137 +345,140 @@ class ChunkCultivationPrompts:
         (Используй это для сравнения. Если текущие данные противоречат контексту — это аномалия)."""
 
     @staticmethod
-    def build_product_cultivation_prompt(product_key: str, items: list, 
+    def _get_system_behavior():
+        return prompt_manager.get("memory_generation_behavior")
+
+    @staticmethod
+    def build_product_cultivation_prompt(chunk_key: str, items: list,
                                          math_block: dict,
                                          history_block: str = "",
-                                         previous_context: str = "", 
+                                         previous_context: str = "",
                                          user_interests: str = "",
                                          user_instructions: str = "",
                                          linked_context: str = "") -> str:
-        current_date = datetime.now().strftime("%d.%m.%Y")
-
+        
+        # Формируем список товаров (Raw Data)
         items_text = ""
-        for item in items:
-            items_text += f"- {item.get('title')} | {item.get('price')} руб. | {item.get('date_text')}\n"
+        # Берем больше примеров, но короче
+        for item in items[:25]: 
+            # Очищаем от лишнего, чтобы влезло в контекст
+            title = item.get('title', '')[:60]
+            price = item.get('price', 0)
+            desc_snippet = item.get('description', '').replace('\n', ' ')[:100]
+            items_text += f"- {title} | {price}р | {desc_snippet}\n"
 
         return f"""
-        СЕГОДНЯ: {current_date}. РОЛЬ: Профессиональный скупщик техники. Цель — маржа 20-50%.
-        ОБЪЕКТ: "{product_key}"
+        {ChunkCultivationPrompts._get_system_behavior()}
 
-        [ЖЕСТКАЯ МАТЕМАТИКА (Рассчитано алгоритмически, ИСТИНА)]
-        Всего лотов: {math_block.get('count')}
-        Минимум: {math_block.get('min')} | Максимум: {math_block.get('max')}
-        Средняя: {math_block.get('avg')} | Медиана: {math_block.get('med')}
-        Q25 (Цель покупки): {math_block.get('q25')}
-
-        [ДИНАМИКА (История прошлых анализов)]
-        {history_block if history_block else "Нет истории."}
-
-        [КОНТЕКСТ ЗАДАЧИ]
-        1. ИНТЕРЕСЫ ПОЛЬЗОВАТЕЛЯ: "{user_interests}"
-        2. ИНСТРУКЦИИ: "{user_instructions}"
-
-        [ВЫБОРКА ЛОТОВ (Только примеры для понимания дефектов/состояния)]
+        ОБЪЕКТ АНАЛИЗА: Продукт "{chunk_key}".
+        
+        [ВХОДНЫЕ ДАННЫЕ (Raw Data)]
+        Статистика: Min={math_block.get('min')}, Max={math_block.get('max')}, Med={math_block.get('med')}, Q25={math_block.get('q25')}, Count={math_block.get('count')}.
+        Выборка (первые 25):
         {items_text}
 
-        {ChunkCultivationPrompts._format_linked_block(linked_context)}
+        [КОНТЕКСТНАЯ ПАМЯТЬ (Linked Context)]
+        {linked_context if linked_context else "Нет родительского контекста."}
 
-        [ПРОШЛЫЕ ВЫВОДЫ (Твоя память)]
-        {previous_context if previous_context else "Нет предыдущего анализа."}
+        [ИНТЕРЕСЫ ПОЛЬЗОВАТЕЛЯ]
+        "{user_interests}"
+
+        [ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]
+        "{user_instructions}"
+
+        [ИСТОРИЯ (Предыдущий слепок)]
+        {previous_context if previous_context else "Первичный анализ."}
 
         ЗАДАЧА:
-        Твоя главная цель — найти ВЫГОДУ. 
-        Если цена товара (Q25) ниже рыночной медианы на 20-50% — это наша цель!
-        Не пиши размыто "состояние неизвестно" — пиши "Риск состояния, но цена оправдывает".
-        Сравни "ЖЕСТКУЮ МАТЕМАТИКУ" с "ДИНАМИКОЙ". Изучи "ВЫБОРКУ ЛОТОВ". Оцени ликвидность и предложение, сформируй финальный статус.
+        1. Оцени выборку. Много ли мусора? 
+        2. Сравни цены с интересами. Попадаем ли мы в бюджет?
+        3. Определи target_status. Если товар редкий и дешевый -> MAX_BENEFIT. Если дорогой и скучный -> NO_INTEREST.
+        4. Заполни influence_weights честно. Если ты опирался только на таблицу, raw_data = 90+. Если данные скудные, но "Интересы" говорят "надо брать", повысь вес user_interests.
 
-        ВЕСА: raw_data (математика), history (тренд), linked_chunks (влияние категории), system_prompt (экспертиза).
         {ChunkCultivationPrompts.COMMON_FORMAT}
         """
     
     @staticmethod
-    def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict], 
+    def build_category_cultivation_prompt(category_key: str, sub_products: list,
                                           previous_context: str = "",
                                           user_interests: str = "",
                                           linked_context: str = "",
                                           raw_fallback: str = "") -> str:
-        current_date = datetime.now().strftime("%d.%m.%Y")
-
+        
         products_text = ""
         if sub_products:
+            products_text = "Сформированные продукты внутри категории:\n"
             for p in sub_products:
                 content = p.get('content') or {}
                 if isinstance(content, str):
                     try: content = json.loads(content)
                     except: content = {}
+                
+                # Извлекаем данные из дочерних чанков
                 status = content.get('display_status', 'N/A')
-                desc = content.get('main_description', '')[:100]
-                products_text += f"- {p.get('chunk_key')}: {status} | {desc}\n"
-        else:
-            # Если нет продуктов, используем fallback или сообщение об отсутствии
-            if raw_fallback:
-                products_text = raw_fallback
-            else:
-                products_text = "НЕТ ГОТОВЫХ ОТЧЕТОВ О ТОВАРАХ (Sub-chunks missing)."
-
-        anti_hallucination_instruction = (
-            f"ВНИМАНИЕ: Твоя тема СТРОГО ограничена категорией '{category_key}'.\n"
-            f"Даже если в 'ИНТЕРЕСАХ ПОЛЬЗОВАТЕЛЯ' упомянуты другие товары (например, видеокарты), "
-            f"НЕ ПИШИ О НИХ, если они не относятся к '{category_key}'.\n"
-            f"Если товаров в списке (raw_data) нет или мало — пиши 'Недостаточно данных для анализа', не выдумывай тренды."
-        )
+                stats = content.get('price_analysis', {})
+                avg = stats.get('avg', 0)
+                products_text += f"- {p.get('chunk_key')}: {status} (Avg: {avg}р)\n"
+        
+        if raw_fallback:
+            products_text += f"\n[RAW DATA FALLBACK]\n{raw_fallback}"
 
         return f"""
-        СЕГОДНЯ: {current_date}. РОЛЬ: Узкопрофильный аналитик категории "{category_key}".
+        {ChunkCultivationPrompts._get_system_behavior()}
 
-        [ИНТЕРЕСЫ] "{user_interests}"
-        [СОСТАВ (raw_data / sub_chunks)]
-        {products_text}
+        ОБЪЕКТ АНАЛИЗА: Категория "{category_key}".
 
-        {ChunkCultivationPrompts._format_linked_block(linked_context)}
-        {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
+        [СОСТАВ (Дети + Raw Data)]
+        {products_text if products_text else "Данных нет."}
 
-        [СТРОГИЕ ОГРАНИЧЕНИЯ]
-        {anti_hallucination_instruction}
+        [КОНТЕКСТНАЯ ПАМЯТЬ]
+        {linked_context}
 
-        ЗАДАЧА: Дай обзор ТОЛЬКО по категории "{category_key}". Оцени спрос и цены именно здесь.
-        ВЕСА: raw_data (продукты внутри), linked_chunks (глобальный контекст рынка из Базы).
+        [ИНТЕРЕСЫ]
+        "{user_interests}"
+
+        ЗАДАЧА:
+        Создай обзор категории. Какие продукты (или группы из Raw Data) самые перспективные?
+        Статус CATEGORY чанка должен отражать общее "здоровье" категории.
+        HAS_OFFERS — если много товаров. MAX_BENEFIT — если много "зеленых" продуктов внутри.
+        
         {ChunkCultivationPrompts.COMMON_FORMAT}
         """
     
     @staticmethod
-    def build_database_cultivation_prompt(db_stats: dict, vocabulary: list, 
+    def build_database_cultivation_prompt(db_stats: dict, vocabulary: list,
                                           linked_context: str = "") -> str:
-        vocab_str = ", ".join(vocabulary[:60])
-
+        # Для DATABASE чанков
         return f"""
-        ГЛОБАЛЬНЫЙ АНАЛИЗ БАЗЫ.
-        Записей: {db_stats.get('total_items')}.
-        Топ слов (raw_data): {vocab_str}
-
-        {ChunkCultivationPrompts._format_linked_block(linked_context)}
+        {ChunkCultivationPrompts._get_system_behavior()}
+        ОБЪЕКТ: Глобальный срез базы данных (или тематический срез).
         
-        ЗАДАЧА: Опиши наполнение базы. 
-        СВЯЗЬ: В linked_chunks передан портрет пользователя. Ответь: база соответствует интересам этого пользователя?
+        Статистика: {db_stats}
+        Ключевые слова (Топ-60): {", ".join(vocabulary)}
+        
         {ChunkCultivationPrompts.COMMON_FORMAT}
         """
         
     @staticmethod
-    def build_ai_behavior_cultivation_prompt(actions_log: list, user_interests: str = "", 
+    def build_ai_behavior_cultivation_prompt(actions_log: list, user_interests: str = "",
                                              previous_context: str = "",
-                                             linked_context: str = "") -> str: # <-- NEW ARG
-        log_text = "\n".join([f"- {a.get('action_type')}: {a.get('details')}" for a in actions_log[-40:]])
+                                             linked_context: str = "") -> str:
+        # Для AI_BEHAVIOR чанков - фокус на мета-анализе
+        log_text = "\n".join([f"- {a.get('action_type')}: {a.get('details')}" for a in actions_log[-50:]])
         
         return f"""
-        РОЛЬ: Аналитик поведения пользователя.
-        ИНТЕРЕСЫ: "{user_interests}"
-        ДЕЙСТВИЯ (raw_data):
+        ТЫ — МОДУЛЬ САМОКОРРЕКЦИИ НЕЙРОСЕТИ.
+        Твоя задача — не анализировать рынок, а анализировать СВОЮ работу.
+        
+        [ЛОГ ДЕЙСТВИЙ И РЕАКЦИЙ]
         {log_text}
         
-        {ChunkCultivationPrompts._format_linked_block(linked_context)}
-        {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
-
-        ЗАДАЧА: Сравни слова и действия.
-        СВЯЗЬ: В linked_chunks передан обзор Базы Данных. Понимает ли пользователь рынок?
+        [ИНТЕРЕСЫ ПОЛЬЗОВАТЕЛЯ]
+        {user_interests}
+        
+        ЗАДАЧА:
+        Найди паттерны ошибок. Где мы предлагали NO_INTEREST, а пользователь кликал? Где мы говорили MAX_BENEFIT, а пользователь игнорировал?
+        Сформируй "main_description" как инструкцию для будущих сессий: "Будь осторожнее с ноутбуками HP" или "Пользователь любит старые ThinkPad".
+        
         {ChunkCultivationPrompts.COMMON_FORMAT}
         """
