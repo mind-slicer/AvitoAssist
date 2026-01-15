@@ -90,11 +90,11 @@ class InfluenceCircles(QWidget):
         self.hovered_index = -1
         
         self.mapping = [
-            ("raw_data", "#E0E0E0", "Сырые данные", "Фактическая статистика лотов и цен в БД."),
-            ("system_prompt", "#9C27B0", "Роль", "Базовая роль нейросети заданная в главном промпте."),
-            ("user_instructions", "#FA8C16", "Инструкции", "Ваши ручные указания для этого чанка."),
-            ("user_interests", "#1890FF", "Интересы", "Совпадение с вашим списком интересов."),
-            ("linked_chunks", "#A0D911", "Контекст", "Влияние родительских или связанных знаний.")
+            ("raw_data", "#E0E0E0", "Сырые данные", "Фактическая статистика."),
+            ("system_prompt", "#9C27B0", "Роль", "Базовая роль."),
+            ("user_instructions", "#FA8C16", "Инструкции", "Ручные указания."),
+            ("user_interests", "#1890FF", "Интересы", "Совпадение с интересами."),
+            ("linked_context", "#A0D911", "Контекст", "Влияние родителя.")
         ]
         self.setMouseTracking(True)
 
@@ -490,37 +490,26 @@ class ChunkCard(QFrame):
             try: content = json.loads(content)
             except: content = {}
         if not content: content = {}
-        
-        target_status = content.get('target_status', '')
-        display_text = content.get('display_status', target_status) or 'N/A'
 
-        # Цвета и текст для новых статусов
+        # СТАТУСЫ (Только 3 вида)
         status_styles = {
-            'NO_INTEREST': {
-                'text': 'НЕТ ИНТЕРЕСА', 
-                'style': f"background-color: {Palette.with_alpha(Palette.BG_DARK, 0.5)}; color: {Palette.TEXT_MUTED}; border: 1px solid {Palette.BORDER_SOFT};"
-            },
-            'HAS_OFFERS': {
-                'text': 'ЕСТЬ ПРЕДЛОЖЕНИЯ', 
-                'style': f"background-color: {Palette.with_alpha(Palette.WARNING, 0.15)}; color: {Palette.WARNING}; border: 1px solid {Palette.WARNING};"
-            },
-            'MAX_BENEFIT': {
-                'text': 'ВЫГОДНО', 
-                'style': f"background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)}; color: {Palette.SUCCESS}; border: 1px solid {Palette.SUCCESS};"
-            }
+            'NO_INTEREST': { 'text': 'НЕТ ИНТЕРЕСА', 'color': Palette.TEXT_MUTED },
+            'HAS_OFFERS': { 'text': 'ЕСТЬ ПРЕДЛОЖЕНИЯ', 'color': Palette.WARNING },
+            'MAX_BENEFIT': { 'text': 'МАКС. ВЫГОДА', 'color': Palette.SUCCESS }
         }
-
-        # Выбираем стиль
-        st = status_styles.get(target_status)
-        if st:
-            self.status_badge.setText(st['text'])
-            self.status_badge.setStyleSheet(st['style'] + " border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold;")
-        else:
-            # Fallback для старых статусов
-            self.status_badge.setText(display_text[:20])
-            self.status_badge.setStyleSheet(f"background-color: {Palette.BG_DARK_2}; color: {Palette.TEXT}; border-radius: 4px; padding: 2px 6px; font-size: 10px;")
         
-        self.status_badge.setVisible(True)
+        target_status = content.get('target_status', 'NO_INTEREST')
+        st = status_styles.get(target_status, status_styles['NO_INTEREST'])
+        
+        self.status_badge.setText(st['text'])
+        c = st['color']
+        self.status_badge.setStyleSheet(f"background-color: {Palette.with_alpha(c, 0.15)}; color: {c}; border: 1px solid {c}; border-radius: 4px; padding: 2px 6px; font-weight: bold; font-size: 10px;")
+        
+        # СКРЫВАЕМ СТАТУС ДЛЯ BEHAVIOR
+        if chunk_type == "AI_BEHAVIOR":
+            self.status_badge.setVisible(False)
+        else:
+            self.status_badge.setVisible(True)
 
         # Thoughts
         thoughts = content.get('hidden_thought_process', '')

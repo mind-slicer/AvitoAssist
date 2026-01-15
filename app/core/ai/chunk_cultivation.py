@@ -4,7 +4,6 @@ from typing import Optional, Dict
 from datetime import datetime
 import json
 import random
-import statistics
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
@@ -600,13 +599,13 @@ class ChunkCultivationManager(QObject):
         return ""
 
     def _build_cultivation_prompt(self, chunk: Dict) -> str:
-        import statistics # Убедись что импорт есть в файле
-        
+        import statistics
+
         chunk_type = str(chunk.get("chunk_type", "")).upper()
         chunk_id = chunk.get("id")
         chunk_key = chunk.get("chunk_key")
-        
-        # 1. Загрузка истории (предыдущий контент чанка)
+
+        # 1. История
         prev_summary = ""
         if chunk.get("content"):
              try:
@@ -614,7 +613,7 @@ class ChunkCultivationManager(QObject):
                  prev_summary = prev_content.get("main_description") or prev_content.get("summary") or ""
              except: pass
 
-        # 2. Загрузка интересов пользователя
+        # 2. Интересы
         user_interests = ""
         try:
             import os
@@ -624,10 +623,8 @@ class ChunkCultivationManager(QObject):
                 with open(path, "r", encoding="utf-8") as f: user_interests = f.read().strip()
         except: pass
 
-        # --- 3. ЛОГИКА СВЯЗЕЙ (НОВАЯ) ---
+        # 3. Контекст (Linked Context)
         linked_context = ""
-        
-        # Пытаемся получить родителя из БД (Честная связь)
         parent_id = chunk.get('parent_chunk_id')
         if parent_id:
             parent_chunk = self.memory.get_chunk_by_id(parent_id)
@@ -636,37 +633,17 @@ class ChunkCultivationManager(QObject):
                 if isinstance(p_content, str):
                     try: p_content = json.loads(p_content)
                     except: p_content = {}
-                elif not p_content:
-                    p_content = {}
-                
-                # Формируем контекст из родителя
-                p_status = p_content.get('display_status', 'N/A')
+                elif not p_content: p_content = {}
+                p_status = p_content.get('target_status', 'N/A') # Используем новый статус
                 p_desc = p_content.get('main_description', '') or p_content.get('summary', '')
-                linked_context = f"[РОДИТЕЛЬСКИЙ КОНТЕКСТ ({parent_chunk.get('chunk_type')})]\nСтатус: {p_status}\nСуть: {p_desc[:500]}..."
+                linked_context = f"[РОДИТЕЛЬ: {parent_chunk.get('title')}]\nСтатус: {p_status}\nСуть: {p_desc[:600]}..."
 
-        # Fallback для глобальных типов, если родитель не задан (для обратной совместимости)
-        if not linked_context:
-            if chunk_type == "CATEGORY":
-                linked_context = self._extract_chunk_text("general", "DATABASE")
-            elif chunk_type == "DATABASE":
-                linked_context = self._extract_chunk_text("user_behavior", "AI_BEHAVIOR")
-            elif chunk_type == "AI_BEHAVIOR":
-                linked_context = self._extract_chunk_text("general", "DATABASE")
-
-        # --- 4. СБОРКА ПРОМПТА ---
-
+        # === PRODUCT ===
         if chunk_type == "PRODUCT":
-            # 1. HARD MATH
             raw_items = self.memory.find_similar_items(chunk_key, limit=1000)
-            
-            # Фильтруем явные выбросы
             valid_prices = [i['price'] for i in raw_items if i.get('price', 0) > 100 and not i.get('is_outlier', 0)]
             
-            math_block = {
-                "count": len(valid_prices),
-                "min": 0, "max": 0, "avg": 0, "med": 0, "q25": 0
-            }
-            
+            math_block = {"count": len(valid_prices), "min": 0, "max": 0, "avg": 0, "med": 0, "q25": 0}
             if valid_prices:
                 math_block["min"] = min(valid_prices)
                 math_block["max"] = max(valid_prices)
@@ -674,39 +651,16 @@ class ChunkCultivationManager(QObject):
                 math_block["med"] = int(statistics.median(valid_prices))
                 math_block["q25"] = int(sorted(valid_prices)[int(len(valid_prices)*0.25)])
 
-            # 2. SMART SAMPLING
-            sorted_items = sorted(raw_items, key=lambda x: x['price'])
-            sample_items = []
-            
-            if sorted_items:
-                sample_items.extend([i for i in sorted_items if i['price'] > 100][:3]) # Cheap
-                sample_items.extend(sorted_items[-3:]) # Expensive
-                mid = len(sorted_items) // 2
-                sample_items.extend(sorted_items[max(0, mid-1):min(len(sorted_items), mid+2)]) # Median
-                
-                # Fresh
-                by_date = sorted(raw_items, key=lambda x: x.get('analyzed_at', ''), reverse=True)
-                sample_items.extend(by_date[:5])
-            
-            # Dedup samples
-            seen_ids = set()
-            unique_samples = []
-            for item in sample_items:
-                if item['id'] not in seen_ids:
-                    unique_samples.append(item)
-                    seen_ids.add(item['id'])
-
-            # 3. HISTORY
+            # История цен
             history_text = ""
             try:
                 if hasattr(self.memory.knowledge, 'get_chunk_history'):
                     history = self.memory.knowledge.get_chunk_history(chunk_id)
                     history_text = "\n".join([f"{h['recorded_at'][:10]}: Avg={h['avg_price']}" for h in history])
-            except Exception: pass
+            except: pass
 
             return ChunkCultivationPrompts.build_product_cultivation_prompt(
-                chunk_key, 
-                unique_samples, 
+                chunk_key, raw_items,
                 math_block=math_block,
                 history_block=history_text,
                 previous_context=prev_summary,
@@ -715,50 +669,56 @@ class ChunkCultivationManager(QObject):
                 linked_context=linked_context
             )
 
+        # === CATEGORY ===
         if chunk_type == "CATEGORY":
             all_chunks = self.memory.knowledge.get_chunks_by_type("PRODUCT")
-            
-            # 1. Ищем детей по parent_id
+            # Ищем детей строго по parent_id
             sub_chunks = [c for c in all_chunks if c.get('parent_chunk_id') == chunk_id and c.get('status') == 'READY']
             
-            # 2. Если нет, ищем по текстовому ключу (страховка)
+            # Fallback для старых данных: ищем по ключу
             if not sub_chunks:
                 sub_chunks = [c for c in all_chunks if c.get('chunk_key', '').startswith(chunk_key) and c.get('status') == 'READY']
 
-            # 3. FALLBACK: Если нет готовых чанков продуктов, собираем статистику из Raw Data
-            raw_fallback_info = ""
+            # Fallback на сырые данные, если нет чанков
+            raw_fallback = ""
             if not sub_chunks:
-                try:
-                    # Считаем количество товаров в этой категории из сырых данных
-                    raw_count = self.memory.raw_data.get_raw_items_count(category=chunk_key)
-                    if raw_count > 0:
-                        raw_fallback_info = f"\n[RAW DATA STATISTICS]\nВ базе найдено {raw_count} сырых объявлений категории '{chunk_key}', но детальные отчеты (PRODUCT chunks) еще не сформированы. Сделай общий вывод на основе количества."
-                except Exception: pass
+                count = self.memory.raw_data.get_raw_items_count(category=chunk_key)
+                if count > 0:
+                    raw_fallback = f"Найдено {count} сырых объявлений. Детального анализа пока нет."
 
             return ChunkCultivationPrompts.build_category_cultivation_prompt(
                 chunk_key, sub_chunks,
                 previous_context=prev_summary,
                 user_interests=user_interests,
                 linked_context=linked_context,
-                raw_fallback=raw_fallback_info
+                raw_fallback=raw_fallback
             )
 
+        # === DATABASE ===
         if chunk_type == "DATABASE":
+            # Собираем статистику
             raw_stats = self.memory.get_raw_data_statistics()
+            # Если это тематическая БД (db_gpu), можно было бы отфильтровать, 
+            # но пока берем общую статистику + словарь
+            
             db_stats = {
                 "total_items": raw_stats.get("total_items", 0),
-                "total_categories": raw_stats.get("total_categories", 0)
+                "total_categories": raw_stats.get("total_categories", 0),
+                "avg_price": int(raw_stats.get("avg_price", 0))
             }
-            vocab = self.memory.raw_data.get_database_vocabulary(limit=60)
+            vocab = self.memory.raw_data.get_database_vocabulary(limit=50)
+            
             return ChunkCultivationPrompts.build_database_cultivation_prompt(
-                db_stats, vocab, 
-                linked_context=linked_context
+                db_stats, vocab,
+                linked_context=linked_context,
+                topic=chunk_key
             )
 
+        # === AI_BEHAVIOR ===
         if chunk_type == "AI_BEHAVIOR":
             actions = self.memory.raw_data.get_recent_actions(limit=50)
             return ChunkCultivationPrompts.build_ai_behavior_cultivation_prompt(
-                actions, 
+                actions,
                 user_interests=user_interests,
                 previous_context=prev_summary,
                 linked_context=linked_context
