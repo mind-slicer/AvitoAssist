@@ -377,22 +377,26 @@ class ChunkCultivationPrompts:
     def build_category_cultivation_prompt(category_key: str, sub_products: List[Dict], 
                                           previous_context: str = "",
                                           user_interests: str = "",
-                                          linked_context: str = "") -> str: # <-- NEW ARG
+                                          linked_context: str = "",
+                                          raw_fallback: str = "") -> str:
         current_date = datetime.now().strftime("%d.%m.%Y")
 
         products_text = ""
-        # Если продуктов нет, даем явный сигнал ИИ, что категория пуста
-        if not sub_products:
-            products_text = "НЕТ ДАННЫХ О ТОВАРАХ В ЭТОЙ КАТЕГОРИИ."
-        else:
+        if sub_products:
             for p in sub_products:
                 content = p.get('content') or {}
                 if isinstance(content, str):
                     try: content = json.loads(content)
                     except: content = {}
                 status = content.get('display_status', 'N/A')
-                desc = content.get('main_description', '')[:100] # Чуть больше контекста
+                desc = content.get('main_description', '')[:100]
                 products_text += f"- {p.get('chunk_key')}: {status} | {desc}\n"
+        else:
+            # Если нет продуктов, используем fallback или сообщение об отсутствии
+            if raw_fallback:
+                products_text = raw_fallback
+            else:
+                products_text = "НЕТ ГОТОВЫХ ОТЧЕТОВ О ТОВАРАХ (Sub-chunks missing)."
 
         anti_hallucination_instruction = (
             f"ВНИМАНИЕ: Твоя тема СТРОГО ограничена категорией '{category_key}'.\n"
@@ -405,7 +409,7 @@ class ChunkCultivationPrompts:
         СЕГОДНЯ: {current_date}. РОЛЬ: Узкопрофильный аналитик категории "{category_key}".
 
         [ИНТЕРЕСЫ] "{user_interests}"
-        [СОСТАВ (raw_data)]
+        [СОСТАВ (raw_data / sub_chunks)]
         {products_text}
 
         {ChunkCultivationPrompts._format_linked_block(linked_context)}

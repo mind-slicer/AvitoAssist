@@ -242,31 +242,16 @@ class ChunkCultivationManager(QObject):
             logger.info("Все кандидаты уже существуют в базе.", token="ai-det")
 
     def scan_and_create_structure(self):
-        """Двухпроходное создание структуры (исправляет проблему 'мало данных')"""
+        """Сканирует БД и создает структуру знаний (Категории -> Продукты)"""
         if not self.master_switch: return
 
         from app.core.ai.smart_chunk_detector import SmartChunkDetector
         
-        candidates = SmartChunkDetector.detect_candidates(self.memory)
-        if not candidates: return
-
-        # Проход 1: Создаем Категории и Глобальные (Родителей)
-        parents = [c for c in candidates if c['type'] != 'PRODUCT']
-        for p in parents:
-            self._create_safe(p)
-
-        # Проход 2: Создаем Продукты и линкуем их
-        products = [c for c in candidates if c['type'] == 'PRODUCT']
-        for p in products:
-            # Ищем ID родителя в БД (он уже должен быть создан на шаге 1)
-            parent_id = None
-            if p.get('parent_key'):
-                parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(p['parent_key'], "CATEGORY")
-                if parent_chunk:
-                    parent_id = parent_chunk['id']
-            
-            p['parent_id'] = parent_id # Временное поле для _create_safe
-            self._create_safe(p)
+        # Используем новый метод, который сам сортирует и линкует
+        count = SmartChunkDetector.create_missing_chunks(self.memory, self)
+        
+        if count > 0:
+            logger.success(f"Структура знаний обновлена: +{count} новых узлов.", token="ai-det")
 
     def _create_safe(self, c_data):
         key = c_data['key'].strip() # Нормализация
@@ -732,20 +717,30 @@ class ChunkCultivationManager(QObject):
 
         if chunk_type == "CATEGORY":
             all_chunks = self.memory.knowledge.get_chunks_by_type("PRODUCT")
-            # Теперь ищем детей по parent_id, а не по ключу!
-            # Но у нас список all_chunks — это просто словари.
-            # Если в dict есть parent_chunk_id, используем его.
+            
+            # 1. Ищем детей по parent_id
             sub_chunks = [c for c in all_chunks if c.get('parent_chunk_id') == chunk_id and c.get('status') == 'READY']
             
-            # Fallback на ключи, если база старая
+            # 2. Если нет, ищем по текстовому ключу (страховка)
             if not sub_chunks:
                 sub_chunks = [c for c in all_chunks if c.get('chunk_key', '').startswith(chunk_key) and c.get('status') == 'READY']
 
+            # 3. FALLBACK: Если нет готовых чанков продуктов, собираем статистику из Raw Data
+            raw_fallback_info = ""
+            if not sub_chunks:
+                try:
+                    # Считаем количество товаров в этой категории из сырых данных
+                    raw_count = self.memory.raw_data.get_raw_items_count(category=chunk_key)
+                    if raw_count > 0:
+                        raw_fallback_info = f"\n[RAW DATA STATISTICS]\nВ базе найдено {raw_count} сырых объявлений категории '{chunk_key}', но детальные отчеты (PRODUCT chunks) еще не сформированы. Сделай общий вывод на основе количества."
+                except Exception: pass
+
             return ChunkCultivationPrompts.build_category_cultivation_prompt(
-                chunk_key, sub_chunks, 
+                chunk_key, sub_chunks,
                 previous_context=prev_summary,
                 user_interests=user_interests,
-                linked_context=linked_context
+                linked_context=linked_context,
+                raw_fallback=raw_fallback_info
             )
 
         if chunk_type == "DATABASE":
