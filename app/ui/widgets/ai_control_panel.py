@@ -224,6 +224,7 @@ class CultivationMonitorWidget(QFrame):
         header = QLabel("🔄 ПУЛЬС СИСТЕМЫ")
         header.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: bold; font-size: 10px; letter-spacing: 1px;")
         layout.addWidget(header)
+        self.header_label = header
         
         # 1. Главный опрос (прогресс-бар)
         poll_layout = QHBoxLayout()
@@ -274,6 +275,30 @@ class CultivationMonitorWidget(QFrame):
         separator.setStyleSheet(f"background-color: {Palette.BORDER_SOFT}; max-height: 1px;")
         layout.addWidget(separator)
         
+        # --- КНОПКА ПАУЗЫ ---
+        btn_layout = QHBoxLayout()
+        self.btn_pause = QPushButton("⏸ ПАУЗА")
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Palette.BG_DARK_2};
+                color: {Palette.TEXT};
+                border: 1px solid {Palette.BORDER_SOFT};
+                border-radius: 4px;
+                padding: 4px;
+                font-weight: bold;
+                font-size: 10px;
+            }}
+            QPushButton:checked {{
+                background-color: {Palette.WARNING};
+                color: #000;
+                border: none;
+            }}
+        """)
+        self.btn_pause.toggled.connect(self._on_pause_toggled)
+        btn_layout.addWidget(self.btn_pause)
+        layout.addLayout(btn_layout)
+
         # 4. НАСТРОЙКИ (редактируемые поля)
         settings_label = QLabel("⚙️ НАСТРОЙКИ")
         settings_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: bold; font-size: 9px; letter-spacing: 1px; margin-top: 2px;")
@@ -521,3 +546,14 @@ class CultivationMonitorWidget(QFrame):
         """Синхронизирует поле с конфигом (если не в фокусе)"""
         if not field.hasFocus() and field.text() != str(value):
             field.setText(str(value))
+
+    def _on_pause_toggled(self, checked):
+        if self.manager:
+            self.manager.toggle_master_switch(not checked) # Checked = Paused = Switch OFF
+            
+        if checked:
+            self.btn_pause.setText("▶ ПРОДОЛЖИТЬ")
+            self.header_label.setText("🛑 СИСТЕМА ОСТАНОВЛЕНА") # Если сохранили ссылку на header
+        else:
+            self.btn_pause.setText("⏸ ПАУЗА")
+            self.header_label.setText("🔄 ПУЛЬС СИСТЕМЫ")

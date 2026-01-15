@@ -363,7 +363,11 @@ class ChunkCultivationPrompts:
         [ПРОШЛЫЕ ВЫВОДЫ (Твоя память)]
         {previous_context if previous_context else "Нет предыдущего анализа."}
 
-        ЗАДАЧА: Сравни "ЖЕСТКУЮ МАТЕМАТИКУ" с "ДИНАМИКОЙ". Изучи "ВЫБОРКУ ЛОТОВ". Оцени ликвидность и цену, сформируй финальный статус.
+        ЗАДАЧА:
+        Твоя главная цель — найти ВЫГОДУ. 
+        Если цена товара (Q25) ниже рыночной медианы на 20-50% — это наша цель!
+        Не пиши размыто "состояние неизвестно" — пиши "Риск состояния, но цена оправдывает".
+        Сравни "ЖЕСТКУЮ МАТЕМАТИКУ" с "ДИНАМИКОЙ". Изучи "ВЫБОРКУ ЛОТОВ". Оцени ликвидность и предложение, сформируй финальный статус.
 
         ВЕСА: raw_data (математика), history (тренд), linked_chunks (влияние категории), system_prompt (экспертиза).
         {ChunkCultivationPrompts.COMMON_FORMAT}
@@ -377,18 +381,28 @@ class ChunkCultivationPrompts:
         current_date = datetime.now().strftime("%d.%m.%Y")
 
         products_text = ""
-        for p in sub_products:
-            content = p.get('content') or {}
-            if isinstance(content, str):
-                try: content = json.loads(content)
-                except: content = {}
-            status = content.get('display_status', 'N/A')
-            desc = content.get('main_description', '')[:60]
-            products_text += f"- {p.get('chunk_key')}: {status} ({desc}...)\n"
+        # Если продуктов нет, даем явный сигнал ИИ, что категория пуста
+        if not sub_products:
+            products_text = "НЕТ ДАННЫХ О ТОВАРАХ В ЭТОЙ КАТЕГОРИИ."
+        else:
+            for p in sub_products:
+                content = p.get('content') or {}
+                if isinstance(content, str):
+                    try: content = json.loads(content)
+                    except: content = {}
+                status = content.get('display_status', 'N/A')
+                desc = content.get('main_description', '')[:100] # Чуть больше контекста
+                products_text += f"- {p.get('chunk_key')}: {status} | {desc}\n"
+
+        anti_hallucination_instruction = (
+            f"ВНИМАНИЕ: Твоя тема СТРОГО ограничена категорией '{category_key}'.\n"
+            f"Даже если в 'ИНТЕРЕСАХ ПОЛЬЗОВАТЕЛЯ' упомянуты другие товары (например, видеокарты), "
+            f"НЕ ПИШИ О НИХ, если они не относятся к '{category_key}'.\n"
+            f"Если товаров в списке (raw_data) нет или мало — пиши 'Недостаточно данных для анализа', не выдумывай тренды."
+        )
 
         return f"""
-        СЕГОДНЯ: {current_date}. РОЛЬ: Аналитик категорий.
-        КАТЕГОРИЯ: "{category_key}"
+        СЕГОДНЯ: {current_date}. РОЛЬ: Узкопрофильный аналитик категории "{category_key}".
 
         [ИНТЕРЕСЫ] "{user_interests}"
         [СОСТАВ (raw_data)]
@@ -397,7 +411,10 @@ class ChunkCultivationPrompts:
         {ChunkCultivationPrompts._format_linked_block(linked_context)}
         {f'[ИСТОРИЯ] {previous_context}' if previous_context else ''}
 
-        ЗАДАЧА: Дай обзор категории.
+        [СТРОГИЕ ОГРАНИЧЕНИЯ]
+        {anti_hallucination_instruction}
+
+        ЗАДАЧА: Дай обзор ТОЛЬКО по категории "{category_key}". Оцени спрос и цены именно здесь.
         ВЕСА: raw_data (продукты внутри), linked_chunks (глобальный контекст рынка из Базы).
         {ChunkCultivationPrompts.COMMON_FORMAT}
         """

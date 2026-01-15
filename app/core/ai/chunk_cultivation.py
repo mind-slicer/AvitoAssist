@@ -44,6 +44,8 @@ class ChunkCultivationManager(QObject):
         self.memory = memory_manager
         self.ai = ai_manager
 
+        self.master_switch = True
+
         self._cultivation_timer = QTimer(self)
         self._cultivation_timer.timeout.connect(self._check_triggers)
         self._cultivation_timer.start(30_000) 
@@ -54,6 +56,10 @@ class ChunkCultivationManager(QObject):
 
         self.default_time_threshold = 120
         self.default_data_threshold = 10
+
+    def toggle_master_switch(self, enabled: bool):
+        self.master_switch = enabled
+        logger.info(f"AI Master Switch: {'ON' if enabled else 'PAUSED'}", token="ai-ctrl")
 
     def validate_chunks_integrity(self): # TODO
         logger.dev("Запуск проверки целостности знаний...", level="DEBUG")
@@ -173,9 +179,115 @@ class ChunkCultivationManager(QObject):
         return chunk_id
 
     def scan_database_only(self):
-        """Только поиск новых чанков в сырых данных"""
-        self._create_new_chunks_from_data()
-        logger.info("Сканирование базы завершено.", token="ai-cult")
+        """Только поиск новых чанков в сырых данных и их создание"""
+        from app.core.ai.smart_chunk_detector import SmartChunkDetector
+        
+        logger.info("Запуск сканирования базы на новые знания...", token="ai-det")
+        
+        # 1. Получаем кандидатов (чистые данные, без записи в БД)
+        candidates = SmartChunkDetector.detect_candidates(self.memory)
+        
+        if not candidates:
+            logger.info("Новых кластеров не обнаружено.", token="ai-det")
+            return
+
+        created_count = 0
+        
+        # 2. Проходим и создаем
+        for c in candidates:
+            c_type = c['type']
+            c_key = c['key']
+            c_title = c['title']
+            parent_key = c.get('parent_key')
+            
+            parent_id = None
+            
+            # Попытка найти ID родителя, если указан ключ
+            if parent_key:
+                # Ищем среди существующих (в БД)
+                parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(parent_key, "CATEGORY")
+                
+                # Или, если родитель - это DATABASE (для AI_BEHAVIOR)
+                if not parent_chunk and parent_key == "general":
+                     parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type("general", "DATABASE")
+                
+                if parent_chunk:
+                    parent_id = parent_chunk['id']
+                else:
+                    # Если родителя нет в БД, возможно мы его создаем прямо сейчас в этом цикле?
+                    # Для простоты пока пропускаем сложную рекурсию, привяжем в следующий раз
+                    pass
+
+            # 3. ЯВНАЯ ЗАПИСЬ + СИГНАЛЫ
+            try:
+                new_id = self.memory.add_knowledge(
+                    chunk_type=c_type,
+                    chunk_key=c_key,
+                    title=c_title,
+                    status=ChunkStatus.PENDING.value,
+                    parent_chunk_id=parent_id
+                )
+                
+                # !!! ВОТ ЭТО ЧИНИТ ВАШ UI !!!
+                self.chunk_status_changed.emit(new_id, ChunkStatus.PENDING.value)
+                logger.info(f"Создан чанк [{new_id}] {c_key}", token="ai-det")
+                created_count += 1
+                
+            except Exception as e:
+                logger.error(f"Ошибка создания чанка {c_key}: {e}", token="ai-det")
+
+        if created_count > 0:
+            logger.success(f"Сформировано {created_count} новых узлов знаний.", token="ai-det")
+        else:
+            logger.info("Все кандидаты уже существуют в базе.", token="ai-det")
+
+    def scan_and_create_structure(self):
+        """Двухпроходное создание структуры (исправляет проблему 'мало данных')"""
+        if not self.master_switch: return
+
+        from app.core.ai.smart_chunk_detector import SmartChunkDetector
+        
+        candidates = SmartChunkDetector.detect_candidates(self.memory)
+        if not candidates: return
+
+        # Проход 1: Создаем Категории и Глобальные (Родителей)
+        parents = [c for c in candidates if c['type'] != 'PRODUCT']
+        for p in parents:
+            self._create_safe(p)
+
+        # Проход 2: Создаем Продукты и линкуем их
+        products = [c for c in candidates if c['type'] == 'PRODUCT']
+        for p in products:
+            # Ищем ID родителя в БД (он уже должен быть создан на шаге 1)
+            parent_id = None
+            if p.get('parent_key'):
+                parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(p['parent_key'], "CATEGORY")
+                if parent_chunk:
+                    parent_id = parent_chunk['id']
+            
+            p['parent_id'] = parent_id # Временное поле для _create_safe
+            self._create_safe(p)
+
+    def _create_safe(self, c_data):
+        key = c_data['key'].strip() # Нормализация
+        try:
+            # Проверка дублей (на всякий случай, хоть детектор и проверял)
+            exists = self.memory.knowledge.get_chunk_by_key_and_type(key, c_data['type'])
+            if exists: return
+
+            new_id = self.memory.add_knowledge(
+                chunk_type=c_data['type'],
+                chunk_key=key,
+                title=c_data['title'],
+                status=ChunkStatus.PENDING.value,
+                parent_chunk_id=c_data.get('parent_id')
+            )
+            # Сигнал для UI
+            self.chunk_status_changed.emit(new_id, ChunkStatus.PENDING.value)
+            logger.info(f"Создан чанк [{new_id}] {key}", token="ai-det")
+            
+        except Exception as e:
+            logger.error(f"Create error {key}: {e}", token="ai-det")
 
     def cultivate_pending_chunks(self, user_instructions: str = ""):
         """Запуск обработки для всех чанков со статусом PENDING"""
@@ -199,10 +311,13 @@ class ChunkCultivationManager(QObject):
         self.cultivate_pending_chunks(user_instructions)
 
     def _check_triggers(self):
+        if not self.master_switch:
+            return
         try:
+            self.scan_and_create_structure()
             self.check_and_cultivate()
         except Exception as e:
-            logger.error(f"ChunkCultivationManager timer error: {e}")
+            logger.error(f"Timer error: {e}")
 
     def _evaluate_triggers(self, chunk: Dict) -> Optional[ChunkCultivationTrigger]:
         """Проверяет триггеры в порядке приоритета"""
@@ -792,7 +907,6 @@ class ChunkCultivationManager(QObject):
 
     def _check_llm_decision_trigger(self, chunk: Dict) -> bool:
         """LLM решает, нужно ли обновлять чанк (реальный запрос)"""
-
         # Условия для запроса LLM
         new_count = chunk.get("new_data_items_count") or 0
         if new_count < 3:  # Слишком мало новых данных

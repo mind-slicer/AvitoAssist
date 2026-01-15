@@ -199,222 +199,295 @@ class SpacyFeatureExtractor:
 
         return semantic_data, debug_info
 
-    def _detect_category_with_scores(self, lemmas: List[str], raw_title: str, description: str = "", price: int = 0) -> tuple[str, Dict[str, float]]:
+    def _detect_category_with_scores(
+        self, 
+        lemmas: List[str], 
+        raw_title: str, 
+        description: str = "", 
+        price: int = 0
+    ) -> tuple[str, Dict[str, float]]:
+        """
+        Улучшенная категоризация с чтением правил из category_rules.json
+        """
         clean_title = raw_title.lower().strip()
         lemmas_set = set(lemmas)
         scores = {}
 
-        # --- PHASE 1: SERVICE DETECTOR ---
-        rent_keywords = {'аренда', 'сдам', 'прокат', 'скупка', 'ремонт', 'обслуживание', 'диагностика', 'выкуп'}
-        if not rent_keywords.isdisjoint(lemmas_set):
-            return 'SERVICE', {'SERVICE': 1000.0}
-        
-        # --- PHASE 2: ACCESSORY/PART FORCED START (EARLY INTERCEPT) ---
-        # Перехватываем "Запчасти для..." ДО того, как сработает System Detector
-        
-        acc_starters = (
-            'коробка', 'упаковка', 'box', 
-            'держатель', 'подставка', 'кронштейн', 
-            'кабель', 'провод', 'шнур', 'переходник', 'удлинитель', 
-            'райзер', 'riser', 'планка', 'мост', 'шлейф', 'заглушка', 'винты', 'крепеж', 'крепление', 'бекплейт', 'backplate',
-            'топкейс', 'корпус для', 'клавиатура', 'матрица', 'аккумулятор', 'батарея', 'зарядка', 'блок питания для', 'петли'
-        )
-        # Очищаем от прилагательных перед проверкой
+        # === ФАЗА 0: Глобальная проверка дефектов ===
+        defect_markers = [
+            "не работает", "нерабочий", "битый", "на запчасти", "неисправен",
+            "требует ремонта", "без гарантии работы", "труп", "донор"
+        ]
+        if any(m in clean_title for m in defect_markers):
+            return "MISC", {"MISC": -1000.0}
+
+        # === ФАЗА 1: SERVICE (наивысший приоритет) ===
+        service_result = self._check_category_match("SERVICE", clean_title, lemmas_set)
+        if service_result > 0:
+            return "SERVICE", {"SERVICE": 1000.0}
+
+        # === ФАЗА 2: ACCESSORY EARLY INTERCEPT ===
+        accessory_rules = self.category_rules.get("ACCESSORY", {})
+        starter_kws = accessory_rules.get("context_rules", {}).get("starter_keywords", [])
+
+        # Очистка от прилагательных
         adjectives_strip = r'^(новая|новый|новые|игровая|игровой|б\/у|бу|продам|продается|мощная|топовая|нерабочая|неисправная|faulty|оригинальная)\s+'
         stripped_start = re.sub(adjectives_strip, '', clean_title).strip()
 
-        if stripped_start.startswith(acc_starters):
-            return 'ACCESSORY', {'ACCESSORY': 2000.0}
+        for starter in starter_kws:
+            if stripped_start.startswith(starter):
+                return "ACCESSORY", {"ACCESSORY": 2000.0}
 
-        cool_starters = (
-            'кулер', 'вентилятор', 'вертушка', 'радиатор', 'охлаждение', 
-            'сво', 'сжо', 'водянка', 'система', 'с/охл', 'охлад', 'турбина', 'кожух',
-            'fan', 'cooler', 'heatsink'
-        )
-        if stripped_start.startswith(cool_starters):
-            return 'COOLING', {'COOLING': 2000.0}
+        # === ФАЗА 3: COOLING EARLY INTERCEPT ===
+        cooling_rules = self.category_rules.get("COOLING", {})
+        cooling_starters = cooling_rules.get("strong_keywords", [])[:15]  # Первые 15 как стартеры
+        for starter in cooling_starters:
+            if stripped_start.startswith(starter):
+                return "COOLING", {"COOLING": 2000.0}
 
-        # --- PHASE 3: SYSTEM DETECTOR (Implicit Laptop/PC) ---
-        sys_vendors = ['asus', 'msi', 'acer', 'hp', 'lenovo', 'dell', 'thunderobot', 'machenike', 'xiaomi', 'huawei', 'honor', 'gigabyte', 'ardor', 'osio', 'tecno', 'infinix', 'apple']
-        has_top_vendor = any(v in clean_title for v in sys_vendors)
-        
-        has_cpu_strong = any(c in clean_title for c in ['i3', 'i5', 'i7', 'i9', 'ryzen', 'r3', 'r5', 'r7', 'r9', 'n100', 'n200', 'n95', 'n5095', 'celeron', 'pentium', '3050u', '3500u', '5500u'])
-        has_gpu_strong = any(g in clean_title for g in ['rtx', 'gtx', 'rx 6', 'rx 7', 'radeon', 'geforce'])
-        has_storage_ram = any(s in clean_title for s in ['gb', 'гб', 'ssd', 'ram', 'озу'])
+        # === ФАЗА 4: Контекстный анализ систем (LAPTOP / PC_BUILD) ===
+        laptop_result = self._detect_laptop_contextual(clean_title, lemmas_set)
+        if laptop_result:
+            return laptop_result, {"LAPTOP": 1000.0}
 
-        if has_top_vendor and has_cpu_strong:
-             is_system = False
-             if has_gpu_strong:
-                 is_system = True
-             elif has_storage_ram:
-                 is_system = True
-            
-             if is_system:
-                 mobile_cues = ['15.6', '17.3', '14.0', '16.1', '14"', 'ips', 'oled', 'battery', 'батарея', 'ultrabook', 'ультрабук', 'tb', 'thin']
-                 if any(cue in clean_title for cue in mobile_cues):
-                     return 'LAPTOP', {'LAPTOP': 5000.0}
-                 
-                 if 'системн' not in clean_title and 'пк' not in clean_title.split() and 'desktop' not in clean_title:
-                     return 'LAPTOP', {'LAPTOP': 4500.0}
-                 else:
-                     return 'PC_BUILD', {'PC_BUILD': 4500.0}
+        pcbuild_result = self._detect_pc_build_contextual(clean_title, lemmas_set, description)
+        if pcbuild_result:
+            return pcbuild_result, {"PC_BUILD": 800.0}
 
-        # --- PHASE 4: LAPTOP DETECTOR ---
-        laptop_rules = self.category_rules.get('LAPTOP', {})
-        is_laptop = False
-        
-        # Explicit keywords
-        if laptop_rules:
-            for kw in laptop_rules.get('strong_keywords', []):
-                if kw in lemmas_set or kw in clean_title:
-                    is_laptop = True
-                    break
-        
-        # Brand + Screen context
-        if not is_laptop:
-            has_laptop_brand = any(b in lemmas_set for b in self.VENDORS)
-            has_screen = any(kw in lemmas_set for kw in ['ips', '144hz', 'дюймов', 'экран'])
-            if has_laptop_brand and has_screen:
-                is_laptop = True
-        
-        # Strict Banned Check for Laptop
-        if is_laptop:
-            # Расширенный список запретов для надежности, даже если JSON не подгрузился
-            local_bans = ['разбор', 'запчасти', 'матрица', 'клавиатура', 'топкейс', 'поддон', 'петли', 'шлейф', 'аккумулятор', 'батарея', 'кулер', 'зарядка']
-            json_bans = laptop_rules.get('banned_keywords', [])
-            all_bans = set(local_bans + json_bans)
-            
-            if not any(ban in clean_title for ban in all_bans):
-                return 'LAPTOP', {'LAPTOP': 1500.0}
+        # === ФАЗА 5: Скоринг по правилам из JSON ===
+        categories_to_score = ["GPU", "CPU", "MONITOR", "MOTHERBOARD", "RAM", 
+                               "STORAGE", "PSU", "CASE", "COOLING"]
 
-        # --- PHASE 5: MONITOR DETECTOR ---
-        monitor_strong = self.category_rules.get('MONITOR', {}).get('strong_keywords', [])
-        if any(kw in lemmas_set for kw in monitor_strong) or any(kw in clean_title for kw in monitor_strong):
-             context_ban = re.search(r'\bна\s+\d*\s*монитор', clean_title)
-             if not context_ban:
-                 if 'матрица' not in lemmas_set and 'разбита' not in lemmas_set:
-                     return 'MONITOR', {'MONITOR': 1000.0}
-
-        # --- PHASE 6: PC BUILD / BUNDLE ---
-        pc_strong = self.category_rules.get('PC_BUILD', {}).get('strong_keywords', [])
-        if any(kw in clean_title for kw in pc_strong) or re.search(r'\bпк\b', clean_title):
-             return 'PC_BUILD', {'PC_BUILD': 1000.0}
-
-        # --- PHASE 7: GPU / CPU START DETECTOR (With safety) ---
-        gpu_explicit = ('видеокарта', 'videocard', 'gpu', 'видюха')
-        gpu_series_start = ('rtx', 'gtx', 'rx', 'radeon', 'geforce')
-        
-        is_gpu_start = (stripped_start.startswith(gpu_explicit) or stripped_start.startswith(gpu_series_start))
-        if is_gpu_start:
-             if 'ноутбук' not in clean_title and 'laptop' not in clean_title:
-                 return 'GPU', {'GPU': 2000.0}
-
-        # --- PHASE 8: COMPONENT SCORING (Hardware) ---
-        hardware_cats = ['GPU', 'CPU', 'MOTHERBOARD', 'RAM', 'STORAGE', 'PSU', 'CASE', 'COOLING', 'ACCESSORY']
-        
-        for cat_name in hardware_cats:
-            rules = self.category_rules.get(cat_name, {})
-            strong_keys = rules.get("strong_keywords", [])
-            banned_keys = rules.get("banned_keywords", [])
-            base_priority = rules.get("priority", 10)
-
-            is_banned = False
-            for ban in banned_keys:
-                if ban in clean_title:
-                    is_banned = True
-                    break
-            
-            if is_banned:
-                scores[cat_name] = -1000.0
-                continue
-
-            score = 0
-            for kw in strong_keys:
-                if kw in lemmas_set:
-                    score += 100
-                elif len(kw) > 3 and kw in clean_title:
-                    score += 50
-            
-            if cat_name == 'RAM' and score > 0:
-                 if not any(x in clean_title for x in ['ddr', 'gb', 'гб']):
-                     score = 0
-
+        for category in categories_to_score:
+            score = self._calculate_category_score_from_rules(
+                category, clean_title, lemmas_set, description
+            )
             if score > 0:
-                scores[cat_name] = score + base_priority
+                scores[category] = score
 
-        # --- PHASE 9: FINAL CONFLICT RESOLUTION (Sanity Checks) ---
-        
-        valid_scores = {k: v for k, v in scores.items() if v > 0}
-        if not valid_scores:
-            return "MISC", scores
-            
-        best_category = max(valid_scores, key=valid_scores.get)
+        # === ФАЗА 6: Разрешение конфликтов ===
+        if not scores:
+            return "MISC", {"MISC": 0.0}
 
-        # 1. Защита компонентов от Систем (Storage/RAM vs Laptop/PC)
-        if best_category in ['STORAGE', 'RAM', 'PSU', 'COOLING', 'CASE', 'ACCESSORY']:
-            has_cpu = any(c in clean_title for c in ['ryzen', 'core i', 'intel i', 'amd r'])
-            has_gpu = any(g in clean_title for g in ['rtx', 'gtx', 'radeon', 'geforce'])
-            
-            if has_cpu or has_gpu:
-                scores[best_category] = -500.0
-                if any(x in clean_title for x in ['ноутбук', 'laptop', 'экран', 'ips']):
-                    return 'LAPTOP', scores
-                else:
-                    return 'PC_BUILD', scores
+        best_category = max(scores, key=scores.get)
 
-        # 2. GPU PROTECTION
-        if scores.get('GPU', 0) > 0:
-             scores['MONITOR'] = -1000.0
-             scores['PSU'] = -1000.0
-
-        # 3. CPU vs GPU conflict -> PC Build
-        if scores.get('CPU', 0) > 0 and scores.get('GPU', 0) > 0 and scores.get('MOTHERBOARD', 0) > 0:
-             return 'PC_BUILD', {'PC_BUILD': 500.0}
-
-        # 4. RAM Sanity
-        if scores.get('RAM', 0) > 0:
-             if scores.get('CPU', 0) > 0 or scores.get('STORAGE', 0) > 0:
-                 scores['RAM'] = -1000.0
-             
-        valid_scores = {k: v for k, v in scores.items() if v > 0}
-        if not valid_scores:
-            if 'LAPTOP' in scores and scores['LAPTOP'] > -2000:
-                 return 'LAPTOP', scores
-            return "MISC", scores
-
-        best_category = max(valid_scores, key=valid_scores.get)
-        
-        # --- POST-SELECTION CORRECTION ---
-        
-        if best_category == 'PC_BUILD':
-            pc_words = ['системный', 'блок', 'пк', 'компьютер', 'сборка', 'station', 'server', 'desktop', 'rig', 'ферма']
-            if not any(w in clean_title for w in pc_words):
-                 if scores.get('GPU', 0) > 0:
-                     return 'GPU', scores
-                     
-        if best_category in ['RAM', 'CPU', 'GPU']:
-            laptop_cues = ['ноутбук', 'laptop', 'ips', 'screen', 'экран', 'дюйм', 'tb', '15s', 'machcreator']
-            if any(cue in clean_title for cue in laptop_cues):
-                if 'матрица' not in clean_title:
-                     return 'LAPTOP', {'LAPTOP': 9999.0}
+        # Финальная валидация
+        best_category = self._validate_and_resolve_conflicts(
+            best_category, clean_title, lemmas_set, scores
+        )
 
         return best_category, scores
 
-    def _detect_bundle(self, lemmas_set: set, raw_title: str) -> bool:
-        """Detects combo kits like 'Motherboard + CPU + RAM'"""
-        has_cpu = any(x in lemmas_set for x in ['cpu', 'процессор', 'xeon', 'i3', 'i5', 'i7', 'ryzen'])
-        has_mobo = any(x in lemmas_set for x in ['материнская', 'плата', 'motherboard', 'x79', 'x99', 'b450', 'b550'])
-        has_ram = any(x in lemmas_set for x in ['ram', 'память', 'озу', 'ddr4', 'ddr3'])
-        
-        if (has_cpu and has_mobo) or (has_mobo and has_ram and has_cpu):
-            return True
+    def _check_category_match(self, category: str, title: str, lemmas_set: set) -> float:
+        """Проверка совпадения по правилам из JSON"""
+        rules = self.category_rules.get(category, {})
+        if not rules:
+            return 0.0
+
+        strong_kws = rules.get("strong_keywords", [])
+        banned_kws = rules.get("banned_keywords", [])
+
+        # Проверка ban-листа
+        for ban in banned_kws:
+            if ban in title:
+                return -1000.0
+
+        # Проверка совпадений
+        score = 0
+        for kw in strong_kws:
+            if kw in lemmas_set or kw in title:
+                score += 100
+                break  # Для SERVICE достаточно одного совпадения
             
-        bundle_keywords = ['комплект', 'связка', 'сборка на', 'тушка', 'основа', 'набор']
-        if any(bk in raw_title.lower() for bk in bundle_keywords):
-            if has_cpu or has_mobo or has_ram:
-                return True
-                
-        return False
+        return score
+
+    def _detect_laptop_contextual(self, title: str, lemmas_set: set) -> str:
+        """Специализированный детектор ноутбуков с использованием JSON-правил"""
+        rules = self.category_rules.get("LAPTOP", {})
+        if not rules:
+            return None
+
+        # 1. Проверка ban-листа
+        for ban in rules.get("banned_keywords", []):
+            if ban in title:
+                return None
+
+        # 2. Сильные триггеры
+        for trigger in rules.get("strong_keywords", []):
+            if trigger in lemmas_set or trigger in title:
+                return "LAPTOP"
+
+        # 3. Контекстная логика (бренд + экран)
+        context_rules = rules.get("context_rules", {})
+        brand_ctx = context_rules.get("brand_context", [])
+        screen_ctx = context_rules.get("screen_markers", [])
+
+        has_brand = any(b in lemmas_set for b in brand_ctx)
+        has_screen = any(s in title for s in screen_ctx)
+
+        if has_brand and has_screen:
+            # Убедимся, что это не монитор
+            if "монитор" not in title and "monitor" not in title:
+                return "LAPTOP"
+
+        return None
+    
+    def _detect_pc_build_contextual(self, title: str, lemmas_set: set, description: str) -> str:
+        """Детектор системных блоков с подсчётом компонентов"""
+        rules = self.category_rules.get("PC_BUILD", {})
+        if not rules:
+            return None
+
+        # 1. Ban-лист
+        for ban in rules.get("banned_keywords", []):
+            if ban in title:
+                return None
+
+        # 2. Сильные триггеры
+        for trigger in rules.get("strong_keywords", []):
+            if trigger in title:
+                return "PC_BUILD"
+
+        # 3. Подсчёт компонентов (если упоминается 3+ = сборка)
+        context_rules = rules.get("context_rules", {})
+        component_kws = context_rules.get("component_keywords", {})
+        threshold = context_rules.get("component_count_threshold", 3)
+
+        components_mentioned = 0
+        for comp_type, keywords in component_kws.items():
+            if any(kw in title for kw in keywords):
+                components_mentioned += 1
+
+        if components_mentioned >= threshold:
+            return "PC_BUILD"
+
+        return None
+
+    def _calculate_category_score_from_rules(
+        self, 
+        category: str, 
+        title: str, 
+        lemmas_set: set, 
+        description: str
+    ) -> float:
+        """Рассчитывает score для категории на основе JSON-правил"""
+        rules = self.category_rules.get(category, {})
+        if not rules:
+            return 0.0
+
+        score = 0.0
+
+        # 1. Проверка абсолютных ban-листов
+        for ban in rules.get("banned_keywords", []):
+            if ban in title:
+                return -1000.0
+
+        # 2. Сильные триггеры
+        for trigger in rules.get("strong_keywords", []):
+            if trigger in lemmas_set:
+                score += 100
+            elif len(trigger) > 3 and trigger in title:
+                score += 50
+
+        # 3. Слабые маркеры
+        for weak in rules.get("weak_keywords", []):
+            if weak in title:
+                score += 10
+
+        # 4. Специальные правила из context_rules
+        context_rules = rules.get("context_rules", {})
+
+        # Для GPU/CPU: проверка series_triggers
+        if "series_triggers" in context_rules:
+            for series in context_rules["series_triggers"]:
+                if series in title:
+                    score += 50
+
+        # Для MONITOR: banned_if_gpu
+        if context_rules.get("banned_if_gpu"):
+            if any(g in title for g in ["rtx", "gtx", "rx", "geforce", "radeon"]):
+                return -500.0
+
+        # Для RAM/STORAGE: banned_if_system
+        if context_rules.get("banned_if_system"):
+            has_cpu = any(c in title for c in ["ryzen", "core i", "intel", "процессор"])
+            has_gpu = any(g in title for g in ["rtx", "gtx", "radeon", "видеокарта"])
+            if has_cpu or has_gpu:
+                return -300.0
+
+        # 5. Применяем базовый приоритет
+        base_priority = rules.get("priority", 10)
+        if score > 0:
+            score += base_priority
+
+        return score
+
+    def _validate_and_resolve_conflicts(
+        self, 
+        candidate: str, 
+        title: str, 
+        lemmas_set: set, 
+        scores: Dict[str, float]
+    ) -> str:
+        """
+        Финальная валидация выбранной категории.
+        Разрешает конфликты и применяет здравый смысл.
+        """
+
+        # Правило 1: Если есть GPU с высоким score, но также есть MONITOR - выбираем GPU
+        if candidate == "MONITOR" and "GPU" in scores and scores["GPU"] > 50:
+            if any(g in title for g in ["rtx", "gtx", "rx 6", "rx 7"]):
+                return "GPU"
+
+        # Правило 2: RAM + CPU = PC_BUILD
+        if candidate == "RAM" and "CPU" in scores:
+            if scores["RAM"] > 50 and scores["CPU"] > 50:
+                return "PC_BUILD"
+
+        # Правило 3: STORAGE + CPU + GPU = PC_BUILD
+        if candidate == "STORAGE":
+            has_cpu = any(c in title for c in ["ryzen", "core i", "процессор"])
+            has_gpu = any(g in title for g in ["rtx", "gtx", "видеокарта"])
+            if has_cpu and has_gpu:
+                return "PC_BUILD"
+
+        # Правило 4: Если COOLING имеет низкий score, но есть PSU - это не кулер
+        if candidate == "COOLING" and scores.get("COOLING", 0) < 150:
+            if "PSU" in scores and scores["PSU"] > 100:
+                return "PSU"
+
+        # Правило 5: Приоритет по иерархии при близких scores
+        if len(scores) > 1:
+            sorted_cats = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            top1, score1 = sorted_cats[0]
+            top2, score2 = sorted_cats[1]
+
+            # Если разница score < 50, выбираем по hierarchy_level
+            if abs(score1 - score2) < 50:
+                rules1 = self.category_rules.get(top1, {})
+                rules2 = self.category_rules.get(top2, {})
+                level1 = rules1.get("hierarchy_level", 0)
+                level2 = rules2.get("hierarchy_level", 0)
+
+                if level2 > level1:
+                    return top2
+
+        # Правило 6: PC_BUILD должен иметь явные признаки системника
+        if candidate == "PC_BUILD":
+            pc_words = ["системный", "блок", "пк", "компьютер", "сборка", "desktop", "rig"]
+            if not any(w in title for w in pc_words):
+                # Если нет явных признаков, но есть GPU - это GPU
+                if scores.get("GPU", 0) > 0:
+                    return "GPU"
+
+        # Правило 7: Компоненты vs Laptop
+        if candidate in ["RAM", "CPU", "GPU"]:
+            laptop_cues = ["ноутбук", "laptop", "ips", "screen", "экран", "дюйм", "15s"]
+            if any(cue in title for cue in laptop_cues):
+                if "матрица" not in title:
+                    return "LAPTOP"
+
+        return candidate
 
     def _extract_brands(self, lemmas: List[str], raw_text: str = "") -> Dict[str, str]:
         brands = {'chip': None, 'vendor': None}
