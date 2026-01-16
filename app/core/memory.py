@@ -505,20 +505,46 @@ class MemoryManager:
             'total': self.raw_data.get_statistics().get('total_items', 0)
         }
 
-    def get_all_statistics(self, limit: int = 200) -> List[Dict]:
-        """Get all statistics (legacy method)."""
-        return []
-
-    def get_stats_for_product_key(self, product_key: str) -> Optional[Dict]:
-        """Get stats for product key (legacy method)."""
-        return None
-
     def find_similar_items(self, chunk_key: str, limit: int = 500) -> List[Dict]:
         """Find similar items (for cultivation prompts)."""
         items = self.raw_data.get_items_for_product_key(product_key=chunk_key)
         if len(items) > limit:
             return items[:limit] 
         return items
+
+    def get_chunk_children(self, parent_chunk_id: int) -> List[Dict]:
+        """Получает дочерние чанки"""
+        return self.knowledge.get_chunk_children(parent_chunk_id)
+
+
+    def get_chunk_parent(self, chunk_id: int) -> Optional[Dict]:
+        """Получает родительский чанк"""
+        return self.knowledge.get_chunk_parent(chunk_id)
+
+
+    def get_chunks_by_priority(self, limit: int = 10) -> List[Dict]:
+        """Получает чанки по приоритету"""
+        return self.knowledge.get_chunks_by_priority(limit)
+
+
+    def get_chunk_by_key_and_type(self, chunk_key: str, chunk_type: str) -> Optional[Dict]:
+        """Получает чанк по ключу и типу"""
+        return self.knowledge.get_chunk_by_key_and_type(chunk_key, chunk_type)
+
+
+    def save_chunk_history_snapshot(self, product_key: str, stats: Dict):
+        """Сохраняет снепшот истории чанка"""
+        self.raw_data.save_history_snapshot(product_key, stats)
+
+
+    def get_chunk_history(self, product_key: str, limit: int = 10) -> List[Dict]:
+        """Получает историю чанка"""
+        return self.raw_data.get_chunk_history(product_key, limit)
+
+
+    def calculate_data_signature(self, product_key: Optional[str] = None, category_name: Optional[str] = None) -> str:
+        """Вычисляет сигнатуру данных"""
+        return self.raw_data.calculate_data_signature(product_key, category_name)
 
     def export_all(self, base_dir: str = BASE_APP_DIR):
         """Export all data to JSON files."""

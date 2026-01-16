@@ -475,6 +475,64 @@ class AIManager(QObject):
         if saved_count > 0:
             logger.info(f"Сохранено {saved_count} items в базу для культивации", token="ai-mem")
 
+    def _get_ai_behavior_context(self) -> str:
+        """
+        Получает контекст AI_BEHAVIOR чанка для инжекции в промпты.
+        Используется при анализе объявлений и чате.
+        """
+        if not self.memory_manager:
+            return ""
+
+        try:
+            # Ищем AI_BEHAVIOR чанк
+            ai_behavior_chunks = self.memory_manager.knowledge.get_knowledge(
+                chunk_type='AI_BEHAVIOR',
+                status='READY',
+                limit=1
+            )
+
+            if not ai_behavior_chunks:
+                return ""
+
+            behavior_chunk = ai_behavior_chunks[0]
+            content = behavior_chunk.get('content')
+
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except:
+                    return ""
+
+            # Извлекаем useful информацию
+            main_desc = content.get('main_description', '')
+            learned_rules = content.get('learned_rules', [])
+            correction_prompts = content.get('correction_prompts', [])
+
+            # Формируем контекст для инжекции
+            if not main_desc and not learned_rules and not correction_prompts:
+                return ""
+
+            context = "[САМОКОРРЕКЦИЯ ИИ (AI_BEHAVIOR)]"
+
+            if main_desc:
+                context += f"\nОсновное: {main_desc[:300]}"
+
+            if learned_rules:
+                context += "\nОсвоенные правила:\n"
+                for rule in learned_rules[:3]:  # Берем только первые 3
+                    context += f"  • {rule}\n"
+
+            if correction_prompts:
+                context += "\nПодсказки для улучшения:\n"
+                for prompt in correction_prompts[:2]:  # Берем только первые 2
+                    context += f"  • {prompt}\n"
+
+            return context
+
+        except Exception as e:
+            logger.dev(f"Ошибка получения AI_BEHAVIOR контекста: {e}", level="DEBUG")
+            return ""
+
     def start_processing(self, items: List[Dict], prompt: Optional[str], debug_mode: bool, context: Dict):
         self._save_items_to_database(items, context)
 
@@ -535,6 +593,10 @@ class AIManager(QObject):
                     threshold=0.35
                 )
 
+                # Получаем AI_BEHAVIOR контекст для инжекции
+                ai_behavior_ctx = self._get_ai_behavior_context()
+
+                # Формируем базовый промпт
                 p = PromptBuilder.build_analysis_prompt(
                     items=similar_items,
                     current_item=item,
@@ -543,6 +605,15 @@ class AIManager(QObject):
                     rag_context=rag,
                     search_mode=search_mode
                 )
+
+                # Если есть AI_BEHAVIOR контекст, добавляем его перед ANALYSIS_FORMAT_INSTRUCTIONS
+                if ai_behavior_ctx:
+                    # Вставляем контекст перед инструкциями о формате
+                    p = p.replace(
+                        "ВАЖНО: Твой ответ должен быть СТРОГО в формате JSON.",
+                        f"{ai_behavior_ctx}\n\nВАЖНО: Твой ответ должен быть СТРОГО в формате JSON."
+                    )
+
                 prompts_list.append(p)
 
         if self.processing_worker and self.processing_worker.isRunning():
@@ -716,7 +787,16 @@ class AIManager(QObject):
         if current_table_data:
             table_context = self._build_table_summary(current_table_data)
 
-        final_system_content = (sys_content + "\n" + db_search_context + "\n" + table_context + rag_injection)
+        # Получаем AI_BEHAVIOR контекст
+        ai_behavior_ctx = self._get_ai_behavior_context()
+        
+        # Формируем финальный системный промпт
+        final_system_content = sys_content
+        
+        if ai_behavior_ctx:
+            final_system_content += "\n" + ai_behavior_ctx
+        
+        final_system_content += "\n" + db_search_context + "\n" + table_context + rag_injection
         
         MAX_HISTORY = 6
         trimmed_messages = messages[-MAX_HISTORY:]

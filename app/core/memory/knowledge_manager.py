@@ -246,43 +246,60 @@ class KnowledgeManager:
         finally:
             conn.close()
 
-    def get_knowledge(self, chunk_id: Optional[int] = None,
-                      chunk_key: Optional[str] = None,
-                      chunk_type: Optional[str] = None,
-                      status: Optional[str] = None,
-                      limit: int = 100,
-                      offset: int = 0) -> List[Dict]:
-        """Get knowledge chunks with filters."""
-        conn = self._get_connection()
+    def get_knowledge(
+        self,
+        chunk_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict]:
+        """
+        Получает знания из БД с поддержкой новых полей.
+        Возвращает полный объект чанка со всеми метаданными.
+        """
         try:
-            cursor = conn.cursor()
+            query = self.session.query(KnowledgeChunk)
 
-            query = "SELECT * FROM ai_knowledge WHERE 1=1"
-            params = []
-
-            if chunk_id:
-                query += " AND id = ?"
-                params.append(chunk_id)
-
-            if chunk_key:
-                query += " AND chunk_key = ?"
-                params.append(chunk_key)
-
+            # Фильтры
             if chunk_type:
-                query += " AND chunk_type = ?"
-                params.append(chunk_type)
-
+                query = query.filter_by(chunk_type=chunk_type)
             if status:
-                query += " AND status = ?"
-                params.append(status)
+                query = query.filter_by(status=status)
 
-            query += " ORDER BY priority DESC, last_updated DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
+            # Сортировка по приоритету, потом по дате
+            query = query.order_by(
+                KnowledgeChunk.priority.desc(),
+                KnowledgeChunk.created_at.desc()
+            )
 
-            cursor.execute(query, params)
-            return [self._chunk_from_row(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
+            # Пагинация
+            chunks = query.offset(offset).limit(limit).all()
+
+            # Преобразуем в словари с ПОЛНЫМИ данными
+            result = []
+            for chunk in chunks:
+                chunk_dict = {
+                    'id': chunk.id,
+                    'chunk_type': chunk.chunk_type,
+                    'chunk_key': chunk.chunk_key,
+                    'title': chunk.title,
+                    'status': chunk.status,
+                    'content': chunk.content,  # JSON строка
+                    'summary': chunk.summary,
+                    'created_at': chunk.created_at.isoformat() if chunk.created_at else None,
+                    'updated_at': chunk.updated_at.isoformat() if chunk.updated_at else None,
+                    'parent_chunk_id': chunk.parent_chunk_id,  # НОВОЕ
+                    'priority': chunk.priority,  # НОВОЕ
+                    'source_hash': chunk.source_hash,  # НОВОЕ
+                    'retry_count': chunk.retry_count  # НОВОЕ
+                }
+                result.append(chunk_dict)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении знаний: {e}")
+            return []
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict]:
         """Get single chunk by id."""
@@ -747,6 +764,178 @@ class KnowledgeManager:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM chunk_history WHERE chunk_id = ? ORDER BY recorded_at DESC LIMIT ?", (chunk_id, limit))
         return [dict(r) for r in cursor.fetchall()]
+
+    def get_chunks_by_priority(self, limit: int = 10) -> List[Dict]:
+        """Получает чанки, отсортированные по приоритету (только PENDING)"""
+        return self.get_knowledge(status='PENDING', limit=limit)
+    
+    
+    def get_chunk_children(self, parent_chunk_id: int) -> List[Dict]:
+        """Получает все дочерние чанки для заданного родителя"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM ai_knowledge WHERE parent_chunk_id = ? ORDER BY priority DESC",
+                (parent_chunk_id,)
+            )
+            return [self._chunk_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+    
+    
+    def get_chunk_parent(self, chunk_id: int) -> Optional[Dict]:
+        """Получает родительский чанк"""
+        chunk = self.get_chunk_by_id(chunk_id)
+        if not chunk or not chunk.get('parent_chunk_id'):
+            return None
+        return self.get_chunk_by_id(chunk.get('parent_chunk_id'))
+    
+    
+    def get_chunk_by_key_and_type(self, chunk_key: str, chunk_type: str) -> Optional[Dict]:
+        """Получает чанк по ключу и типу"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM ai_knowledge WHERE chunk_key = ? AND chunk_type = ?",
+                (chunk_key, chunk_type)
+            )
+            row = cursor.fetchone()
+            return self._chunk_from_row(row) if row else None
+        finally:
+            conn.close()
+    
+    
+    def get_pending_chunks(self) -> List[Dict]:
+        """Получает все PENDING чанки"""
+        return self.get_knowledge(status='PENDING', limit=999999)
+    
+    
+    def get_ready_chunks(self) -> List[Dict]:
+        """Получает все READY чанки"""
+        return self.get_knowledge(status='READY', limit=999999)
+    
+    
+    def get_recent_knowledge(self, limit: int = 10) -> List[Dict]:
+        """Получает недавно обновлённые чанки"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM ai_knowledge ORDER BY last_updated DESC LIMIT ?",
+                (limit,)
+            )
+            return [self._chunk_from_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+    
+    
+    def get_statistics(self) -> Dict:
+        """Получает статистику БД знаний"""
+        if self._stats_cache and time.time() - self._stats_cache_time < 60:
+            return self._stats_cache
+        
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT COUNT(*) FROM ai_knowledge")
+            total = cursor.fetchone()[0] or 0
+            
+            cursor.execute("SELECT COUNT(*) FROM ai_knowledge WHERE status = 'READY'")
+            ready = cursor.fetchone()[0] or 0
+            
+            cursor.execute("SELECT COUNT(*) FROM ai_knowledge WHERE status = 'PENDING'")
+            pending = cursor.fetchone()[0] or 0
+            
+            cursor.execute("SELECT COUNT(*) FROM ai_knowledge WHERE chunk_type = 'PRODUCT'")
+            products = cursor.fetchone()[0] or 0
+            
+            cursor.execute("SELECT COUNT(*) FROM ai_knowledge WHERE chunk_type = 'CATEGORY'")
+            categories = cursor.fetchone()[0] or 0
+            
+            stats = {
+                'total_chunks': total,
+                'ready_chunks': ready,
+                'pending_chunks': pending,
+                'products': products,
+                'categories': categories,
+                'completion_rate': round(ready / total * 100, 1) if total > 0 else 0
+            }
+            
+            self._stats_cache = stats
+            self._stats_cache_time = time.time()
+            
+            return stats
+        finally:
+            conn.close()
+    
+    
+    def get_status_summary(self) -> Dict:
+        """Получает сводку статусов всех чанков"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT status, COUNT(*) as count
+                FROM ai_knowledge
+                GROUP BY status
+            """)
+            
+            summary = {}
+            for row in cursor.fetchall():
+                summary[row[0]] = row[1]
+            
+            return summary
+        finally:
+            conn.close()
+    
+    
+    def get_rag_context_for_item(self, item_title: str) -> Optional[Dict]:
+        """Получает RAG контекст для товара (поиск по семантике)"""
+        try:
+            # Извлекаем семантику товара
+            semantic = FeatureExtractor.extract_semantic_data(item_title)
+            product_key = semantic.get('product_key')
+            
+            if not product_key:
+                return None
+            
+            # Ищем соответствующий PRODUCT чанк
+            chunk = self.get_chunk_by_key_and_type(product_key, 'PRODUCT')
+            
+            if not chunk or chunk.get('status') != 'READY':
+                return None
+            
+            content = chunk.get('content', {})
+            
+            return {
+                'chunk_id': chunk['id'],
+                'chunk_key': chunk['chunk_key'],
+                'knowledge': content.get('main_description', ''),
+                'summary': chunk.get('summary', ''),
+                'confidence': content.get('confidence', 0.5)
+            }
+        
+        except Exception as e:
+            logger.error(f"RAG context error: {e}")
+            return None
+    
+    
+    def get_rag_status(self) -> Dict:
+        """Получает статус RAG (сколько чанков готово для RAG)"""
+        stats = self.get_statistics()
+        ready = stats.get('ready_chunks', 0)
+        total = stats.get('total_chunks', 0)
+        
+        return {
+            'rag_ready_chunks': ready,
+            'total_chunks': total,
+            'rag_coverage': round(ready / total * 100, 1) if total > 0 else 0,
+            'status': 'GOOD' if ready / total > 0.7 else 'NEEDS_WORK' if ready > 0 else 'EMPTY'
+        }
 
     # === Export/Import ===
 

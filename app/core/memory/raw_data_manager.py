@@ -1255,6 +1255,112 @@ class RawDataManager:
         self._ensure_db_exists()
         logger.info("Raw data database reset complete")
 
+    def calculate_data_signature(self, product_key: Optional[str] = None, category_name: Optional[str] = None) -> str:
+        """Вычисляет SHA256 хеш данных для проверки целостности"""
+        import hashlib
+        
+        try:
+            query = "SELECT title, price, date_text FROM raw_items WHERE 1=1"
+            params = []
+            
+            if product_key:
+                # Ищем через product_id
+                query += " AND product_id = (SELECT id FROM products WHERE key = ?)"
+                params.append(product_key)
+            
+            if category_name:
+                # Ищем через category_id
+                query += " AND product_id IN (SELECT id FROM products WHERE category_id = (SELECT id FROM categories WHERE name = ?))"
+                params.append(category_name)
+            
+            query += " ORDER BY id LIMIT 1000"
+            
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            # Формируем строку для хеширования
+            data_str = ""
+            for row in rows:
+                data_str += f"{row[0]}{row[1]}{row[2]}"
+            
+            if not data_str:
+                return "empty"
+            
+            signature = hashlib.sha256(data_str.encode()).hexdigest()
+            return signature
+        
+        except Exception as e:
+            logger.error(f"Error calculating signature: {e}")
+            return "error"
+    
+    
+    def save_history_snapshot(self, product_key: Optional[str] = None, stats_snapshot: Optional[Dict] = None):
+        """Сохраняет снепшот истории для анализа изменений (в JSON файл)"""
+        try:
+            import os
+            from datetime import datetime
+            
+            if not product_key or not stats_snapshot:
+                return
+            
+            # Создаём директорию для истории
+            history_dir = os.path.join(BASE_APP_DIR, "chunk_history")
+            os.makedirs(history_dir, exist_ok=True)
+            
+            # Генерируем безопасное имя файла
+            safe_key = product_key.replace('/', '_').replace('\\', '_')
+            history_file = os.path.join(history_dir, f"{safe_key}_history.json")
+            
+            # Читаем существующую историю
+            history = []
+            if os.path.exists(history_file):
+                try:
+                    with open(history_file, 'r', encoding='utf-8') as f:
+                        history = json.load(f)
+                except:
+                    history = []
+            
+            # Добавляем новый снепшот
+            snapshot = {
+                'recorded_at': datetime.utcnow().isoformat(),
+                **stats_snapshot
+            }
+            history.append(snapshot)
+            
+            # Сохраняем обратно (только последние 50 снепшотов)
+            with open(history_file, 'w', encoding='utf-8') as f:
+                json.dump(history[-50:], f, ensure_ascii=False, indent=2)
+            
+            logger.dev(f"History snapshot saved for {product_key}", level="DEBUG")
+        
+        except Exception as e:
+            logger.dev(f"Error saving history snapshot: {e}", level="DEBUG")
+    
+    
+    def get_chunk_history(self, product_key: str, limit: int = 10) -> List[Dict]:
+        """Получает историю изменений чанка"""
+        try:
+            import os
+            
+            history_dir = os.path.join(BASE_APP_DIR, "chunk_history")
+            safe_key = product_key.replace('/', '_').replace('\\', '_')
+            history_file = os.path.join(history_dir, f"{safe_key}_history.json")
+            
+            if not os.path.exists(history_file):
+                return []
+            
+            with open(history_file, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+            
+            return history[-limit:] if history else []
+        
+        except Exception as e:
+            logger.dev(f"Error getting chunk history: {e}", level="DEBUG")
+            return []
+
     def export_to_json(self, filepath: str):
         data = {
             'exported_at': datetime.now().isoformat(),

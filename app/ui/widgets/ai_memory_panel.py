@@ -984,6 +984,68 @@ class AIMemoryPanel(QWidget):
             self.btn_generate.setEnabled(False)
             self.btn_generate.setText("Актуально")
 
+    def _show_children_chunks(self, parent_id: int):
+        """Показывает все дочерние чанки для выбранного чанка"""
+        try:
+            all_chunks = self.memory_manager.knowledge.get_knowledge(limit=10000)
+            children = [c for c in all_chunks if c.get('parent_chunk_id') == parent_id]
+
+            if not children:
+                logger.info("Дочерние узлы не найдены.", token="ui-mem")
+                return
+
+            # Формируем список и показываем в дереве
+            logger.success(f"Найдено {len(children)} дочерних узлов.", token="ui-mem")
+
+            # Если есть tree widget, выбираем их
+            if hasattr(self, 'tree_widget'):
+                for child in children:
+                    items = self.tree_widget.findItems(str(child['id']), Qt.MatchRecursive)
+                    if items:
+                        items[0].setSelected(True)
+
+        except Exception as e:
+            logger.error(f"Ошибка при показе дочерних чанков: {e}", token="ui-mem")
+
+
+    def _refresh_product_stats(self, chunk_id: int):
+        """Пересчитывает статистику для PRODUCT чанка"""
+        try:
+            chunk = self.memory_manager.get_chunk_by_id(chunk_id)
+            if not chunk or chunk.get('chunk_type') != 'PRODUCT':
+                return
+
+            # Получаем сырые данные для товара
+            product_key = chunk.get('chunk_key')
+            items = self.memory_manager.find_similar_items(product_key, limit=1000)
+
+            # Пересчитываем статистику
+            valid_prices = [i['price'] for i in items if i.get('price', 0) > 50 and not i.get('is_outlier', 0)]
+
+            if valid_prices:
+                stats = {
+                    'min': min(valid_prices),
+                    'max': max(valid_prices),
+                    'avg': int(sum(valid_prices) / len(valid_prices)),
+                    'med': int(sorted(valid_prices)[len(valid_prices) // 2]),
+                    'count': len(valid_prices)
+                }
+
+                # Обновляем контент чанка
+                content = chunk.get('content')
+                if isinstance(content, str):
+                    content = json.loads(content)
+
+                content['price_analysis'] = stats
+                self.memory_manager.update_chunk_content(chunk_id, content)
+
+                logger.success(f"✅ Статистика товара {product_key} обновлена: {stats}", token="ui-mem")
+            else:
+                logger.warning("Недостаточно данных для пересчета статистики.", token="ui-mem")
+
+        except Exception as e:
+            logger.error(f"Ошибка при пересчете статистики: {e}", token="ui-mem")
+
     # --- Actions ---
 
     def _on_card_refresh_requested(self, chunk_id):
