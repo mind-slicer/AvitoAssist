@@ -20,7 +20,6 @@ class ChunkType(Enum):
     CATEGORY = "CATEGORY"
     DATABASE = "DATABASE"
     AI_BEHAVIOR = "AI_BEHAVIOR"
-    CUSTOM = "CUSTOM"
 
 class ChunkStatus(Enum):
     PENDING = "PENDING"
@@ -41,6 +40,8 @@ class ChunkCultivationManager(QObject):
     cultivation_ready = pyqtSignal(int)
     chunk_status_changed = pyqtSignal(int, str)
     chunk_progress = pyqtSignal(int, int, str)
+    config_updated_signal = pyqtSignal(dict)
+    pause_state_changed = pyqtSignal(bool)
 
     def __init__(self, memory_manager, ai_manager, parent=None):
         super().__init__(parent)
@@ -48,10 +49,14 @@ class ChunkCultivationManager(QObject):
         self.ai = ai_manager
 
         self.master_switch = True
+        self._paused_remaining_time = 0
+        self._is_resuming_from_pause = False
 
         self._cultivation_timer = QTimer(self)
         self._cultivation_timer.timeout.connect(self._check_triggers)
-        self._cultivation_timer.start(30_000) 
+        
+        self._target_poll_interval = 30_000 
+        self._cultivation_timer.start(self._target_poll_interval)
 
         self._integrity_timer = QTimer(self)
         self._integrity_timer.timeout.connect(self.validate_chunks_integrity)
@@ -61,8 +66,32 @@ class ChunkCultivationManager(QObject):
         self.default_data_threshold = 10
 
     def toggle_master_switch(self, enabled: bool):
+        """Переключение паузы с сохранением прогресса таймера"""
+        if self.master_switch == enabled:
+            return
+
         self.master_switch = enabled
-        logger.info(f"AI Master Switch: {'ON' if enabled else 'PAUSED'}", token="ai-ctrl")
+        
+        if not enabled:
+            if self._cultivation_timer.isActive():
+                self._paused_remaining_time = self._cultivation_timer.remainingTime()
+                self._cultivation_timer.stop()
+            else:
+                self._paused_remaining_time = 0
+            
+            logger.info(f"⏸️ Система культивации: ПАУЗА (осталось {self._paused_remaining_time/1000:.1f}с)", token="ai-ctrl")
+        else:
+            delay = self._paused_remaining_time
+            if delay <= 100: 
+                delay = 1000 
+            
+            self._is_resuming_from_pause = True
+            
+            self._cultivation_timer.start(delay)
+            
+            logger.info(f"▶️ Система культивации: АКТИВНА (продолжение через {delay/1000:.1f}с)", token="ai-ctrl")
+            
+        self.pause_state_changed.emit(enabled)
 
     def validate_chunks_integrity(self): # TODO
         logger.dev("Запуск проверки целостности знаний...", level="DEBUG")
@@ -299,8 +328,14 @@ class ChunkCultivationManager(QObject):
         self.cultivate_pending_chunks(user_instructions)
 
     def _check_triggers(self):
+        """Основной цикл проверки"""
+        if self._is_resuming_from_pause:
+            self._is_resuming_from_pause = False
+            self._cultivation_timer.setInterval(self._target_poll_interval)
+
         if not self.master_switch:
             return
+
         try:
             self.scan_and_create_structure()
             self.check_and_cultivate()
@@ -818,37 +853,43 @@ class ChunkCultivationManager(QObject):
     # --- UI HELPERS ---
 
     def get_monitor_data(self) -> Dict:
-        """Возвращает данные для виджета мониторинга"""
+        """Данные для UI"""
         next_check_in = 0
-        if self._cultivation_timer and self._cultivation_timer.isActive():
-            next_check_in = self._cultivation_timer.remainingTime() // 1000
+        current_cycle_total = self._target_poll_interval // 1000
         
-        # Безопасное получение данных AI
+        if not self.master_switch:
+            next_check_in = self._paused_remaining_time // 1000
+        else:
+            if self._cultivation_timer.isActive():
+                next_check_in = self._cultivation_timer.remainingTime() // 1000
+                current_cycle_total = self._cultivation_timer.interval() // 1000
+
         queue_len = 0
         active_workers = 0
         is_cultivating = False
-        
+
         if self.ai:
             queue_len = len(getattr(self.ai, '_cultivation_queue', []))
             active_workers = len(getattr(self.ai, '_chunk_workers', {}))
             is_cultivating = getattr(self.ai, '_is_cultivating_now', False)
-        
-        # Новые данные
+
         nearest_time = self._get_nearest_time_trigger()
         market_deviations = self._get_pending_market_deviations()
-        
+
         return {
             "next_check": next_check_in,
+            "current_cycle_total": current_cycle_total,
             "queue_size": queue_len,
             "active_workers": active_workers,
             "is_cultivating": is_cultivating,
             "nearest_time_trigger": nearest_time,
             "pending_market_deviations": market_deviations,
+            "is_paused": not self.master_switch,
             "config": {
-                "poll_interval": self._cultivation_timer.interval() // 1000,  # НОВОЕ
+                "poll_interval": self._target_poll_interval // 1000,
                 "time_threshold": self.default_time_threshold,
                 "data_threshold": self.default_data_threshold,
-                "integrity_interval": self._integrity_timer.interval() // 1000  # НОВОЕ
+                "integrity_interval": self._integrity_timer.interval() // 1000
             }
         }
 
@@ -1040,29 +1081,45 @@ class ChunkCultivationManager(QObject):
     Ответь 'YES' если обновление необходимо (новые тренды, аномалии цен, изменение характеристик).
     Ответь 'NO' если новые данные подтверждают существующий анализ."""
 
-    def update_config(self, time_threshold: int, data_threshold: int):
-        """Обновление настроек из UI."""
-        self.default_time_threshold = time_threshold
-        self.default_data_threshold = data_threshold
-        logger.info(f"Настройки культивации обновлены: Time={time_threshold}s, Data={data_threshold} items", token="ai-conf")
-
     def update_config_full(self, config: Dict):
-        """Обновление всех настроек из UI"""
+        """Обновление настроек без лимитов и с оповещением UI"""
+        poll_interval_sec = int(config.get('poll_interval', 30))
+        # Технический минимум 1 сек, чтобы не повесить UI
+        if poll_interval_sec < 1: poll_interval_sec = 1
+        
+        new_interval_ms = poll_interval_sec * 1000
 
-        # Частота опроса
-        poll_interval = config.get('poll_interval', 30) * 1000  # в миллисекунды
-        if self._cultivation_timer.interval() != poll_interval:
-            self._cultivation_timer.setInterval(poll_interval)
-            logger.info(f"⏱️ Частота опроса изменена: {poll_interval // 1000}с", token="ai-conf")
+        if self._target_poll_interval != new_interval_ms:
+            self._target_poll_interval = new_interval_ms
+            
+            if self.master_switch:
+                self._cultivation_timer.stop()
+                
+                self._is_resuming_from_pause = False 
+                self._paused_remaining_time = 0      
+                
+                self._cultivation_timer.setInterval(new_interval_ms)
+                self._cultivation_timer.start()
+                
+            logger.info(f"⏱️ Частота опроса изменена: {poll_interval_sec}с (таймер перезапущен)", token="ai-conf")
 
-        # Срок актуальности чанка
-        self.default_time_threshold = config.get('time_threshold', 120)
+        self.default_time_threshold = int(config.get('time_threshold', 120))
+        self.default_data_threshold = int(config.get('data_threshold', 10))
 
-        # Порог новых данных
-        self.default_data_threshold = config.get('data_threshold', 10)
+        integrity_sec = int(config.get('integrity_interval', 300))
+        if integrity_sec < 10: integrity_sec = 10
+        integrity_ms = integrity_sec * 1000
 
-        # Проверка целостности
-        integrity_interval = config.get('integrity_interval', 300) * 1000
-        if self._integrity_timer.interval() != integrity_interval:
-            self._integrity_timer.setInterval(integrity_interval)
-            logger.info(f"🔒 Интервал целостности изменен: {integrity_interval // 1000}с", token="ai-conf")
+        if self._integrity_timer.interval() != integrity_ms:
+            self._integrity_timer.setInterval(integrity_ms)
+            if self.master_switch:
+                self._integrity_timer.start()
+            logger.info(f"🔒 Интервал целостности изменен: {integrity_sec}с", token="ai-conf")
+        
+        # Важно: эмитим сигнал, чтобы синхронизировать все открытые виджеты
+        self.config_updated_signal.emit({
+            'poll_interval': poll_interval_sec,
+            'time_threshold': self.default_time_threshold,
+            'data_threshold': self.default_data_threshold,
+            'integrity_interval': integrity_sec
+        })

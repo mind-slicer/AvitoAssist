@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QPointF, QSize, QRect, 
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont
 
 from app.ui.styles import Components, Palette, Spacing, Typography
+from app.ui.widgets.ai_control_panel import CultivationMonitorWidget
 from app.core.log_manager import logger
 from app.core.ai.prompts import prompt_manager
 from app.config import BASE_APP_DIR
@@ -784,6 +785,10 @@ class AIMemoryPanel(QWidget):
         right_col.setStyleSheet(Components.panel())
         right_vbox = QVBoxLayout(right_col)
         right_vbox.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
+        right_vbox.setSpacing(Spacing.MD)
+
+        self.monitor_placeholder = QVBoxLayout() 
+        right_vbox.addLayout(self.monitor_placeholder)
 
         self.right_tabs = QTabWidget()
         # (Styles kept simple for brevity)
@@ -910,6 +915,13 @@ class AIMemoryPanel(QWidget):
         self.chunk_manager = chunk_manager
 
         if self.chunk_manager:
+            while self.monitor_placeholder.count():
+                item = self.monitor_placeholder.takeAt(0)
+                if item.widget(): item.widget().deleteLater()
+            
+            self.monitor = CultivationMonitorWidget(self.chunk_manager)
+            self.monitor_placeholder.addWidget(self.monitor)
+
             self.chunk_manager.chunk_status_changed.connect(self._on_chunk_status_changed)
             self.chunk_manager.cultivation_ready.connect(self._on_cultivation_ready)
             self.chunk_manager.chunk_progress.connect(self._on_chunk_progress)

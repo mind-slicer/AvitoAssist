@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, 
-                            QScrollArea, QLineEdit, QListWidgetItem, QProgressBar)
+                            QScrollArea, QLineEdit, QListWidgetItem, QComboBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from app.ui.styles import Components, Palette, Typography, Spacing
 from app.core.log_manager import logger
@@ -194,366 +194,365 @@ class AIControlPanel(QWidget):
             
 
 class CultivationMonitorWidget(QFrame):
-    config_changed = pyqtSignal(dict)  # Все настройки одним словарем
-    
+    config_changed = pyqtSignal(dict)
+
     def __init__(self, cultivation_manager, parent=None):
         super().__init__(parent)
         self.manager = cultivation_manager
-        self.init_ui()
         
+        self._updating_ui = False
+        
+        self.init_ui()
+
+        if self.manager:
+            # Получаем текущий конфиг через get_monitor_data
+            data = self.manager.get_monitor_data()
+            self._on_manager_config_updated(data.get('config', {}))
+            
+            # Подписываемся на изменения
+            self.manager.config_updated_signal.connect(self._on_manager_config_updated)
+            self.manager.pause_state_changed.connect(self._on_pause_state_changed)
+
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_stats)
         self.update_timer.start(1000)
-    
+
     def init_ui(self):
         self.setObjectName("CultivationMonitor")
-        self.setMinimumHeight(220)  # Увеличили высоту
         self.setStyleSheet(f"""
             #CultivationMonitor {{
                 background-color: {Palette.BG_DARK_3};
                 border: 1px solid {Palette.BORDER_SOFT};
                 border-radius: {Spacing.RADIUS_SMOOTH}px;
             }}
-        """)
-        
-        layout = QVBoxLayout(self)
-        layout.setSpacing(6)
-        layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Заголовок
-        header = QLabel("🔄 ПУЛЬС СИСТЕМЫ")
-        header.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: bold; font-size: 10px; letter-spacing: 1px;")
-        layout.addWidget(header)
-        self.header_label = header
-        
-        # 1. Главный опрос (прогресс-бар)
-        poll_layout = QHBoxLayout()
-        poll_layout.setSpacing(6)
-        
-        poll_label = QLabel("Опрос:")
-        poll_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 11px;")
-        poll_layout.addWidget(poll_label)
-        
-        self.pb = QProgressBar()
-        self.pb.setFixedHeight(6)
-        self.pb.setTextVisible(False)
-        self.pb.setRange(0, 30)  # Будет динамически обновляться
-        self.pb.setStyleSheet(f"""
-            QProgressBar {{
+            QLineEdit {{
                 background-color: {Palette.BG_DARK_2};
-                border: none;
-                border-radius: 3px;
+                color: {Palette.TEXT};
+                border: 1px solid {Palette.BORDER_SOFT};
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-family: {Typography.MONO};
             }}
-            QProgressBar::chunk {{
-                background-color: {Palette.PRIMARY};
-                border-radius: 3px;
+            QLineEdit:focus {{ border-color: {Palette.PRIMARY}; }}
+            QComboBox {{
+                background-color: {Palette.BG_DARK_2};
+                color: {Palette.TEXT_MUTED};
+                border: 1px solid {Palette.BORDER_SOFT};
+                border-radius: 4px;
+                padding: 1px 4px;
+                font-size: 10px;
             }}
+            QComboBox::drop-down {{ border: none; }}
         """)
-        poll_layout.addWidget(self.pb, 1)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # === 1. ЗАГОЛОВОК И СТАТУС ===
+        top_layout = QHBoxLayout()
         
-        self.poll_time_label = QLabel("—")
-        self.poll_time_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px; min-width: 25px;")
-        poll_layout.addWidget(self.poll_time_label)
+        self.header_label = QLabel("ПУЛЬС СИСТЕМЫ")
+        self.header_label.setStyleSheet(f"color: {Palette.TEXT_SECONDARY}; font-weight: bold; font-size: 11px; letter-spacing: 1px;")
+        top_layout.addWidget(self.header_label)
+        top_layout.addStretch()
         
-        layout.addLayout(poll_layout)
+        # Индикатор следующего запуска (вместо прогресс-бара)
+        self.next_run_label = QLabel("Ожидание...")
+        self.next_run_label.setStyleSheet(f"color: {Palette.PRIMARY}; font-family: {Typography.MONO}; font-weight: bold;")
+        top_layout.addWidget(self.next_run_label)
         
-        # 2. Ближайшее обновление (TIME_ELAPSED)
-        self.nearest_label = QLabel("⏱️ Расчет...")
-        self.nearest_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 11px;")
-        self.nearest_label.setWordWrap(True)
-        layout.addWidget(self.nearest_label)
-        
-        # 3. Аномалии цен (MARKET_DEVIATION)
-        self.deviation_label = QLabel("📊 Отслеживание цен...")
-        self.deviation_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        self.deviation_label.setWordWrap(True)
-        layout.addWidget(self.deviation_label)
-        
-        # Разделитель
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet(f"background-color: {Palette.BORDER_SOFT}; max-height: 1px;")
-        layout.addWidget(separator)
-        
-        # --- КНОПКА ПАУЗЫ ---
-        btn_layout = QHBoxLayout()
+        layout.addLayout(top_layout)
+
+        # === 2. КНОПКА ПАУЗЫ (БОЛЬШАЯ) ===
         self.btn_pause = QPushButton("⏸ ПАУЗА")
         self.btn_pause.setCheckable(True)
+        self.btn_pause.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pause.setFixedHeight(32)
         self.btn_pause.setStyleSheet(f"""
             QPushButton {{
                 background-color: {Palette.BG_DARK_2};
                 color: {Palette.TEXT};
                 border: 1px solid {Palette.BORDER_SOFT};
                 border-radius: 4px;
-                padding: 4px;
                 font-weight: bold;
-                font-size: 10px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                border-color: {Palette.WARNING};
+                color: {Palette.WARNING};
             }}
             QPushButton:checked {{
                 background-color: {Palette.WARNING};
-                color: #000;
-                border: none;
+                color: #1a1a1a;
+                border: 1px solid {Palette.WARNING};
             }}
         """)
-        self.btn_pause.toggled.connect(self._on_pause_toggled)
-        btn_layout.addWidget(self.btn_pause)
-        layout.addLayout(btn_layout)
+        self.btn_pause.clicked.connect(self._on_pause_clicked)
+        layout.addWidget(self.btn_pause)
 
-        # 4. НАСТРОЙКИ (редактируемые поля)
-        settings_label = QLabel("⚙️ НАСТРОЙКИ")
-        settings_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: bold; font-size: 9px; letter-spacing: 1px; margin-top: 2px;")
+        layout.addSpacing(4)
+        
+        # Разделитель
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setStyleSheet(f"background-color: {Palette.DIVIDER}; max-height: 1px;")
+        layout.addWidget(sep1)
+
+        # === 3. НАСТРОЙКИ (СЕТКА) ===
+        # Используем сетку для выравнивания Label | Input | Unit
+        
+        settings_label = QLabel("ПАРАМЕТРЫ")
+        settings_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: bold; font-size: 9px; margin-bottom: 2px;")
         layout.addWidget(settings_label)
-        
-        settings_layout = QVBoxLayout()
-        settings_layout.setSpacing(4)
-        
-        # 4.1 Частота опроса (_cultivation_timer)
-        poll_interval_layout = QHBoxLayout()
-        poll_interval_layout.setSpacing(6)
-        
-        poll_interval_label = QLabel("Частота опроса:")
-        poll_interval_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        poll_interval_layout.addWidget(poll_interval_label)
-        
-        self.poll_interval_input = QLineEdit()
-        self.poll_interval_input.setFixedWidth(50)
-        self.poll_interval_input.setText("30")
-        self.poll_interval_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.poll_interval_input.setStyleSheet(self._input_style())
-        self.poll_interval_input.editingFinished.connect(self._on_config_changed)
-        poll_interval_layout.addWidget(self.poll_interval_input)
-        
-        poll_suffix = QLabel("сек")
-        poll_suffix.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        poll_interval_layout.addWidget(poll_suffix)
-        poll_interval_layout.addStretch()
-        
-        settings_layout.addLayout(poll_interval_layout)
-        
-        # 4.2 Срок актуальности чанка (default_time_threshold)
-        time_layout = QHBoxLayout()
-        time_layout.setSpacing(6)
-        
-        time_label = QLabel("Срок актуальности:")
-        time_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        time_label.setToolTip("Минимальное время между обновлениями одного чанка")
-        time_layout.addWidget(time_label)
-        
-        self.time_input = QLineEdit()
-        self.time_input.setFixedWidth(50)
-        self.time_input.setText("120")
-        self.time_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.time_input.setStyleSheet(self._input_style())
-        self.time_input.editingFinished.connect(self._on_config_changed)
-        time_layout.addWidget(self.time_input)
-        
-        time_suffix = QLabel("сек")
-        time_suffix.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        time_layout.addWidget(time_suffix)
-        time_layout.addStretch()
-        
-        settings_layout.addLayout(time_layout)
-        
-        # 4.3 Порог новых данных (default_data_threshold)
-        data_layout = QHBoxLayout()
-        data_layout.setSpacing(6)
-        
-        data_label = QLabel("Порог новых данных:")
-        data_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        data_label.setToolTip("Количество новых записей для принудительного обновления")
-        data_layout.addWidget(data_label)
-        
-        self.data_input = QLineEdit()
-        self.data_input.setFixedWidth(50)
-        self.data_input.setText("10")
-        self.data_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.data_input.setStyleSheet(self._input_style())
-        self.data_input.editingFinished.connect(self._on_config_changed)
-        data_layout.addWidget(self.data_input)
-        
-        data_suffix = QLabel("шт")
-        data_suffix.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        data_layout.addWidget(data_suffix)
-        data_layout.addStretch()
-        
-        settings_layout.addLayout(data_layout)
-        
-        # 4.4 Проверка целостности (_integrity_timer)
-        integrity_layout = QHBoxLayout()
-        integrity_layout.setSpacing(6)
-        
-        integrity_label = QLabel("Проверка целостности:")
-        integrity_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        integrity_label.setToolTip("Частота проверки изменений сырых данных (хеш-сумм)")
-        integrity_layout.addWidget(integrity_label)
-        
-        self.integrity_input = QLineEdit()
-        self.integrity_input.setFixedWidth(50)
-        self.integrity_input.setText("300")
-        self.integrity_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.integrity_input.setStyleSheet(self._input_style())
-        self.integrity_input.editingFinished.connect(self._on_config_changed)
-        integrity_layout.addWidget(self.integrity_input)
-        
-        integrity_suffix = QLabel("сек")
-        integrity_suffix.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        integrity_layout.addWidget(integrity_suffix)
-        integrity_layout.addStretch()
-        
-        settings_layout.addLayout(integrity_layout)
-        
-        layout.addLayout(settings_layout)
-        
-        # 5. Очередь
-        self.queue_label = QLabel("Очередь: — / Активно: —")
-        self.queue_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        layout.addWidget(self.queue_label)
-    
-    def _input_style(self):
-        return f"""
-            QLineEdit {{
-                background-color: {Palette.BG_DARK_2};
-                color: {Palette.TEXT};
-                border: 1px solid {Palette.BORDER_SOFT};
-                border-radius: 3px;
-                padding: 2px 4px;
-                font-size: 10px;
-            }}
-            QLineEdit:focus {{
-                border-color: {Palette.PRIMARY};
-            }}
-        """
-    
-    def _on_config_changed(self):
-        """Обработка изменения настроек"""
-        try:
-            poll_interval = int(self.poll_interval_input.text())
-            time_val = int(self.time_input.text())
-            data_val = int(self.data_input.text())
-            integrity_val = int(self.integrity_input.text())
-            
-            # Валидация
-            poll_interval = max(10, min(300, poll_interval))   # 10 сек - 5 минут
-            time_val = max(30, min(3600, time_val))            # 30 сек - 1 час
-            data_val = max(1, min(100, data_val))              # 1-100 элементов
-            integrity_val = max(60, min(3600, integrity_val))  # 1 мин - 1 час
-            
-            # Обновляем поля (на случай коррекции)
-            self.poll_interval_input.setText(str(poll_interval))
-            self.time_input.setText(str(time_val))
-            self.data_input.setText(str(data_val))
-            self.integrity_input.setText(str(integrity_val))
-            
-            # Применяем в менеджере
-            if self.manager:
-                self.manager.update_config_full({
-                    'poll_interval': poll_interval,
-                    'time_threshold': time_val,
-                    'data_threshold': data_val,
-                    'integrity_interval': integrity_val
-                })
-                logger.info(
-                    f"⚙️ Настройки: Опрос={poll_interval}с, Актуальность={time_val}с, "
-                    f"Данные={data_val}шт, Целостность={integrity_val}с",
-                    token="ai-conf"
-                )
-            
-            self.config_changed.emit({
-                'poll_interval': poll_interval,
-                'time_threshold': time_val,
-                'data_threshold': data_val,
-                'integrity_interval': integrity_val
-            })
-            
-        except ValueError:
-            # Возвращаем значения по умолчанию
-            self.poll_interval_input.setText("30")
-            self.time_input.setText("120")
-            self.data_input.setText("10")
-            self.integrity_input.setText("300")
-    
-    def update_stats(self):
-        if not self.manager:
-            return
-        
-        try:
-            data = self.manager.get_monitor_data()
-        except AttributeError:
-            return
-        
-        # Главный опрос (обновляем max range динамически)
-        poll_interval = data.get("config", {}).get("poll_interval", 30)
-        next_check = data.get("next_check", 0)
-        
-        self.pb.setRange(0, poll_interval)
-        self.pb.setValue(poll_interval - next_check)
-        self.poll_time_label.setText(f"{next_check}с")
-        
-        # Ближайшее TIME_ELAPSED обновление
-        nearest = data.get("nearest_time_trigger")
-        if nearest:
-            title = nearest["chunk_title"][:25]
-            secs = nearest["seconds_left"]
-            mins = secs // 60
-            if mins > 0:
-                time_str = f"{mins}м {secs % 60}с"
-            else:
-                time_str = f"{secs}с"
-            self.nearest_label.setText(f"⏱️ '{title}' через {time_str}")
-            self.nearest_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 11px; font-weight: bold;")
-        else:
-            self.nearest_label.setText("⏱️ Все чанки свежие")
-            self.nearest_label.setStyleSheet(f"color: {Palette.SUCCESS}; font-size: 11px;")
-        
-        # Аномалии цен
-        deviations = data.get("pending_market_deviations", [])
-        if deviations:
-            top = deviations[0]
-            percent = top["deviation_percent"]
-            title = top["chunk_title"][:20]
-            icon = "📉" if percent < 0 else "📈"
-            color = Palette.SUCCESS if percent < 0 else Palette.WARNING
-            
-            self.deviation_label.setText(
-                f"{icon} '{title}': {percent:+.1f}% "
-                f"({top['stored_avg']}₽→{top['current_avg']}₽)"
-            )
-            self.deviation_label.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: bold;")
-        else:
-            self.deviation_label.setText("📊 Цены стабильны")
-            self.deviation_label.setStyleSheet(f"color: {Palette.SUCCESS}; font-size: 10px;")
-        
-        # Очередь
-        q = data.get("queue_size", 0)
-        w = data.get("active_workers", 0)
-        is_cult = data.get("is_cultivating", False)
-        
-        if is_cult:
-            self.queue_label.setText(f"⚙️ Обработка... | Очередь: {q}")
-            self.queue_label.setStyleSheet(f"color: {Palette.PRIMARY}; font-size: 10px; font-weight: bold;")
-        else:
-            self.queue_label.setText(f"Очередь: {q} / Активно: {w}")
-            self.queue_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
-        
-        # Синхронизируем поля настроек из конфига
-        config = data.get("config", {})
-        self._sync_field(self.poll_interval_input, config.get("poll_interval", 30))
-        self._sync_field(self.time_input, config.get("time_threshold", 120))
-        self._sync_field(self.data_input, config.get("data_threshold", 10))
-        self._sync_field(self.integrity_input, config.get("integrity_interval", 300))
-    
-    def _sync_field(self, field: QLineEdit, value: int):
-        """Синхронизирует поле с конфигом (если не в фокусе)"""
-        if not field.hasFocus() and field.text() != str(value):
-            field.setText(str(value))
 
-    def _on_pause_toggled(self, checked):
-        if self.manager:
-            self.manager.toggle_master_switch(not checked) # Checked = Paused = Switch OFF
+        # -- Poll Interval --
+        self.poll_row = self._create_setting_row("Частота опроса:", "30", "poll_interval")
+        layout.addLayout(self.poll_row['layout'])
+
+        # -- Time Threshold --
+        self.time_row = self._create_setting_row("Актуальность чанка:", "120", "time_threshold")
+        layout.addLayout(self.time_row['layout'])
+
+        # -- Data Threshold --
+        # Тут единицы фиксированы (шт), комбобокс не нужен, но используем ту же структуру
+        self.data_row = self._create_setting_row("Порог данных:", "10", "data_threshold", fixed_unit="шт")
+        layout.addLayout(self.data_row['layout'])
+
+        # -- Integrity --
+        self.integrity_row = self._create_setting_row("Целостность:", "300", "integrity_interval")
+        layout.addLayout(self.integrity_row['layout'])
+
+        layout.addStretch()
+
+        # Разделитель
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"background-color: {Palette.DIVIDER}; max-height: 1px;")
+        layout.addWidget(sep2)
+
+        # === 4. ИНФО ОЧЕРЕДИ ===
+        info_layout = QHBoxLayout()
+        self.queue_info = QLabel("Очередь: 0")
+        self.active_info = QLabel("Активно: 0")
+        
+        for lbl in (self.queue_info, self.active_info):
+            lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
+        
+        info_layout.addWidget(self.queue_info)
+        info_layout.addStretch()
+        info_layout.addWidget(self.active_info)
+        layout.addLayout(info_layout)
+
+    def _create_setting_row(self, label_text, default_val, config_key, fixed_unit=None):
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0,0,0,0)
+        
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet(f"color: {Palette.TEXT}; font-size: 11px;")
+        layout.addWidget(lbl, 1) # stretch
+
+        inp = QLineEdit(default_val)
+        inp.setFixedWidth(50)
+        inp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        inp.editingFinished.connect(self._on_user_input_changed)
+        layout.addWidget(inp)
+
+        unit_widget = None
+        if fixed_unit:
+            unit_widget = QLabel(fixed_unit)
+            unit_widget.setFixedWidth(45)
+            unit_widget.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px; padding-left: 4px;")
+        else:
+            unit_widget = QComboBox()
+            unit_widget.setFixedWidth(45)
+            unit_widget.addItems(["сек", "мин"])
+            unit_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            # При смене единиц пересчитываем значение в поле
+            unit_widget.currentIndexChanged.connect(lambda idx, i=inp: self._convert_display_value(i, idx))
+            # При смене единиц также триггерим сохранение конфига
+            unit_widget.currentIndexChanged.connect(self._on_user_input_changed)
+
+        layout.addWidget(unit_widget)
+
+        return {
+            'layout': layout,
+            'input': inp,
+            'unit': unit_widget,
+            'key': config_key,
+            'fixed_unit': fixed_unit
+        }
+
+    def _convert_display_value(self, input_field: QLineEdit, new_unit_idx: int):
+        """Конвертация значений в поле при смене единиц измерения"""
+        if self._updating_ui: return
+
+        try:
+            val = float(input_field.text())
+            if new_unit_idx == 1: # Было сек (0), стало мин (1) -> делим
+                new_val = val / 60
+            else: # Было мин (1), стало сек (0) -> умножаем
+                new_val = val * 60
             
-        if checked:
+            if new_val.is_integer():
+                input_field.setText(str(int(new_val)))
+            else:
+                input_field.setText(f"{new_val:.2f}".rstrip('0').rstrip('.'))
+        except ValueError:
+            pass
+        
+        self._on_user_input_changed()
+
+    def _get_seconds_value(self, row_dict) -> int:
+        """Получает значение из поля в секундах, учитывая выбранную единицу"""
+        try:
+            val = float(row_dict['input'].text())
+            if not row_dict.get('fixed_unit') and row_dict['unit'].currentIndex() == 1: # Мин
+                val *= 60
+            return int(val)
+        except ValueError:
+            return 0
+
+    def _set_seconds_value(self, row_dict, seconds: int):
+        """Устанавливает значение в поле, конвертируя в текущую единицу"""
+        is_min = (not row_dict.get('fixed_unit')) and (row_dict['unit'].currentIndex() == 1)
+        val = seconds / 60 if is_min else seconds
+        
+        if val.is_integer():
+            row_dict['input'].setText(str(int(val)))
+        else:
+            row_dict['input'].setText(f"{val:.1f}")
+
+    def _on_user_input_changed(self):
+        """
+        Пользователь изменил значение руками.
+        Считываем все поля, приводим к секундам, отправляем в менеджер.
+        """
+        if self._updating_ui: return
+
+        # Читаем значения с учетом выбранных в данный момент единиц
+        poll = self._read_seconds_from_row(self.poll_row)
+        time_t = self._read_seconds_from_row(self.time_row)
+        data_t = int(self.data_row['input'].text()) # Штуки, без конвертации
+        integr = self._read_seconds_from_row(self.integrity_row)
+
+        new_config = {
+            'poll_interval': poll,
+            'time_threshold': time_t,
+            'data_threshold': data_t,
+            'integrity_interval': integr
+        }
+
+        # Обновляем менеджер (он разошлет сигнал всем остальным виджетам)
+        if self.manager:
+            self.manager.update_config_full(new_config)
+        
+        self.config_changed.emit(new_config)
+    
+    def _read_seconds_from_row(self, row_dict) -> int:
+        """Читает значение из поля и конвертирует в секунды, если выбраны минуты"""
+        try:
+            text = row_dict['input'].text().replace(',', '.')
+            val = float(text)
+            
+            # Если есть комбобокс и выбраны минуты (индекс 1)
+            if 'unit' in row_dict and isinstance(row_dict['unit'], QComboBox):
+                if row_dict['unit'].currentIndex() == 1:
+                    val *= 60
+            
+            return int(val)
+        except ValueError:
+            return 0
+
+    def _on_pause_clicked(self):
+        """Нажатие на кнопку Пауза"""
+        is_paused = self.btn_pause.isChecked()
+        if self.manager:
+            self.manager.toggle_master_switch(not is_paused)
+
+    def _on_pause_state_changed(self, enabled: bool):
+        """Реакция на сигнал от менеджера (если пауза переключена из другого места)"""
+        is_paused = not enabled
+        if self.btn_pause.isChecked() != is_paused:
+            self.btn_pause.setChecked(is_paused)
+        self._update_pause_ui(is_paused)
+
+    def _update_pause_ui(self, is_paused):
+        if is_paused:
             self.btn_pause.setText("▶ ПРОДОЛЖИТЬ")
-            self.header_label.setText("🛑 СИСТЕМА ОСТАНОВЛЕНА") # Если сохранили ссылку на header
+            self.header_label.setText("🛑 СИСТЕМА ОСТАНОВЛЕНА")
+            self.header_label.setStyleSheet(f"color: {Palette.ERROR}; font-weight: bold; font-size: 11px; letter-spacing: 1px;")
+            self.next_run_label.setText("НА ПАУЗЕ")
+            self.next_run_label.setStyleSheet(f"color: {Palette.ERROR}; font-family: {Typography.MONO}; font-weight: bold;")
         else:
             self.btn_pause.setText("⏸ ПАУЗА")
             self.header_label.setText("🔄 ПУЛЬС СИСТЕМЫ")
+            self.header_label.setStyleSheet(f"color: {Palette.TEXT_SECONDARY}; font-weight: bold; font-size: 11px; letter-spacing: 1px;")
+            self.next_run_label.setStyleSheet(f"color: {Palette.PRIMARY}; font-family: {Typography.MONO}; font-weight: bold;")
+
+    def _on_manager_config_updated(self, config: dict):
+        """
+        Сигнал от менеджера: конфиг обновился (возможно, из другого окна).
+        Нужно обновить свои поля, учитывая выбранные единицы измерения.
+        """
+        self._updating_ui = True
+        try:
+            # Poll Interval
+            self._set_field_value(self.poll_row, config.get('poll_interval', 30))
+            # Time Threshold
+            self._set_field_value(self.time_row, config.get('time_threshold', 120))
+            # Data Threshold (штуки)
+            self.data_row['input'].setText(str(config.get('data_threshold', 10)))
+            # Integrity
+            self._set_field_value(self.integrity_row, config.get('integrity_interval', 300))
+        finally:
+            self._updating_ui = False
+
+    def _set_field_value(self, row_dict, seconds_value):
+        """Устанавливает значение в поле, конвертируя в текущую единицу измерения виджета"""
+        is_minutes = False
+        if 'unit' in row_dict and isinstance(row_dict['unit'], QComboBox):
+            is_minutes = (row_dict['unit'].currentIndex() == 1)
+        
+        val = seconds_value / 60.0 if is_minutes else float(seconds_value)
+        
+        # Красивое форматирование
+        if val.is_integer():
+            row_dict['input'].setText(str(int(val)))
+        else:
+            row_dict['input'].setText(f"{val:.2f}".rstrip('0').rstrip('.'))
+
+    def update_stats(self):
+        if not self.manager: return
+
+        try:
+            data = self.manager.get_monitor_data()
+        except Exception:
+            return
+
+        is_paused = data.get("is_paused", False)
+        
+        # Обновляем состояние кнопки, если оно рассинхронизировалось
+        if self.btn_pause.isChecked() != is_paused:
+            self.btn_pause.blockSignals(True)
+            self.btn_pause.setChecked(is_paused)
+            self.btn_pause.blockSignals(False)
+            self._update_pause_ui(is_paused)
+
+        # Таймер
+        if is_paused:
+            self.next_run_label.setText("НА ПАУЗЕ")
+        else:
+            next_check = data.get("next_check", 0)
+            self.next_run_label.setText(f"Опрос через: {next_check}с")
+
+        # Очередь
+        q = data.get("queue_size", 0)
+        w = data.get("active_workers", 0)
+        self.queue_info.setText(f"Очередь: {q}")
+        self.active_info.setText(f"Обработка: {w}")
+        
+        if w > 0:
+            self.active_info.setStyleSheet(f"color: {Palette.PRIMARY}; font-weight: bold; font-size: 10px;")
+        else:
+            self.active_info.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")

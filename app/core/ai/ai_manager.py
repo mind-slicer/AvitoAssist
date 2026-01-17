@@ -10,7 +10,15 @@ from typing import List, Dict, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, Qt
 
-from app.config import AI_CTX_SIZE, AI_GPU_LAYERS, AI_SERVER_PORT, MODELS_DIR
+from app.config import (
+    AI_CTX_SIZE,
+    AI_MAX_TOKENS_ANALYSIS,
+    AI_MAX_TOKENS_CHAT,
+    AI_MAX_TOKENS_MEMORY, 
+    AI_GPU_LAYERS, 
+    AI_SERVER_PORT, 
+    MODELS_DIR
+)
 from app.core.ai.server_manager import ServerManager
 from app.core.ai.llama_client import LlamaClient
 from app.core.ai.prompts import PromptBuilder
@@ -53,7 +61,7 @@ class AIProcessingWorker(QThread):
                 "top_p": 0.95,
                 "min_p": 0.05,
                 "repeat_penalty": 1.05,
-                "max_tokens": 2048,
+                "max_tokens": AI_MAX_TOKENS_ANALYSIS,
                 "mirostat_mode": 0
             }
 
@@ -139,7 +147,7 @@ class AIChatWorker(QThread):
                 "top_k": 64,
                 "top_p": 0.95,
                 "min_p": 0.0,
-                "max_tokens": 2048 #TODO: Увеличить?
+                "max_tokens": AI_MAX_TOKENS_CHAT
             }
             
             resp = await client.chat_completion(
@@ -196,7 +204,7 @@ class AIChunkCultivationWorker(QThread):
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "max_tokens": 4096,
+                "max_tokens": AI_MAX_TOKENS_MEMORY,
                 "mirostat_mode": 0
             }
 

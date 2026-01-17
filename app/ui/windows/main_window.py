@@ -115,7 +115,7 @@ class MainWindow(QWidget):
             memory_manager=self.memory_manager,
             ai_manager=self.controller.ai_manager
         )
-
+        
         self._neuro_filtered: Dict[int, List[Dict]] = {}
         
         self.queue_manager = QueueStateManager()
@@ -128,6 +128,16 @@ class MainWindow(QWidget):
         self.parser_progress_timer = None
         self.current_search_mode = "full"
         self.app_settings = self._load_settings()
+
+        cultivation_conf = self.app_settings.get("cultivation_config", {})
+        if cultivation_conf:
+            self.controller.chunk_manager.update_config_full(cultivation_conf)
+        is_paused = self.app_settings.get("cultivation_paused", False)
+        if is_paused:
+            self.controller.chunk_manager.toggle_master_switch(False)
+        self.controller.chunk_manager.config_updated_signal.connect(self._save_cultivation_settings)
+        self.controller.chunk_manager.pause_state_changed.connect(self._save_cultivation_pause_state)
+        
         defect_filter.update_user_keywords(self.app_settings.get("user_defect_keywords", ""))
         tg_token = self.app_settings.get("telegram_token", "")
         tg_chat_id = self.app_settings.get("telegram_chat_id", "")
@@ -328,12 +338,9 @@ class MainWindow(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(Spacing.LG, Spacing.LG, Spacing.LG, Spacing.LG)
         
-        # ИЗМЕНИ эту строку - передай controller
         self.analytics_widget = AnalyticsWidget(self.memory_manager, self.controller)
+        self.analytics_widget.set_chunk_manager(self.controller.chunk_manager)
         layout.addWidget(self.analytics_widget)
-
-        #self.database_tab = DatabaseTab(self.memory_manager)
-        #self.stack.addWidget(self.database_tab)
         
         return page
 
@@ -1800,6 +1807,16 @@ class MainWindow(QWidget):
         try:
             with open(path, "w", encoding="utf-8") as f: json.dump(self.app_settings, f, indent=2)
         except: pass
+
+    def _save_cultivation_settings(self, config: dict):
+        """Слот для авто-сохранения настроек культивации"""
+        self.app_settings["cultivation_config"] = config
+        self._save_settings()
+        
+    def _save_cultivation_pause_state(self, enabled: bool):
+        """Слот для сохранения статуса паузы"""
+        self.app_settings["cultivation_paused"] = not enabled
+        self._save_settings()
 
     def _start_timers(self):
         self.ai_stats_timer = QTimer(self)

@@ -1,9 +1,9 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget, QHBoxLayout)
 from PyQt6.QtCore import pyqtSignal
 
 from app.ui.styles import Palette, Spacing
 from app.core.memory import MemoryManager
-from app.ui.widgets.ai_control_panel import AIControlPanel
+from app.ui.widgets.ai_control_panel import AIControlPanel, CultivationMonitorWidget
 from app.ui.pages.database_tab import DatabaseTab
 from app.core.log_manager import logger
 
@@ -15,7 +15,6 @@ class AnalyticsWidget(QWidget):
         super().__init__(parent)
         self.memory = memory_manager
         self.controller = controller
-        self.rebuild_finished_signal.connect(self.on_rebuild_finished)
         self.init_ui()
 
     def init_ui(self):
@@ -46,8 +45,28 @@ class AnalyticsWidget(QWidget):
         """)
 
         self.ai_control = AIControlPanel()
+
+        chat_tab = QWidget()
+        chat_layout = QHBoxLayout(chat_tab)
+        chat_layout.setContentsMargins(0,0,0,0)
+        
+        # Чат
+        chat_layout.addWidget(self.ai_control, 1)
+        
+        # Правая панель с монитором
+        right_panel = QWidget()
+        right_panel.setFixedWidth(360)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 10, 10, 10)
+        
+        self.monitor_placeholder = QVBoxLayout()
+        right_layout.addLayout(self.monitor_placeholder)
+        right_layout.addStretch()
+        
+        chat_layout.addWidget(right_panel)
+
         self.ai_control.send_message_signal.connect(self.send_message_signal.emit)
-        self.tabs.addTab(self.ai_control, "Чат")
+        self.tabs.addTab(chat_tab, "Чат")
 
         self.ai_control.set_memory_manager(self.memory)
 
@@ -68,6 +87,13 @@ class AnalyticsWidget(QWidget):
 
         main_layout.addWidget(self.tabs)
 
+    def set_chunk_manager(self, chunk_manager):
+        self.chunk_manager = chunk_manager
+        
+        if self.chunk_manager:
+             monitor = CultivationMonitorWidget(self.chunk_manager)
+             self.monitor_placeholder.addWidget(monitor)
+
     def on_ai_reply(self, text: str):
         if hasattr(self, 'ai_control'):
             self.ai_control.on_ai_reply(text)
@@ -81,6 +107,3 @@ class AnalyticsWidget(QWidget):
             self.rebuild_finished_signal.emit(count)
         except Exception as e:
             self.rebuild_finished_signal.emit(0)
-
-    def on_rebuild_finished(self, count: int):
-        self.refresh_data()

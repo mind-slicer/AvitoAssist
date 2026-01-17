@@ -5,9 +5,12 @@ import socket
 import psutil
 import atexit
 import time
+
 from PyQt6.QtCore import QObject, pyqtSignal
+
+from app.config import BASE_APP_DIR, AI_CTX_SIZE, AI_BACKEND_PREFERENCE
 from app.core.log_manager import logger
-from app.config import AI_BACKEND_PREFERENCE, BASE_APP_DIR
+
 
 class ServerManager(QObject):
     server_started = pyqtSignal()
@@ -97,7 +100,7 @@ class ServerManager(QObject):
             
         return "unknown", ""
 
-    def start_server(self, ctx_size: int = 2048, gpu_layers: int = -1, batch_size: int = 512, gpu_device: int = 0, backend_preference: str = "auto"):
+    def start_server(self, ctx_size: int = AI_CTX_SIZE, gpu_layers: int = -1, batch_size: int = 512, gpu_device: int = 0, backend_preference: str = "auto"):
         if self.is_running() or self._is_starting:
             return
 
