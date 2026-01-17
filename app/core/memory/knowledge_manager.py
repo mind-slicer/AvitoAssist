@@ -248,58 +248,62 @@ class KnowledgeManager:
 
     def get_knowledge(
         self,
+        chunk_id: Optional[int] = None,      # <--- Добавлено
+        chunk_key: Optional[str] = None,     # <--- Добавлено
         chunk_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict]:
         """
-        Получает знания из БД с поддержкой новых полей.
-        Возвращает полный объект чанка со всеми метаданными.
+        Получает знания из БД с полной поддержкой фильтрации.
+        Исправляет TypeError: теперь принимает все аргументы.
         """
+        conn = self._get_connection()
         try:
-            query = self.session.query(KnowledgeChunk)
+            cursor = conn.cursor()
+            
+            # Базовый запрос
+            query = "SELECT * FROM ai_knowledge WHERE 1=1"
+            params = []
 
-            # Фильтры
+            # --- ФИЛЬТРЫ ---
+            if chunk_id is not None:
+                query += " AND id = ?"
+                params.append(chunk_id)
+            
+            if chunk_key:
+                query += " AND chunk_key = ?"
+                params.append(chunk_key)
+
             if chunk_type:
-                query = query.filter_by(chunk_type=chunk_type)
+                query += " AND chunk_type = ?"
+                params.append(chunk_type)
+                
             if status:
-                query = query.filter_by(status=status)
+                query += " AND status = ?"
+                params.append(status)
 
-            # Сортировка по приоритету, потом по дате
-            query = query.order_by(
-                KnowledgeChunk.priority.desc(),
-                KnowledgeChunk.created_at.desc()
-            )
+            # Сортировка: Сначала PENDING, потом приоритет, потом новые
+            query += """
+                ORDER BY 
+                CASE WHEN status IN ('PENDING', 'INITIALIZING') THEN 0 ELSE 1 END,
+                priority DESC, 
+                last_updated DESC
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
 
-            # Пагинация
-            chunks = query.offset(offset).limit(limit).all()
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
 
-            # Преобразуем в словари с ПОЛНЫМИ данными
-            result = []
-            for chunk in chunks:
-                chunk_dict = {
-                    'id': chunk.id,
-                    'chunk_type': chunk.chunk_type,
-                    'chunk_key': chunk.chunk_key,
-                    'title': chunk.title,
-                    'status': chunk.status,
-                    'content': chunk.content,  # JSON строка
-                    'summary': chunk.summary,
-                    'created_at': chunk.created_at.isoformat() if chunk.created_at else None,
-                    'updated_at': chunk.updated_at.isoformat() if chunk.updated_at else None,
-                    'parent_chunk_id': chunk.parent_chunk_id,  # НОВОЕ
-                    'priority': chunk.priority,  # НОВОЕ
-                    'source_hash': chunk.source_hash,  # НОВОЕ
-                    'retry_count': chunk.retry_count  # НОВОЕ
-                }
-                result.append(chunk_dict)
-
-            return result
+            return [self._chunk_from_row(row) for row in rows]
 
         except Exception as e:
             logger.error(f"Ошибка при получении знаний: {e}")
             return []
+        finally:
+            conn.close()
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict]:
         """Get single chunk by id."""
@@ -634,18 +638,6 @@ class KnowledgeManager:
         finally:
             conn.close()
 
-    def get_rag_status(self) -> Dict:
-        """Get RAG system status."""
-        stats = self.get_statistics()
-        status_summary = stats.get('by_status', {})
-        return {
-            'total_items': stats.get('total_chunks', 0),
-            'total_categories': stats.get('category_chunks', 0),
-            'ready_chunks': status_summary.get('READY', 0),
-            'pending_chunks': status_summary.get('PENDING', 0),
-            'failed_chunks': status_summary.get('FAILED', 0)
-        }
-
     def find_relevant_chunks(self, query_text: str, limit: int = 3, min_similarity: float = 0.6) -> List[Dict]:
         """
         Ищет чанки по смыслу (векторам) с использованием Cosine Similarity.
@@ -923,18 +915,30 @@ class KnowledgeManager:
             logger.error(f"RAG context error: {e}")
             return None
     
-    
     def get_rag_status(self) -> Dict:
         """Получает статус RAG (сколько чанков готово для RAG)"""
         stats = self.get_statistics()
         ready = stats.get('ready_chunks', 0)
         total = stats.get('total_chunks', 0)
-        
+
+        # FIX: Защита от деления на ноль
+        if total > 0:
+            coverage = round(ready / total * 100, 1)
+            if ready / total > 0.7:
+                status_str = 'GOOD'
+            elif ready > 0:
+                status_str = 'NEEDS_WORK'
+            else:
+                status_str = 'EMPTY'
+        else:
+            coverage = 0
+            status_str = 'EMPTY'
+
         return {
             'rag_ready_chunks': ready,
             'total_chunks': total,
-            'rag_coverage': round(ready / total * 100, 1) if total > 0 else 0,
-            'status': 'GOOD' if ready / total > 0.7 else 'NEEDS_WORK' if ready > 0 else 'EMPTY'
+            'rag_coverage': coverage,
+            'status': status_str
         }
 
     # === Export/Import ===

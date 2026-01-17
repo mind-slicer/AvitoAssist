@@ -496,20 +496,54 @@ class ChunkCultivationManager(QObject):
         worker.start()
 
     def _on_cultivation_complete(self, chunk_id: int, result: Dict):
-        """Обработка результата культивации (переделан для новой системы)"""
         status = result.get("status")
         content = result.get("content")
         summary = result.get("summary")
 
-        # ВАЖНО: Новая система НЕ использует formation_reason и data_sufficiency из LLM
-        # Они вычисляются ЗДЕСЬ на основе данных
-
         if status == "success" and isinstance(content, dict):
-            # 1. Определяем data_sufficiency на основе кол-ва объявлений
+            
+            # === FIX START: Нормализация данных от AI ===
+            # Если AI вложил ответ в 'analysis' или 'response'
+            if 'target_status' not in content:
+                if 'analysis' in content and isinstance(content['analysis'], dict):
+                    # Сливаем analysis в корень
+                    content.update(content['analysis'])
+                elif 'response' in content and isinstance(content['response'], dict):
+                    content.update(content['response'])
+
+            # 1. Гарантируем наличие target_status
+            if not content.get('target_status'):
+                # Пытаемся угадать по тексту summary
+                s_text = (summary or "").lower()
+                if "выгод" in s_text or "отличн" in s_text:
+                    content['target_status'] = "MAX_BENEFIT"
+                elif "нет интереса" in s_text or "дорого" in s_text:
+                    content['target_status'] = "NO_INTEREST"
+                else:
+                    content['target_status'] = "HAS_OFFERS"
+
+            # 2. Гарантируем наличие influence_weights (чтобы кружки не были пустыми)
+            if not content.get('influence_weights'):
+                # Дефолтные веса, если AI их забыл
+                content['influence_weights'] = {
+                    "raw_data": 80,
+                    "system_prompt": 20,
+                    "user_instructions": 0,
+                    "user_interests": 0,
+                    "linked_context": 0
+                }
+            
+            # 3. Гарантируем price_analysis (для графиков)
+            if 'price_analysis' not in content:
+                 content['price_analysis'] = {
+                     "avg": 0, "min": 0, "max": 0, "count": 0, "trend": "stable"
+                 }
+            # === FIX END ===
+
             chunk_info = self.memory.get_chunk_by_id(chunk_id)
             chunk_type = chunk_info.get('chunk_type')
 
-            data_sufficiency = "MEDIUM"  # Default
+            data_sufficiency = "MEDIUM"
 
             if chunk_type == "PRODUCT":
                 raw_items = self.memory.find_similar_items(chunk_info.get('chunk_key'), limit=1000)
@@ -522,12 +556,10 @@ class ChunkCultivationManager(QObject):
                 else:
                     data_sufficiency = "MEDIUM"
 
-            # 2. Сохраняем контент + статистику в историю
             final_status = ChunkStatus.READY.value
             status_text = "Готово"
 
             try:
-                # Вычисляем source_hash для проверки целостности данных
                 source_hash = None
                 key = chunk_info.get('chunk_key')
                 ctype = chunk_info.get('chunk_type')
@@ -537,7 +569,6 @@ class ChunkCultivationManager(QObject):
                 elif ctype == 'PRODUCT':
                     source_hash = self.memory.raw_data.calculate_data_signature(product_key=key)
 
-                # Создаем embedding для чанка (RAG)
                 embedding_blob = None
                 try:
                     vector_text = f"{chunk_info.get('title', '')} {summary}"
@@ -546,7 +577,7 @@ class ChunkCultivationManager(QObject):
                 except:
                     embedding_blob = None
 
-                # Сохраняем снепшот истории (для анализа изменений)
+                # Сохраняем снепшот истории
                 stats_snapshot = {
                     'avg': content.get('price_analysis', {}).get('avg', 0),
                     'sufficiency': data_sufficiency,
@@ -554,7 +585,7 @@ class ChunkCultivationManager(QObject):
                 }
                 self.memory.knowledge.save_history_snapshot(chunk_id, stats_snapshot)
 
-                # Обновляем контент в БД
+                # Обновляем контент
                 self.memory.update_chunk_content(
                     chunk_id=chunk_id,
                     content=content,
@@ -568,7 +599,7 @@ class ChunkCultivationManager(QObject):
                 final_status = ChunkStatus.FAILED.value
                 status_text = "Ошибка сохранения"
 
-            # 3. Отправляем сигналы в UI
+            # Отправляем сигналы в UI
             progress_message = status_text
             self.chunk_status_changed.emit(chunk_id, final_status)
             self.chunk_progress.emit(chunk_id, 100, progress_message)
@@ -579,7 +610,7 @@ class ChunkCultivationManager(QObject):
             )
 
         else:
-            # Ошибка при обработке
+            # Обработка ошибки (оставляем как есть)
             error_msg = result.get("error") or "unknown"
             chunk = self.memory.get_chunk_by_id(chunk_id)
 
@@ -593,13 +624,10 @@ class ChunkCultivationManager(QObject):
                 )
                 self.memory.update_chunk_with_retry(chunk_id, ChunkStatus.PENDING.value, retry_count)
                 self.chunk_status_changed.emit(chunk_id, ChunkStatus.PENDING.value)
-
-                # Повторная попытка через время
                 QTimer.singleShot(10000, self._check_triggers)
-
             else:
                 logger.error(
-                    f"❌ Критическая ошибка культивации чанка {chunk_id} (превышен лимит попыток): {error_msg}",
+                    f"❌ Критическая ошибка культивации чанка {chunk_id}: {error_msg}",
                     token="ai-cult"
                 )
                 self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
