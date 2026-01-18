@@ -189,15 +189,14 @@ class AIChunkCultivationWorker(QThread):
         asyncio.run(self._cultivate_chunk())
 
     async def _cultivate_chunk(self):
-        self.progress_signal.emit(5, "Подключение к нейросети...")
-        self.progress_signal.emit(10, "Формирование контекста...")
-
         client = LlamaClient(self.port)
         try:
+            # 1. Проверка отмены перед стартом
             if hasattr(self, '_is_running') and not self._is_running:
                 self.finished.emit({"status": "error", "error": "cancelled", "chunk_id": self.chunk_id})
                 return
 
+            # 2. Подготовка параметров генерации
             gen_params = {
                 "response_format": {"type": "json_object"},
                 "temperature": 0.2,
@@ -222,106 +221,55 @@ class AIChunkCultivationWorker(QThread):
                 token="ai-cult",
             )
 
-            # 2. Sending Request with Progress Emulation
-            self.progress_signal.emit(15, "Отправка данных в LLM...")
-
-            # Запускаем задачу в фоне, чтобы обновлять прогресс
-            task = asyncio.create_task(client.chat_completion(
+            # 3. Отправка запроса (честное ожидание)
+            response = await client.chat_completion(
                 model=self.model_name,
                 messages=messages,
                 params=gen_params,
-            ))
+            )
 
-            # Эмуляция "мыслительного процесса"
-            elapsed = 0
-            while not task.done():
-                if hasattr(self, '_is_running') and not self._is_running:
-                    task.cancel()
-                    self.finished.emit({"status": "error", "error": "cancelled", "chunk_id": self.chunk_id})
-                    return
-                
-                await asyncio.sleep(0.5)
-                elapsed += 0.5
-                
-                # Динамический прогресс, чтобы пользователь не скучал
-                if elapsed < 5:
-                    self.progress_signal.emit(20 + int(elapsed * 2), "ИИ анализирует цены...")
-                elif elapsed < 10:
-                    self.progress_signal.emit(30 + int(elapsed), "ИИ ищет аномалии...")
-                elif elapsed < 20:
-                    self.progress_signal.emit(40 + int(elapsed / 2), "ИИ формирует выводы...")
-                else:
-                    self.progress_signal.emit(50, "Генерация отчета (большой объем)...")
-
-            response = await task
-
-            # 3. Processing Response
-            self.progress_signal.emit(80, "Ответ получен. Обработка...")
-
-            if not response or not isinstance(response, str) or len(response.strip()) < 10:
-                msg = f"ИИ вернул пустой или слишком короткий ответ для чанка {self.chunk_id}..."
+            # 4. Проверка на пустоту
+            if not response or not isinstance(response, str) or len(response.strip()) < 5:
+                msg = f"ИИ вернул пустой ответ для чанка {self.chunk_id}..."
                 logger.error(msg, token="ai-cult")
                 if hasattr(self, 'error_signal'):
                     self.error_signal.emit(msg)
-                self.finished.emit({"status": "error", "error": msg, "chunk_id": self.chunk_id})
+                self.finished.emit({"status": "error", "error": "Empty response from LLM", "chunk_id": self.chunk_id})
                 return
 
+            # Очистка и парсинг
             text = response.strip()
-
             if '```' in text:
-                match_json = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-                if match_json:
-                    text = match_json.group(1)
-                else:
-                    parts = text.split('```')
-                    if len(parts) > 1:
-                        text = parts[1]
-                        if text.strip().lower().startswith('json'):
-                            text = text.strip()[4:].strip()
-
-            self.progress_signal.emit(90, "Валидация JSON...")
-
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if not match:
-                err = f"В ответе ИИ не найден JSON-объект..."
-                self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
-                return
-
-            clean_json_text = match.group(0).strip()
+                match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+                text = match.group(1) if match else text.replace("```json", "").replace("```", "")
 
             try:
-                data = json.loads(clean_json_text)
-            except json.JSONDecodeError as e:
-                err = f"Ошибка парсинга JSON: {str(e)}..."
-                self.finished.emit({"status": "error", "error": err, "chunk_id": self.chunk_id})
-                return
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                # Попытка найти JSON, если есть мусор вокруг
+                match = re.search(r'\{.*\}', text, re.DOTALL)
+                if match:
+                    try:
+                        data = json.loads(match.group(0))
+                    except:
+                        self.finished.emit({"status": "error", "error": "Invalid JSON", "chunk_id": self.chunk_id})
+                        return
+                else:
+                    self.finished.emit({"status": "error", "error": "No JSON found", "chunk_id": self.chunk_id})
+                    return
 
-            # Извлечение новых полей для умного статуса
-            summary = data.get("summary")
-            # Legacy fallback
-            if not summary:
-                analysis = data.get("analysis", {})
-                if isinstance(analysis, dict):
-                    summary = analysis.get("summary")
-                if not summary:
-                    summary = data.get("summary")
+            # 7. Нормализация структуры данных
+            # Иногда модели оборачивают ответ в корневой ключ, убираем его
+            content = self._normalize_response(data)
 
-            formation_reason = data.get("formation_reason", "Причина не указана")
-            data_sufficiency = data.get("data_sufficiency", "MEDIUM")
+            # Извлекаем summary для быстрого доступа
+            summary = content.get("summary") or content.get("main_description") or "Анализ завершен"
 
-            # Если LLM считает, что данных мало, помечаем это в саммари
-            if data_sufficiency == "LOW":
-                summary = f"[НЕДОСТАТОЧНО ДАННЫХ] {summary}" if summary else "[НЕДОСТАТОЧНО ДАННЫХ]"
-
-            # 4. Finalizing
-            self.progress_signal.emit(98, "Сохранение знаний...")
-
+            # 8. Финализация
             result = {
                 "status": "success",
-                "content": data,
-                "summary": summary if summary else "Анализ завершен",
-                "formation_reason": formation_reason, # Причина создания/обновления
-                "data_sufficiency": data_sufficiency, # Хватает ли данных
+                "content": content,
+                "summary": summary,
                 "chunk_id": self.chunk_id
             }
             self.finished.emit(result)
@@ -332,6 +280,28 @@ class AIChunkCultivationWorker(QThread):
             self.finished.emit({"status": "error", "error": str(e), "chunk_id": self.chunk_id})
         finally:
             await client.close()
+    
+    def _normalize_response(self, data: Dict) -> Dict:
+        """
+        Вытаскивает полезные данные на верхний уровень, если LLM завернула их в 'content' или 'response'.
+        При этом сохраняет важные поля, если они были на верхнем уровне.
+        """
+        target = data.copy()
+        
+        # Список ключей-оберток, которые мы хотим раскрыть
+        wrapper_keys = ['content', 'response', 'analysis', 'result']
+        
+        # Если находим обертку, которая содержит словарь
+        for key in wrapper_keys:
+            if key in target and isinstance(target[key], dict):
+                inner = target.pop(key) # Забираем внутренность
+                # Мержим: внутренние данные перезаписывают внешние (кроме статусных)
+                # Но если во внешних были веса, а внутри нет - оставляем внешние.
+                for k, v in inner.items():
+                    if v is not None:
+                        target[k] = v
+                        
+        return target
 
 
 class AIManager(QObject):

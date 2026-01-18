@@ -1034,40 +1034,6 @@ class RawDataManager:
         finally:
             conn.close()
 
-    def calculate_data_signature(self, category_key: Optional[str] = None, product_key: Optional[str] = None) -> str:
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            base_query = """
-                SELECT ri.id, ri.price, ri.title, ri.analyzed_at
-                FROM raw_items ri
-                LEFT JOIN products p ON ri.product_id = p.id
-                WHERE 1=1
-            """
-            params = []
-            if product_key:
-                base_query += " AND p.key = ?"
-                params.append(product_key)
-            elif category_key:
-                base_query += " AND p.key LIKE ?"
-                params.append(f"{category_key}%")
-            
-            base_query += " ORDER BY ri.id"
-            cursor.execute(base_query, params)
-            rows = cursor.fetchall()
-            
-            if not rows: return "empty"
-            
-            content_str = ""
-            for r in rows:
-                content_str += f"{r[0]}:{r[1]}:{r[2]}:{r[3]}|"
-            
-            return hashlib.md5(content_str.encode('utf-8')).hexdigest()
-        except Exception:
-            return "error"
-        finally:
-            conn.close()
-
     def get_all_categories(self) -> List[Dict]:
         conn = self._get_connection()
         try:
@@ -1255,47 +1221,54 @@ class RawDataManager:
         self._ensure_db_exists()
         logger.info("Raw data database reset complete")
 
-    def calculate_data_signature(self, product_key: Optional[str] = None, category_name: Optional[str] = None) -> str:
-        """Вычисляет SHA256 хеш данных для проверки целостности"""
+    def calculate_data_signature(self, product_key: Optional[str] = None, category_name: Optional[str] = None, category_key: Optional[str] = None) -> str:
+        """
+        Рассчитывает хеш-сигнатуру данных для проверки изменений.
+        Поддерживает алиас category_key для совместимости с системой чанков.
+        """
         import hashlib
-        
+
+        # Алиас для совместимости
+        if category_key and not category_name:
+            category_name = category_key
+
         try:
             query = "SELECT title, price, date_text FROM raw_items WHERE 1=1"
             params = []
-            
+
             if product_key:
-                # Ищем через product_id
                 query += " AND product_id = (SELECT id FROM products WHERE key = ?)"
                 params.append(product_key)
-            
+
             if category_name:
-                # Ищем через category_id
                 query += " AND product_id IN (SELECT id FROM products WHERE category_id = (SELECT id FROM categories WHERE name = ?))"
                 params.append(category_name)
-            
+
             query += " ORDER BY id LIMIT 1000"
-            
+
             conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(query, params)
             rows = cursor.fetchall()
             conn.close()
-            
-            # Формируем строку для хеширования
+
+            if not rows:
+                return "empty"
+
             data_str = ""
             for row in rows:
-                data_str += f"{row[0]}{row[1]}{row[2]}"
-            
+                # Простая конкатенация ключевых полей
+                data_str += f"{row[0]}|{row[1]}|{row[2]}#"
+
             if not data_str:
                 return "empty"
-            
+
             signature = hashlib.sha256(data_str.encode()).hexdigest()
             return signature
-        
+
         except Exception as e:
             logger.error(f"Error calculating signature: {e}")
             return "error"
-    
     
     def save_history_snapshot(self, product_key: Optional[str] = None, stats_snapshot: Optional[Dict] = None):
         """Сохраняет снепшот истории для анализа изменений (в JSON файл)"""

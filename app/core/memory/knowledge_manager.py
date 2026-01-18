@@ -248,30 +248,28 @@ class KnowledgeManager:
 
     def get_knowledge(
         self,
-        chunk_id: Optional[int] = None,      # <--- Добавлено
-        chunk_key: Optional[str] = None,     # <--- Добавлено
+        chunk_id: Optional[int] = None,
+        chunk_key: Optional[str] = None,
         chunk_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict]:
         """
-        Получает знания из БД с полной поддержкой фильтрации.
-        Исправляет TypeError: теперь принимает все аргументы.
+        Получает знания из БД с полной поддержкой фильтрации и правильной сортировкой статусов.
         """
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            
+
             # Базовый запрос
             query = "SELECT * FROM ai_knowledge WHERE 1=1"
             params = []
 
-            # --- ФИЛЬТРЫ ---
             if chunk_id is not None:
                 query += " AND id = ?"
                 params.append(chunk_id)
-            
+
             if chunk_key:
                 query += " AND chunk_key = ?"
                 params.append(chunk_key)
@@ -279,19 +277,26 @@ class KnowledgeManager:
             if chunk_type:
                 query += " AND chunk_type = ?"
                 params.append(chunk_type)
-                
+
             if status:
                 query += " AND status = ?"
                 params.append(status)
 
-            # Сортировка: Сначала PENDING, потом приоритет, потом новые
+            # Сортировка: Сначала активные процессы, потом требующие обновления, потом новые, потом готовые
             query += """
-                ORDER BY 
-                CASE WHEN status IN ('PENDING', 'INITIALIZING') THEN 0 ELSE 1 END,
-                priority DESC, 
+                ORDER BY
+                CASE 
+                    WHEN status = 'INITIALIZING' THEN 0 
+                    WHEN status = 'NEED_REFRESH' THEN 1
+                    WHEN status = 'PENDING' THEN 2
+                    ELSE 3 
+                END,
+                priority DESC,
                 last_updated DESC
                 LIMIT ? OFFSET ?
             """
+            
+            # Добавляем лимиты в параметры (ОНИ ДОЛЖНЫ СООТВЕТСТВОВАТЬ ? В SQL)
             params.extend([limit, offset])
 
             cursor.execute(query, tuple(params))

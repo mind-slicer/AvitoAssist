@@ -23,8 +23,8 @@ class ChunkType(Enum):
 
 class ChunkStatus(Enum):
     PENDING = "PENDING"
+    NEED_REFRESH = "NEED_REFRESH"
     INITIALIZING = "INITIALIZING"
-    ACCUMULATING = "ACCUMULATING"
     READY = "READY"
     COMPRESSED = "COMPRESSED"
     FAILED = "FAILED"
@@ -93,102 +93,80 @@ class ChunkCultivationManager(QObject):
             
         self.pause_state_changed.emit(enabled)
 
-    def validate_chunks_integrity(self): # TODO
-        logger.dev("Запуск проверки целостности знаний...", level="DEBUG")
+    def validate_chunks_integrity(self):
         chunks = self.memory.knowledge.get_knowledge(status='READY')
-        
-        updated_count = 0
-        
         for chunk in chunks:
             chunk_id = chunk['id']
             stored_hash = chunk.get('source_hash')
-            
-            if not stored_hash:
-                continue
-                
+            if not stored_hash: continue
+
             key = chunk.get('chunk_key')
             ctype = chunk.get('chunk_type')
-            
+
             current_hash = None
             if ctype == 'CATEGORY':
                 current_hash = self.memory.raw_data.calculate_data_signature(category_key=key)
             else:
                 current_hash = self.memory.raw_data.calculate_data_signature(product_key=key)
-            
+
             if current_hash != stored_hash:
-                logger.info(f"Чанк {chunk_id} ({key}) устарел. Данные изменились.", token="ai-mem")
-                self.memory.update_chunk_status(chunk_id, 'PENDING')
-                self.chunk_status_changed.emit(chunk_id, 'PENDING')
-                updated_count += 1
-        
-        if updated_count > 0:
-            logger.info(f"Помечено на обновление: {updated_count} чанков.", token="ai-mem")
+                logger.info(f"Чанк {chunk_id} ({key}) устарел (данные изменились).", token="ai-mem")
+                self.memory.update_chunk_status(chunk_id, ChunkStatus.NEED_REFRESH.value)
+                self.chunk_status_changed.emit(chunk_id, ChunkStatus.NEED_REFRESH.value)
 
     def _on_worker_timeout(self, chunk_id: int):
-        logger.error(f"Таймаут культивации чанка {chunk_id}. Принудительная отмена.", token="ai-cult")
+        logger.error(f"Таймаут культивации чанка {chunk_id}.", token="ai-cult")
         self.cancel_task(chunk_id)
-        self.ai._is_cultivating_now = False
         self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
         self.chunk_status_changed.emit(chunk_id, ChunkStatus.FAILED.value)
         self._process_cultivation_queue()
 
     def cancel_task(self, chunk_id: int):
         if not self.ai: return
-
-        if hasattr(self, '_active_timeout_chunk') and self._active_timeout_chunk == chunk_id:
-            if hasattr(self, '_timeout_timer') and self._timeout_timer.isActive():
-                self._timeout_timer.stop()
-            self._active_timeout_chunk = None
-
-        initial_len = len(self.ai._cultivation_queue)
+        
+        # Удаляем из очереди
         self.ai._cultivation_queue = [t for t in self.ai._cultivation_queue if t['id'] != chunk_id]
-
-        if len(self.ai._cultivation_queue) < initial_len:
-            logger.info(f"Чанк {chunk_id} удален из очереди культивации.", token="ai-cult")
-
+        
+        # Останавливаем воркер, если он активен
         if chunk_id in self.ai._chunk_workers:
-            logger.warning(f"Прерывание активной культивации чанка {chunk_id}...", token="ai-cult")
             worker = self.ai._chunk_workers[chunk_id]
             worker.stop()
             worker.quit()
             worker.wait(1000)
-            if worker.isRunning():
-                worker.terminate()
-            
             self.ai._chunk_workers.pop(chunk_id, None)
             self.ai._is_cultivating_now = False
-            
             QTimer.singleShot(1000, self._process_cultivation_queue)
 
     def check_and_cultivate(self):
-        # 1. Сначала подхватываем то, что уже ждет очереди (создано вручную или детектором)
-        pending_chunks = self.memory.get_pending_chunks()
-        if pending_chunks:
-            for chunk in pending_chunks:
-                # Если чанк уже в PENDING, не проверяем триггеры — просто запускаем
-                # Но проверяем, не в очереди ли он уже
-                if not any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
-                    self._initiate_cultivation(chunk, ChunkCultivationTrigger.USER_BUTTON)
+        """
+        Главный цикл проверки.
+        Ищет PENDING (новые) и NEED_REFRESH (устаревшие) чанки.
+        """
+        # 1. Сначала обрабатываем явные запросы на обновление (NEED_REFRESH)
+        refresh_chunks = self.memory.knowledge.get_knowledge(status=ChunkStatus.NEED_REFRESH.value)
+        for chunk in refresh_chunks:
+            if not any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                self._initiate_cultivation(chunk, ChunkCultivationTrigger.USER_BUTTON) # Trigger не важен
 
-        # 2. Проверяем "протухание" ГОТОВЫХ чанков (чего раньше не было)
+        # 2. Обрабатываем новые кандидаты (PENDING)
+        pending_chunks = self.memory.get_pending_chunks()
+        for chunk in pending_chunks:
+            if not any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                self._initiate_cultivation(chunk, ChunkCultivationTrigger.DATA_VOLUME)
+
+        # 3. Проверяем готовые чанки на триггеры (время, объем) -> переводим в NEED_REFRESH
         ready_chunks = self.memory.knowledge.get_ready_chunks()
-        if ready_chunks:
-            for chunk in ready_chunks:
-                # Если чанк уже в очереди на культивацию, пропускаем проверку
-                if any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
-                    continue
-                
-                trigger = self._evaluate_triggers(chunk)
-                if trigger:
-                    chunk_key = chunk.get('chunk_key', 'unknown')
-                    logger.info(
-                        f"🔄 ТРИГГЕР [{trigger.value}] сработал для '{chunk_key}'", 
-                        token="ai-cult"
-                    )
-                    # Принудительно ставим PENDING и запускаем
-                    self.memory.update_chunk_status(chunk['id'], ChunkStatus.PENDING.value)
-                    self.chunk_status_changed.emit(chunk['id'], ChunkStatus.PENDING.value)
-                    self._initiate_cultivation(chunk, trigger)
+        for chunk in ready_chunks:
+            if any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                continue
+
+            trigger = self._evaluate_triggers(chunk)
+            if trigger:
+                logger.info(f"🔄 ТРИГГЕР [{trigger.value}] для '{chunk.get('chunk_key')}' -> NEED_REFRESH", token="ai-cult")
+                self.memory.update_chunk_status(chunk['id'], ChunkStatus.NEED_REFRESH.value)
+                self.chunk_status_changed.emit(chunk['id'], ChunkStatus.NEED_REFRESH.value)
+                # Сразу ставим в очередь, чтобы не ждать следующего тика
+                self._initiate_cultivation(chunk, trigger)
 
     def create_pending_chunk(self, chunk_type, chunk_key: str, title: str) -> int:
         if isinstance(chunk_type, Enum):
@@ -211,67 +189,44 @@ class ChunkCultivationManager(QObject):
         return chunk_id
 
     def scan_database_only(self):
-        """Только поиск новых чанков в сырых данных и их создание"""
+        """Сканирование базы на новые кандидаты (создает PENDING)."""
         from app.core.ai.smart_chunk_detector import SmartChunkDetector
         
-        logger.info("Запуск сканирования базы на новые знания...", token="ai-det")
-        
-        # 1. Получаем кандидатов (чистые данные, без записи в БД)
-        candidates = SmartChunkDetector.detect_candidates(self.memory)
-        
+        # Передаем текущий порог данных в детектор
+        candidates = SmartChunkDetector.detect_candidates(
+            self.memory, 
+            threshold=self.default_data_threshold
+        )
+
         if not candidates:
-            logger.info("Новых кластеров не обнаружено.", token="ai-det")
             return
 
-        created_count = 0
-        
-        # 2. Проходим и создаем
         for c in candidates:
-            c_type = c['type']
-            c_key = c['key']
-            c_title = c['title']
-            parent_key = c.get('parent_key')
-            
+            # Если чанк уже есть, пропускаем (даже если он READY)
+            exists = self.memory.knowledge.get_chunk_by_key_and_type(c['key'], c['type'])
+            if exists: continue
+
+            # Ищем родителя
             parent_id = None
-            
-            # Попытка найти ID родителя, если указан ключ
-            if parent_key:
-                # Ищем среди существующих (в БД)
-                parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(parent_key, "CATEGORY")
-                
-                # Или, если родитель - это DATABASE (для AI_BEHAVIOR)
-                if not parent_chunk and parent_key == "general":
-                     parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type("general", "DATABASE")
-                
+            if c.get('parent_key'):
+                parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(c['parent_key'], "CATEGORY")
+                if not parent_chunk:
+                     parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(c['parent_key'], "DATABASE")
                 if parent_chunk:
                     parent_id = parent_chunk['id']
-                else:
-                    # Если родителя нет в БД, возможно мы его создаем прямо сейчас в этом цикле?
-                    # Для простоты пока пропускаем сложную рекурсию, привяжем в следующий раз
-                    pass
 
-            # 3. ЯВНАЯ ЗАПИСЬ + СИГНАЛЫ
             try:
                 new_id = self.memory.add_knowledge(
-                    chunk_type=c_type,
-                    chunk_key=c_key,
-                    title=c_title,
+                    chunk_type=c['type'],
+                    chunk_key=c['key'],
+                    title=c['title'],
                     status=ChunkStatus.PENDING.value,
                     parent_chunk_id=parent_id
                 )
-                
-                # !!! ВОТ ЭТО ЧИНИТ ВАШ UI !!!
                 self.chunk_status_changed.emit(new_id, ChunkStatus.PENDING.value)
-                logger.info(f"Создан чанк [{new_id}] {c_key}", token="ai-det")
-                created_count += 1
-                
+                logger.info(f"Обнаружен новый кластер: {c['title']}", token="ai-det")
             except Exception as e:
-                logger.error(f"Ошибка создания чанка {c_key}: {e}", token="ai-det")
-
-        if created_count > 0:
-            logger.success(f"Сформировано {created_count} новых узлов знаний.", token="ai-det")
-        else:
-            logger.info("Все кандидаты уже существуют в базе.", token="ai-det")
+                logger.error(f"Error creating chunk {c['key']}: {e}")
 
     def scan_and_create_structure(self):
         """Сканирует БД и создает структуру знаний (Категории -> Продукты)"""
@@ -307,15 +262,17 @@ class ChunkCultivationManager(QObject):
             logger.error(f"Create error {key}: {e}", token="ai-det")
 
     def cultivate_pending_chunks(self, user_instructions: str = ""):
-        """Запуск обработки для всех чанков со статусом PENDING"""
-        pending = self.memory.get_pending_chunks()
-
-        if not pending:
+        """Ручной запуск всех PENDING и NEED_REFRESH."""
+        # Объединяем оба статуса
+        targets = self.memory.get_pending_chunks() + \
+                  self.memory.knowledge.get_knowledge(status=ChunkStatus.NEED_REFRESH.value)
+        
+        if not targets:
             logger.info("Нет чанков, требующих обновления.", token="ai-cult")
             return
 
-        logger.info(f"Запуск культивации для {len(pending)} чанков...", token="ai-cult")
-        for chunk in pending:
+        logger.info(f"Запуск культивации для {len(targets)} чанков...", token="ai-cult")
+        for chunk in targets:
             self._initiate_cultivation(
                 chunk,
                 ChunkCultivationTrigger.USER_BUTTON,
@@ -323,12 +280,10 @@ class ChunkCultivationManager(QObject):
             )
 
     def request_user_cultivation(self, user_instructions: str = ""):
-        """Legacy метод: делает всё сразу (для обратной совместимости, если где-то используется)"""
         self.scan_database_only()
         self.cultivate_pending_chunks(user_instructions)
 
     def _check_triggers(self):
-        """Основной цикл проверки"""
         if self._is_resuming_from_pause:
             self._is_resuming_from_pause = False
             self._cultivation_timer.setInterval(self._target_poll_interval)
@@ -337,7 +292,7 @@ class ChunkCultivationManager(QObject):
             return
 
         try:
-            self.scan_and_create_structure()
+            self.scan_database_only()
             self.check_and_cultivate()
         except Exception as e:
             logger.error(f"Timer error: {e}")
@@ -364,33 +319,21 @@ class ChunkCultivationManager(QObject):
 
         return None
 
+    def _check_data_volume_trigger(self, chunk: Dict) -> bool:
+        new_count = chunk.get("new_data_items_count") or 0
+        return new_count >= self.default_data_threshold
+
     def _check_time_trigger(self, chunk: Dict) -> bool:
         last_attempt = chunk.get("last_cultivation_attempt")
-        if not last_attempt: 
-            return True # Если никогда не обновлялся — пора
-
+        if not last_attempt: return True
         try:
             dt_last = datetime.fromisoformat(last_attempt)
             elapsed = (datetime.now() - dt_last).total_seconds()
-            
-            # Добавляем "джиттер" (случайный разброс +/- 20%), 
-            # чтобы все чанки не обновлялись одновременно в одну секунду.
-            # Для каждого чанка генерируем уникальный seed на основе ID, 
-            # чтобы порог был стабильным для конкретного чанка, но разным для всех.
             random.seed(chunk.get('id', 0))
-            jitter_percent = random.uniform(-0.20, 0.20)
-            threshold_with_jitter = self.default_time_threshold * (1.0 + jitter_percent)
-            
-            return elapsed > threshold_with_jitter
-        except Exception: 
-            return True
-
-    def _check_data_volume_trigger(self, chunk: Dict) -> bool:
-        new_count = chunk.get("new_data_items_count") or 0
-        if new_count >= self.default_data_threshold:
-            logger.dev(f"Trigger Volume: {new_count} new items (threshold {self.default_data_threshold}) for chunk {chunk.get('id')}", level="DEBUG")
-            return True
-        return False
+            jitter = random.uniform(-0.2, 0.2)
+            threshold = self.default_time_threshold * (1.0 + jitter)
+            return elapsed > threshold
+        except: return True
 
     def _check_market_deviation(self, chunk: Dict) -> bool:
         """Проверяет, не ушел ли рынок далеко от сохраненных знаний."""
@@ -439,24 +382,13 @@ class ChunkCultivationManager(QObject):
     def _initiate_cultivation(self, chunk: Dict, trigger: ChunkCultivationTrigger, user_instructions: str = ""):
         chunk_id = chunk.get("id")
         chunk_type = chunk.get("chunk_type")
-
-        if not chunk_id or not chunk_type: return
-
-        logger.info(
-            f"Cultivating chunk {chunk_id} ({chunk_type}) via {trigger.value}",
-            token="ai-cult",
-        )
-
-        self.memory.update_chunk_status(
-            chunk_id=chunk_id,
-            status=ChunkStatus.INITIALIZING.value,
-            progress=0,
-        )
+        
+        # Переводим в INITIALIZING (визуально "крутится")
+        self.memory.update_chunk_status(chunk_id, ChunkStatus.INITIALIZING.value)
         self.chunk_status_changed.emit(chunk_id, ChunkStatus.INITIALIZING.value)
 
         try:
             prompt = self._build_cultivation_prompt(chunk)
-            
             self.ai.start_cultivation_for_chunk(
                 chunk_id=chunk_id,
                 chunk_type=chunk_type,
@@ -465,36 +397,30 @@ class ChunkCultivationManager(QObject):
                 user_instructions=user_instructions
             )
         except Exception as e:
-            logger.error(f"Failed to build prompt/start for chunk {chunk_id}: {e}")
-            self._on_cultivation_complete(chunk_id, {"status": "error", "error": str(e)})
+            logger.error(f"Failed to start chunk {chunk_id}: {e}")
+            self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
 
     def _process_cultivation_queue(self):
-        if self.ai._is_cultivating_now:
-            return
-
-        if not self.ai._cultivation_queue:
-            return
-
+        if self.ai._is_cultivating_now: return
+        if not self.ai._cultivation_queue: return
         if not self.ai._server_ready:
-            self.ai.ensure_server() # Предполагается, что self.ai.ensure_server()
+            self.ai.ensure_server()
             QTimer.singleShot(1000, self._process_cultivation_queue)
             return
 
         self.ai._is_cultivating_now = True
         task = self.ai._cultivation_queue.pop(0)
         chunk_id = task["id"]
-        
-        logger.info(f"Начало обработки из очереди: чанк {chunk_id}...", token="ai-cult")
 
+        # Запускаем таймер таймаута
         self._active_timeout_chunk = chunk_id
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(lambda: self._on_worker_timeout(chunk_id))
         self._timeout_timer.start(180_000)
 
-        port = self.ai.server_manager.get_port()
         worker = AIChunkCultivationWorker(
-            port=port,
+            port=self.ai.server_manager.get_port(),
             chunk_id=chunk_id,
             chunk_type=task["type"],
             memory_manager=self.memory,
@@ -502,32 +428,18 @@ class ChunkCultivationManager(QObject):
             prompt=task["prompt"],
             user_instructions=task.get("user_instructions", "")
         )
-
         self.ai._chunk_workers[chunk_id] = worker
 
-        worker.progress_signal.connect(
-            lambda pct, txt: self.chunk_progress.emit(chunk_id, pct, txt)
-        )
-
         def _handle_finished(result: dict):
-            if hasattr(self, '_timeout_timer') and self._timeout_timer.isActive():
-                self._timeout_timer.stop()
-            self._active_timeout_chunk = None
-
+            if hasattr(self, '_timeout_timer'): self._timeout_timer.stop()
             try:
                 task["callback"](result)
             finally:
-                w = self.ai._chunk_workers.pop(chunk_id, None)
-                if w:
-                    w.quit()
-                    w.wait()
-                    w.deleteLater()
-
+                self.ai._chunk_workers.pop(chunk_id, None)
                 self.ai._is_cultivating_now = False
                 QTimer.singleShot(500, self._process_cultivation_queue)
 
         worker.finished.connect(_handle_finished)
-        worker.error_signal.connect(self.ai.error_signal.emit)
         worker.start()
 
     def _on_cultivation_complete(self, chunk_id: int, result: Dict):
@@ -536,137 +448,61 @@ class ChunkCultivationManager(QObject):
         summary = result.get("summary")
 
         if status == "success" and isinstance(content, dict):
+            # ВАЖНО: Мы НЕ фейкаем данные. Если LLM не вернула influence_weights, пусть будет пусто.
+            # Если нет target_status - значит UNKNOWN.
             
-            # === FIX START: Нормализация данных от AI ===
-            # Если AI вложил ответ в 'analysis' или 'response'
-            if 'target_status' not in content:
-                if 'analysis' in content and isinstance(content['analysis'], dict):
-                    # Сливаем analysis в корень
-                    content.update(content['analysis'])
-                elif 'response' in content and isinstance(content['response'], dict):
-                    content.update(content['response'])
-
-            # 1. Гарантируем наличие target_status
-            if not content.get('target_status'):
-                # Пытаемся угадать по тексту summary
-                s_text = (summary or "").lower()
-                if "выгод" in s_text or "отличн" in s_text:
-                    content['target_status'] = "MAX_BENEFIT"
-                elif "нет интереса" in s_text or "дорого" in s_text:
-                    content['target_status'] = "NO_INTEREST"
-                else:
-                    content['target_status'] = "HAS_OFFERS"
-
-            # 2. Гарантируем наличие influence_weights (чтобы кружки не были пустыми)
-            if not content.get('influence_weights'):
-                # Дефолтные веса, если AI их забыл
-                content['influence_weights'] = {
-                    "raw_data": 80,
-                    "system_prompt": 20,
-                    "user_instructions": 0,
-                    "user_interests": 0,
-                    "linked_context": 0
-                }
+            # Legacy fallback для вложенности
+            if 'response' in content and isinstance(content['response'], dict):
+                content = content['response']
             
-            # 3. Гарантируем price_analysis (для графиков)
-            if 'price_analysis' not in content:
-                 content['price_analysis'] = {
-                     "avg": 0, "min": 0, "max": 0, "count": 0, "trend": "stable"
-                 }
-            # === FIX END ===
-
-            chunk_info = self.memory.get_chunk_by_id(chunk_id)
-            chunk_type = chunk_info.get('chunk_type')
-
-            data_sufficiency = "MEDIUM"
-
-            if chunk_type == "PRODUCT":
-                raw_items = self.memory.find_similar_items(chunk_info.get('chunk_key'), limit=1000)
-                item_count = len(raw_items)
-
-                if item_count < 5:
-                    data_sufficiency = "LOW"
-                elif item_count > 15:
-                    data_sufficiency = "HIGH"
-                else:
-                    data_sufficiency = "MEDIUM"
-
             final_status = ChunkStatus.READY.value
-            status_text = "Готово"
+            
+            # Расчет хэша для целостности
+            chunk_info = self.memory.get_chunk_by_id(chunk_id)
+            key = chunk_info.get('chunk_key')
+            ctype = chunk_info.get('chunk_type')
+            
+            source_hash = None
+            if ctype == 'CATEGORY':
+                source_hash = self.memory.raw_data.calculate_data_signature(category_key=key)
+            elif ctype == 'PRODUCT':
+                source_hash = self.memory.raw_data.calculate_data_signature(product_key=key)
 
+            # Вектор
+            embedding_blob = None
             try:
-                source_hash = None
-                key = chunk_info.get('chunk_key')
-                ctype = chunk_info.get('chunk_type')
-
-                if ctype == 'CATEGORY':
-                    source_hash = self.memory.raw_data.calculate_data_signature(category_key=key)
-                elif ctype == 'PRODUCT':
-                    source_hash = self.memory.raw_data.calculate_data_signature(product_key=key)
-
-                embedding_blob = None
-                try:
-                    vector_text = f"{chunk_info.get('title', '')} {summary}"
-                    vec = FeatureExtractor.get_string_vector(vector_text)
+                vec_text = f"{chunk_info.get('title', '')} {summary or ''}"
+                vec = FeatureExtractor.get_string_vector(vec_text)
+                if vec is not None:
                     embedding_blob = vec.astype(np.float32).tobytes()
-                except:
-                    embedding_blob = None
+            except: pass
 
-                # Сохраняем снепшот истории
-                stats_snapshot = {
-                    'avg': content.get('price_analysis', {}).get('avg', 0),
-                    'sufficiency': data_sufficiency,
-                    'phase': content.get('target_status', 'UNKNOWN')
-                }
-                self.memory.knowledge.save_history_snapshot(chunk_id, stats_snapshot)
+            # История
+            stats_snapshot = {
+                'avg': content.get('price_analysis', {}).get('avg', 0),
+                'sufficiency': content.get('data_sufficiency', 'UNKNOWN'),
+                'phase': content.get('target_status', 'UNKNOWN')
+            }
+            self.memory.knowledge.save_history_snapshot(chunk_id, stats_snapshot)
 
-                # Обновляем контент
-                self.memory.update_chunk_content(
-                    chunk_id=chunk_id,
-                    content=content,
-                    summary=summary,
-                    source_hash=source_hash,
-                    embedding_blob=embedding_blob
-                )
-
-            except Exception as e:
-                logger.error(f"Ошибка при сохранении контента чанка {chunk_id}: {e}")
-                final_status = ChunkStatus.FAILED.value
-                status_text = "Ошибка сохранения"
-
-            # Отправляем сигналы в UI
-            progress_message = status_text
-            self.chunk_status_changed.emit(chunk_id, final_status)
-            self.chunk_progress.emit(chunk_id, 100, progress_message)
-
-            logger.success(
-                f"✅ Культивация {chunk_type} '{chunk_info.get('title')}' завершена (статус: {content.get('target_status')})",
-                token="ai-cult"
+            self.memory.update_chunk_content(
+                chunk_id=chunk_id,
+                content=content,
+                summary=summary,
+                source_hash=source_hash,
+                embedding_blob=embedding_blob
             )
 
+            self.chunk_status_changed.emit(chunk_id, final_status)
+            self.chunk_progress.emit(chunk_id, 100, "Готово") # Просто финал
+            
+            logger.success(f"✅ Чанк {chunk_id} обновлен. Статус: {content.get('target_status')}", token="ai-cult")
+
         else:
-            # Обработка ошибки (оставляем как есть)
             error_msg = result.get("error") or "unknown"
-            chunk = self.memory.get_chunk_by_id(chunk_id)
-
-            retry_count = chunk.get('retry_count', 0) + 1
-            MAX_RETRIES = 3
-
-            if retry_count < MAX_RETRIES:
-                logger.warning(
-                    f"⚠️ Ошибка культивации чанка {chunk_id} (попытка {retry_count}/{MAX_RETRIES}): {error_msg}",
-                    token="ai-cult"
-                )
-                self.memory.update_chunk_with_retry(chunk_id, ChunkStatus.PENDING.value, retry_count)
-                self.chunk_status_changed.emit(chunk_id, ChunkStatus.PENDING.value)
-                QTimer.singleShot(10000, self._check_triggers)
-            else:
-                logger.error(
-                    f"❌ Критическая ошибка культивации чанка {chunk_id}: {error_msg}",
-                    token="ai-cult"
-                )
-                self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
-                self.chunk_status_changed.emit(chunk_id, ChunkStatus.FAILED.value)
+            logger.error(f"❌ Ошибка культивации чанка {chunk_id}: {error_msg}", token="ai-cult")
+            self.memory.update_chunk_status(chunk_id, ChunkStatus.FAILED.value)
+            self.chunk_status_changed.emit(chunk_id, ChunkStatus.FAILED.value)
 
     def _extract_chunk_text(self, chunk_key: str, chunk_type: str) -> str:
         chunk = self.memory.knowledge.get_chunk_by_key_and_type(chunk_key, chunk_type)

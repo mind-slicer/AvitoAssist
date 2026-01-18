@@ -5,127 +5,83 @@ from app.core.log_manager import logger
 class SmartChunkDetector:
 
     @staticmethod
-    def detect_candidates(memory_manager) -> List[Dict]:
+    def detect_candidates(memory_manager, threshold: int = 10) -> List[Dict]:
         """
-        Детектирует кандидатов для создания чанков.
-
-        ЛОГИКА:
-        1. DATABASE чанки создаются для TOP-5 категорий по объёму
-        2. CATEGORY чанки создаются для всех категорий (даже если мало данных)
-        3. PRODUCT чанки создаются ТОЛЬКО если >=10 товаров в продукте
-        4. AI_BEHAVIOR чанк создается всегда (если его нет)
-
-        ВАЖНО: Не линкуем Products на Clusters (бренды)!
-        Products независимы, CATEGORY их группирует по семантике.
+        Сканирует БД и предлагает кандидатов для создания чанков.
+        threshold: минимальное количество товаров для создания PRODUCT чанка.
         """
         candidates = []
-
         try:
-            # 1. DATABASE CANDIDATES (TOP-5 категорий)
+            # 1. DATABASE (Всегда проверяем топ категорий)
             categories = memory_manager.raw_data.get_all_categories()
             top_categories = sorted(categories, key=lambda x: x.get('item_count', 0), reverse=True)[:5]
 
             for cat in top_categories:
                 cat_name = cat.get('name', 'UNKNOWN')
-                item_count = cat.get('item_count', 0)
+                # DB чанк создаем, если есть хоть что-то
+                if cat.get('item_count', 0) > 0:
+                    candidates.append({
+                        'type': 'DATABASE',
+                        'key': f"db_{cat_name.lower()}",
+                        'title': f'База: {cat_name}',
+                        'parent_key': None,
+                        'item_count': cat.get('item_count', 0),
+                        'priority': 100
+                    })
 
-                # Создаем DATABASE чанк для каждой топ-категории
-                db_key = f"db_{cat_name.lower()}"
-
-                candidates.append({
-                    'type': 'DATABASE',
-                    'key': db_key,
-                    'title': f'База: {cat_name}',
-                    'parent_key': None,  # DATABASE не имеет родителей
-                    'item_count': item_count,
-                    'priority': 100
-                })
-
-            # 2. CATEGORY CANDIDATES (все категории, даже если пусто)
+            # 2. CATEGORY
             for cat in categories:
                 cat_key = cat.get('name', 'UNKNOWN').strip()
-                if not cat_key or cat_key == 'UNKNOWN':
-                    continue
-                
                 item_count = cat.get('item_count', 0)
+                
+                # Категорию создаем, если в ней есть товары (даже меньше порога, т.к. это агрегатор)
+                if item_count > 0:
+                    candidates.append({
+                        'type': 'CATEGORY',
+                        'key': cat_key,
+                        'title': cat.get('display_name', cat_key),
+                        'parent_key': f"db_{cat_key.lower().split('_')[0]}",
+                        'item_count': item_count,
+                        'priority': 50
+                    })
 
-                # Определяем родительскую DATABASE
-                # (берем первую TOP-5, к которой принадлежит эта категория)
-                parent_db_key = f"db_{cat_key.lower().split('_')[0]}"
-
-                candidates.append({
-                    'type': 'CATEGORY',
-                    'key': cat_key,
-                    'title': cat.get('display_name', cat_key),
-                    'parent_key': parent_db_key,  # Родитель - DATABASE
-                    'item_count': item_count,
-                    'priority': 50
-                })
-
-            # 3. PRODUCT CANDIDATES (ТОЛЬКО если >=10 товаров)
+            # 3. PRODUCT (Здесь применяем threshold)
             products = memory_manager.raw_data.get_all_product_keys()
-
             for prod in products:
                 p_key = prod.get('key')
                 item_count = prod.get('item_count', 0)
 
-                # КРИТИЧЕСКИЙ ФИЛЬТР: создаем PRODUCT чанк ТОЛЬКО если >=10 товаров
-                if item_count < 10:
-                    logger.dev(
-                        f"PRODUCT '{p_key}' имеет {item_count} товаров (требуется >=10). Пропускаем.",
-                        level="DEBUG"
-                    )
+                if item_count < threshold:
+                    # Слишком мало данных для отдельного чанка
                     continue
-                
+
                 display_name = prod.get('display_name') or p_key
-                
-                # Очищаем название от бренда (если есть)
-                brand = prod.get('brand', '').upper()
-                if brand:
-                    pattern = re.compile(re.escape(brand), re.IGNORECASE)
-                    clean_title = pattern.sub("", display_name).strip()
-                    clean_title = clean_title.strip("()[]- ")
-                    if not clean_title:
-                        clean_title = p_key
-                else:
-                    clean_title = display_name
-
-                # Определяем родительскую CATEGORY
-                # Берем категорию из продукта
-                category_name = prod.get('category_name', 'UNKNOWN')
-
-                # Если категория не найдена, пытаемся определить из названия
-                if not category_name or category_name == 'UNKNOWN':
-                    # Берем первое слово из ключа продукта как категорию
-                    parts = p_key.split('_')
-                    category_name = parts[0] if parts else 'UNKNOWN'
+                category_name = prod.get('category_name') or p_key.split('_')[0]
 
                 candidates.append({
                     'type': 'PRODUCT',
                     'key': p_key,
-                    'title': clean_title,
-                    'parent_key': category_name,  # Родитель - CATEGORY
+                    'title': display_name,
+                    'parent_key': category_name, # Родитель - Категория
                     'item_count': item_count,
                     'priority': 30
                 })
 
-            # 4. AI_BEHAVIOR CANDIDATE (всегда создаем)
+            # 4. AI_BEHAVIOR
             candidates.append({
                 'type': 'AI_BEHAVIOR',
                 'key': 'general_behavior',
-                'title': 'Поведение ИИ (Self-Correction)',
-                'parent_key': 'db_general',  # Родитель - DATABASE
+                'title': 'Поведение ИИ',
+                'parent_key': 'db_general',
                 'item_count': 0,
                 'priority': 200
             })
 
-            # 5. Сортируем по приоритету
             candidates.sort(key=lambda x: x['priority'], reverse=True)
-
             return candidates
 
         except Exception as e:
-            logger.error(f"Ошибка при детектировании кандидатов: {e}")
+            logger.error(f"Detector error: {e}")
             return []
 
     @staticmethod

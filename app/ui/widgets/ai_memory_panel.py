@@ -302,25 +302,17 @@ class ChunkCard(QFrame):
         # 1. Header Row
         h_layout = QHBoxLayout()
         h_layout.setSpacing(8)
-        
+
         self.icon_label = QLabel("📦")
         self.icon_label.setFixedSize(20, 20)
         self.icon_label.setStyleSheet("border: none; background: transparent;")
-        
+
         self.title_label = QLabel()
         self.title_label.setWordWrap(True)
         self.title_label.setMinimumWidth(10)
         self.title_label.setStyleSheet(f"font-weight: bold; color: {Palette.TEXT}; font-size: 13px; border: none; background: transparent;")
-        
+
         self.status_badge = QLabel()
-        self.status_badge.setStyleSheet(f"""
-            background-color: {Palette.with_alpha(Palette.SUCCESS, 0.2)};
-            color: {Palette.SUCCESS};
-            border-radius: 4px;
-            padding: 2px 6px;
-            font-size: 10px;
-            font-weight: bold;
-        """)
         self.status_badge.setVisible(False)
 
         self.refresh_btn = QPushButton("↻")
@@ -355,49 +347,35 @@ class ChunkCard(QFrame):
         """)
         self.main_layout.addWidget(self.meta_label)
 
-        # 2. Loading State (без изменений, просто для контекста)
+        # 2. Loading State
         self.loader_container = QWidget()
         self.loader_layout = QVBoxLayout(self.loader_container)
-        self.loader_layout.setContentsMargins(0,10,0,10)
+        self.loader_layout.setContentsMargins(0, 10, 0, 10)
         self.loader_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.throbber = ProgressThrobber(size=40) # Чуть меньше
-        self.loader_msg = QLabel("Анализ данных...")
+        self.throbber = ProgressThrobber(size=40)
+        self.loader_msg = QLabel("...")
         self.loader_msg.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px; border: none; background: transparent;")
         self.loader_layout.addWidget(self.throbber)
         self.loader_layout.addWidget(self.loader_msg)
         self.main_layout.addWidget(self.loader_container)
-        
+
         # 3. Content State
         self.content_container = QWidget()
         self.content_container.setStyleSheet("border: none; background: transparent;")
         self.content_container.setMinimumWidth(0)
         self.content_ui = QVBoxLayout(self.content_container)
         self.content_ui.setContentsMargins(0, 0, 0, 0)
-        self.content_ui.setSpacing(8) # Больше воздуха
-        
-        # Thought Process (Placeholder) - переехал наверх, до описания
-        self.thought_box = None 
+        self.content_ui.setSpacing(8)
 
-        # Main Description
+        self.thought_box = None
+
         self.desc_label = QLabel()
         self.desc_label.setWordWrap(True)
         self.desc_label.setMinimumWidth(10)
         self.desc_label.setStyleSheet(f"color: {Palette.TEXT}; font-size: 12px; line-height: 1.4;")
         self.content_ui.addWidget(self.desc_label)
 
-        #self.time_label = QLabel()
-        #self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        #self.time_label.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 9px;")
-        #self.content_ui.addWidget(self.time_label)
-
-        # Footer Layout (Reason + Circles)
-        footer = QHBoxLayout()
-        footer.setSpacing(15)
-        
         self.circles = None
-        
-        self.content_ui.addLayout(footer)
-        
         self.main_layout.addWidget(self.content_container)
 
     def sizeHint(self):
@@ -425,7 +403,7 @@ class ChunkCard(QFrame):
 
     def update_data(self, chunk_data: dict):
         self.chunk_data = chunk_data
-        status_raw = chunk_data.get('status', 'UNKNOWN')
+        status = chunk_data.get('status', 'UNKNOWN')
         chunk_type = chunk_data.get('chunk_type')
         title = chunk_data.get('title')
         
@@ -470,75 +448,79 @@ class ChunkCard(QFrame):
              
         self.meta_label.setText(meta_text)
 
-        is_loading = status_raw in ['PENDING', 'INITIALIZING', 'ACCUMULATING']
-        self.loader_container.setVisible(is_loading)
-        self.content_container.setVisible(not is_loading)
+        is_initializing = (status == 'INITIALIZING')
+        is_pending = (status == 'PENDING')
+        is_loading_view = is_initializing or is_pending
+
+        self.loader_container.setVisible(is_loading_view)
+        self.content_container.setVisible(not is_loading_view)
         
-        if is_loading:
-            pct = chunk_data.get('progress_percent', 0)
-            msg = chunk_data.get('progress_text', 'Ожидание...')
-            self.throbber.set_progress(pct)
-            self.loader_msg.setText(msg)
+        # Управление кнопкой рефреша
+        # Если чанк еще не создан (PENDING) или создается (INITIALIZING), обновлять его нельзя, только удалить
+        self.refresh_btn.setVisible(not is_loading_view)
+        
+        if is_initializing:
+            self.throbber.setVisible(True)
+            self.throbber.set_progress(50) # Крутится
+            self.loader_msg.setText("Нейросеть обрабатывает...")
             self.status_badge.setVisible(False)
-            self.meta_label.setVisible(False) # Скрываем мету при загрузке
+            return
+        elif is_pending:
+            self.throbber.setVisible(False) # Не крутится
+            self.loader_msg.setText("Ожидает обработки...")
+            self.status_badge.setVisible(False)
             return
         
         self.meta_label.setVisible(True)
 
-        # Parse Content
-        content = content_obj
+        # --- ОТОБРАЖЕНИЕ ГОТОВОГО КОНТЕНТА ---
+        content = chunk_data.get('content') or {}
         if isinstance(content, str):
             try: content = json.loads(content)
             except: content = {}
-        if not content: content = {}
 
-        # СТАТУСЫ (Только 3 вида)
+        # 1. Мысли
+        thoughts = content.get('hidden_thought_process', '')
+        if self.thought_box:
+            self.content_ui.removeWidget(self.thought_box)
+            self.thought_box.deleteLater()
+            self.thought_box = None
+        
+        if thoughts:
+            self.thought_box = CollapsibleThought(thoughts)
+            self.content_ui.insertWidget(0, self.thought_box)
+
+        # 2. Описание
+        desc = content.get('main_description') or chunk_data.get('summary') or "Нет данных."
+        self.desc_label.setText(desc)
+
+        # 3. Кружки (Веса)
+        weights = content.get('influence_weights', {})
+        if self.circles:
+            layout_item = self.content_ui.itemAt(self.content_ui.count()-1)
+            if layout_item and layout_item.layout(): # Если кружки были в layout
+                 pass 
+            self.circles.deleteLater()
+            self.circles = None
+        
+        if weights:
+            self.circles = InfluenceCircles(weights)
+            # Добавляем в конец
+            self.content_ui.addWidget(self.circles)
+
+        # 4. Бадж статуса
+        target_status = content.get('target_status', 'NO_INTEREST')
         status_styles = {
             'NO_INTEREST': { 'text': 'НЕТ ИНТЕРЕСА', 'color': Palette.TEXT_MUTED },
             'HAS_OFFERS': { 'text': 'ЕСТЬ ПРЕДЛОЖЕНИЯ', 'color': Palette.WARNING },
             'MAX_BENEFIT': { 'text': 'МАКС. ВЫГОДА', 'color': Palette.SUCCESS }
         }
-        
-        target_status = content.get('target_status', 'NO_INTEREST')
         st = status_styles.get(target_status, status_styles['NO_INTEREST'])
         
+        self.status_badge.setVisible(chunk_type != "AI_BEHAVIOR")
         self.status_badge.setText(st['text'])
         c = st['color']
         self.status_badge.setStyleSheet(f"background-color: {Palette.with_alpha(c, 0.15)}; color: {c}; border: 1px solid {c}; border-radius: 4px; padding: 2px 6px; font-weight: bold; font-size: 10px;")
-        
-        # СКРЫВАЕМ СТАТУС ДЛЯ BEHAVIOR
-        if chunk_type == "AI_BEHAVIOR":
-            self.status_badge.setVisible(False)
-        else:
-            self.status_badge.setVisible(True)
-
-        # Thoughts
-        thoughts = content.get('hidden_thought_process', '')
-        if self.thought_box: 
-            self.content_ui.removeWidget(self.thought_box)
-            self.thought_box.deleteLater()
-            self.thought_box = None
-        
-        # Description
-        desc = content.get('main_description') or chunk_data.get('summary') or "Нет описания."
-        self.desc_label.setText(desc)
-
-        # Вставляем Thoughts ПЕРЕД описанием (индекс 0), чтобы логика шла сверху вниз
-        if thoughts:
-            self.thought_box = CollapsibleThought(thoughts)
-            self.content_ui.insertWidget(0, self.thought_box)
-        
-        # Circles
-        weights = content.get('influence_weights', {})
-        if self.circles:
-            layout_item = self.content_ui.itemAt(self.content_ui.count()-1)
-            if layout_item and layout_item.layout():
-                layout_item.layout().removeWidget(self.circles)
-            self.circles.deleteLater()
-            
-        self.circles = InfluenceCircles(weights)
-        # Добавляем в футер
-        self.content_ui.itemAt(self.content_ui.count()-1).layout().addWidget(self.circles)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
