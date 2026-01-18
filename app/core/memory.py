@@ -129,9 +129,8 @@ class MemoryManager:
 
     def add_item(self, item: Dict) -> bool:
         diag = get_diagnostic_logger()
-        FeatureExtractor.extract_semantic_data("")
-
         original_item = item.copy()
+    
         price_safe = 0
         try:
             p = item.get('price')
@@ -139,12 +138,12 @@ class MemoryManager:
                 price_safe = int(p)
         except (ValueError, TypeError):
             pass
-
+        
         # Выполняем семантический анализ с retry
         max_retries = 2
         semantic_data = None
         debug_data = None
-        
+    
         for attempt in range(max_retries):
             try:
                 semantic_data, debug_data = FeatureExtractor.extract_semantic_data_with_debug(
@@ -152,8 +151,7 @@ class MemoryManager:
                     item.get('description', ''),
                     price_safe
                 )
-                
-                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Валидация
+    
                 if self._validate_semantic_data(semantic_data, item.get('title', '')):
                     break
                 else:
@@ -166,10 +164,10 @@ class MemoryManager:
                 logger.error(f"NLP error (attempt {attempt+1}): {e}")
                 if attempt == max_retries - 1:
                     return False
-
+    
         item_for_db = item.copy()
         item_for_db['semantic_data'] = semantic_data
-
+    
         if diag.enabled:
             diag.log_item_processing(
                 original_item=original_item,
@@ -177,9 +175,9 @@ class MemoryManager:
                 intermediate_data=debug_data,
                 db_result={'status': 'processing'}
             )
-
+    
         result = self.raw_data.add_raw_item(item_for_db)
-
+    
         if diag.enabled:
             diag.log_item_processing(
                 original_item=original_item,
@@ -188,33 +186,27 @@ class MemoryManager:
                 db_result={'status': str(result), 'item_id': result.item_id, 'product_id': semantic_data.get('product_key')}
             )
             diag.save_session()
-
-        try:
-            from app.core.text_utils import FeatureExtractor
-            
-            # Извлекаем семантические данные
-            semantic = FeatureExtractor.extract_semantic_data(item.get('title', ''))
-            product_key = semantic.get('product_key')
-            cluster_key = semantic.get('cluster_key')
-            
-            # Инкремент для PRODUCT чанка
-            if product_key:
-                chunk = self.knowledge.get_chunk_by_key_and_type(product_key, 'PRODUCT')
-                if chunk and chunk.get('status') in ['READY', 'ACCUMULATING']:
-                    self.knowledge.increment_data_count(chunk['id'], count=1)
-                    logger.dev(f"📈 PRODUCT чанк {chunk['id']} ({product_key}): +1 новый item", level="DEBUG")
-            
-            # Инкремент для CATEGORY чанка
-            if cluster_key:
-                cat_chunk = self.knowledge.get_chunk_by_key_and_type(cluster_key, 'CATEGORY')
-                if cat_chunk and cat_chunk.get('status') in ['READY', 'ACCUMULATING']:
-                    self.knowledge.increment_data_count(cat_chunk['id'], count=1)
-                    logger.dev(f"📈 CATEGORY чанк {cat_chunk['id']} ({cluster_key}): +1 новый item", level="DEBUG")
-            
-        except Exception as e:
-            logger.dev(f"Failed to increment chunk counters: {e}", level="DEBUG")
-
-        return result.status in ['created', 'updated']
+    
+        # ИСПОЛЬЗУЕМ УЖЕ ПОЛУЧЕННЫЕ semantic_data (БЕЗ повторного вызова)
+        product_key = semantic_data.get('product_key')
+        cluster_key = semantic_data.get('cluster_key')
+    
+        # Инкремент для PRODUCT чанка
+        if product_key:
+            chunk = self.knowledge.get_chunk_by_key_and_type(product_key, 'PRODUCT')
+            if chunk and chunk.get('status') in ['READY', 'ACCUMULATING']:
+                self.knowledge.increment_data_count(chunk['id'], count=1)
+                logger.dev(f"📈 PRODUCT чанк {chunk['id']} ({product_key}): +1 новый item", level="DEBUG")
+    
+            # Проверка hash-based ключей
+            if '_unknown_' in product_key:
+                item_title = item.get('title', '')
+                logger.info(
+                    f"Элемент '{item_title[:50]}' использует hash-based product_key: '{product_key}' "
+                    f"(это нормально для неопознанных товаров)"
+                )
+    
+        return True
 
     def get_raw_items(self, category: Optional[str] = None,
                       product_key: Optional[str] = None,

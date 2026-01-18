@@ -12,77 +12,74 @@ class SmartChunkDetector:
 
     @staticmethod
     def detect_candidates(memory_manager, threshold: int = 10) -> List[Dict]:
+        """
+        Определяет кандидатов на создание чанков.
+
+        ИЗМЕНЕНИЯ:
+        - DATABASE чанки УДАЛЕНЫ из автодетекции
+        - Только PRODUCT, CATEGORY, AI_BEHAVIOR
+        - DATABASE создается вручную или через LLM-логику
+        """
         candidates = []
+
         try:
-            # 1. PRODUCT (Priority: 100 - Highest)
-            # Собираем конкретные товары
+            # 1. PRODUCT чанки (приоритет 100)
             products = memory_manager.raw_data.get_all_product_keys()
             for prod in products:
                 raw_key = prod.get('key')
                 item_count = prod.get('item_count', 0)
-                if item_count < threshold: continue
+
+                if item_count < threshold:
+                    continue
 
                 display_name = prod.get('display_name') or raw_key
                 category_name = prod.get('category_name') or raw_key.split('_')[0]
-                p_key = SmartChunkDetector._normalize_key(raw_key)
+                pkey = SmartChunkDetector._normalize_key(raw_key)
 
                 candidates.append({
-                    'type': 'PRODUCT',
-                    'key': p_key,
-                    'title': display_name,
-                    'parent_key': SmartChunkDetector._normalize_key(category_name),
-                    'priority': 100
+                    "type": "PRODUCT",
+                    "key": pkey,
+                    "title": display_name,
+                    "parent_key": SmartChunkDetector._normalize_key(category_name),
+                    "priority": 100 # 100
                 })
 
-            # 2. CATEGORY (Priority: 80)
-            # Обобщают продукты
+            # 2. CATEGORY чанки (приоритет 80)
             categories = memory_manager.raw_data.get_all_categories()
             for cat in categories:
                 cat_name = cat.get('name', 'UNKNOWN')
                 cat_key = SmartChunkDetector._normalize_key(cat_name)
                 item_count = cat.get('item_count', 0)
-                
+
                 if item_count > 0:
                     candidates.append({
-                        'type': 'CATEGORY',
-                        'key': cat_key,
-                        'title': cat.get('display_name', cat_name),
-                        'parent_key': f"db_{cat_key.split('_')[0]}",
-                        'priority': 80
+                        "type": "CATEGORY",  # <-- ИСПРАВЛЕНО: теперь CATEGORY, не DATABASE
+                        "key": cat_key,
+                        "title": cat.get('display_name', cat_name),  # <-- ИСПРАВЛЕНО: нормальное имя
+                        "parent_key": None,  # Категория верхнего уровня
+                        "priority": 80 # 80
                     })
 
-            # 3. DATABASE (Priority: 50)
-            # Обобщают категории (обычно db_general или по большим разделам)
-            # Берем топ категорий для создания баз
-            top_categories = sorted(categories, key=lambda x: x.get('item_count', 0), reverse=True)[:5]
-            for cat in top_categories:
-                cat_name = cat.get('name', 'UNKNOWN')
-                if cat.get('item_count', 0) > 0:
-                    candidates.append({
-                        'type': 'DATABASE',
-                        'key': f"db_{SmartChunkDetector._normalize_key(cat_name)}",
-                        'title': f'База Данных: {cat_name}',
-                        'parent_key': None,
-                        'priority': 50
-                    })
-
-            # 4. AI_BEHAVIOR (Priority: 0 - Lowest)
-            # Должен формироваться последним, чтобы анализировать логи действий, 
-            # которые произошли во время культивации других чанков.
+            # 3. AI_BEHAVIOR (приоритет 0)
             candidates.append({
-                'type': 'AI_BEHAVIOR',
-                'key': 'general_behavior',
-                'title': 'Поведение ИИ',
-                'parent_key': None,
-                'priority': 0 
+                "type": "AI_BEHAVIOR",
+                "key": "general_behavior",
+                "title": "Общее поведение системы",
+                "parent_key": None,
+                "priority": 0
             })
+
+            # DATABASE чанки НЕ создаются автоматически!
+            # Они будут создаваться:
+            # 1. Вручную через UI (кнопка "Создать контекстную БД")
+            # 2. Через LLM-логику (AI_BEHAVIOR предлагает создать DATABASE)
 
             return candidates
 
         except Exception as e:
             logger.error(f"Detector error: {e}")
             return []
-
+    
     @staticmethod
     def create_missing_chunks(memory_manager, cultivation_manager) -> int:
         candidates = SmartChunkDetector.detect_candidates(memory_manager)
@@ -125,9 +122,11 @@ class SmartChunkDetector:
             if parent_key_raw:
                 parent_key_norm = SmartChunkDetector._normalize_key(parent_key_raw)
                 
-                parent_type = "CATEGORY"
-                if c_type == "CATEGORY": parent_type = "DATABASE"
-                if c_type == "DATABASE": parent_type = None
+                parent_type = None
+                if c_type == "PRODUCT":
+                    parent_type = "CATEGORY"
+                elif c_type == "CATEGORY":
+                    parent_type = "DATABASE"
 
                 if parent_type:
                     if (parent_type, parent_key_norm) in newly_created:

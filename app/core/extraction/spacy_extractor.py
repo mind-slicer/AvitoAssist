@@ -628,8 +628,13 @@ class SpacyFeatureExtractor:
         return {k: v for k, v in components.items() if v}
 
     def _generate_product_key(self, category: str, brands: Dict, model_info: Dict, lemmas: List[str]) -> str:
+        """
+        Генерирует product_key с учетом специфики категорий.
+        Для GPU включает vendor (производителя карты) для избежания дублей.
+        """
         cat_lower = category.lower()
-
+    
+        # PC_BUILD
         if cat_lower == 'pc_build':
             build_type = 'generic'
             if any(w in lemmas for w in ['игровой', 'gaming', 'геймерский', 'game']):
@@ -641,17 +646,19 @@ class SpacyFeatureExtractor:
             elif any(w in lemmas for w in ['mini', 'мини', 'компактный', 'малый']):
                 build_type = 'mini'
             return f"pc_build_{build_type}"
-        
+    
+        # SERVICE
         if cat_lower == 'service':
             if 'аренда' in lemmas: return "service_rent"
             if 'скупка' in lemmas or 'выкуп' in lemmas: return "service_buyout"
             if 'ремонт' in lemmas: return "service_repair"
             return "service_general"
-
+    
         vendor = brands.get('vendor', '')
         chip = brands.get('chip', '')
         series = model_info.get('series', '')
-
+    
+        # Автоопределение chip по серии (если не определен)
         if not chip and not vendor and series:
             if series in ['rtx', 'gtx', 'geforce', 'titan']:
                 chip = 'nvidia'
@@ -661,35 +668,52 @@ class SpacyFeatureExtractor:
                 chip = 'intel'
             elif series in ['ryzen', 'athlon', 'threadripper', 'epyc']:
                 chip = 'amd'
-
-        brand_part = chip if chip else vendor
+    
+        # ============================
+        # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: GPU требует vendor для уникальности
+        # ============================
+        if cat_lower == 'gpu':
+            # Для GPU используем: gpu_<chip>_<vendor>_<model>
+            # Это предотвращает дубли типа "RTX 4060 Palit" и "RTX 4060 MSI"
+            brand_part = f"{chip}_{vendor}" if chip and vendor else (chip or vendor)
+        else:
+            # Для CPU, MOTHERBOARD и др. используем chip (intel, amd) или vendor
+            brand_part = chip if chip else vendor
+    
         model_part = model_info.get('model', '')
         if not model_part:
             model_part = model_info.get('series', '')
-
+    
+        # Формирование частей ключа
         parts = [cat_lower]
+    
         if brand_part:
+            # Нормализация бренда
             normalized_brand = re.sub(r'[-\s]+', '_', brand_part.lower())
             normalized_brand = re.sub(r'[^a-z0-9_]', '', normalized_brand)
             normalized_brand = re.sub(r'_+', '_', normalized_brand).strip('_')
+    
             if normalized_brand:
                 parts.append(normalized_brand)
-
+    
         if model_part:
+            # Нормализация модели
             normalized_model = re.sub(r'[\s-]+', '', model_part.lower())
             normalized_model = re.sub(r'[^a-z0-9]', '', normalized_model)
+    
             if normalized_model:
                 parts.append(normalized_model)
-
+    
+        # Сортировка (кроме категории) для стабильности
         parts = [p for p in parts if p]
-
         if len(parts) > 1:
             parts = [parts[0]] + sorted(parts[1:])
-
+    
         key = '_'.join(parts)
         key = re.sub(r'[^\w_]', '', key)
         key = re.sub(r'_+', '_', key)
-
+    
+        # Fallback для неопознанных товаров
         if not key or key == cat_lower or len(key.split('_')[-1]) < 2:
             if cat_lower in ['accessory', 'misc', 'cooling']:
                 title_hash = hashlib.md5(''.join(lemmas[:5]).encode()).hexdigest()[:6]
@@ -703,10 +727,11 @@ class SpacyFeatureExtractor:
                             key = f"{cat_lower}_{normalized}"
                             found_key = True
                             break
+                        
                 if not found_key:
                     hash_suffix = hashlib.md5(''.join(lemmas[:5]).encode()).hexdigest()[:6]
                     key = f"{cat_lower}_unknown_{hash_suffix}"
-
+    
         return key.strip('_') or f"{cat_lower}_item"
 
     def _generate_cluster_key(self, category: str, brands: Dict, model_info: Dict) -> str:

@@ -1,11 +1,13 @@
 from __future__ import annotations
-from enum import Enum
-from typing import Optional, Dict
-from datetime import datetime
 import numpy as np
 import json
 import random
 import os
+import threading
+import time
+from enum import Enum
+from typing import Optional, Dict
+from datetime import datetime
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
@@ -13,6 +15,7 @@ from app.core.ai.ai_manager import AIChunkCultivationWorker
 from app.core.log_manager import logger
 from app.core.ai.prompts import ChunkCultivationPrompts
 from app.core.text_utils import FeatureExtractor
+from app.core.ai.smart_chunk_detector import SmartChunkDetector
 from app.config import BASE_APP_DIR
 
 class ChunkType(Enum):
@@ -52,6 +55,10 @@ class ChunkCultivationManager(QObject):
         self._paused_remaining_time = 0
         self._is_resuming_from_pause = False
 
+        self._state_lock = threading.Lock()
+        self._paused_at_timestamp = None
+        self._last_data_signature = None
+
         self._cultivation_timer = QTimer(self)
         self._cultivation_timer.timeout.connect(self._check_triggers)
         
@@ -66,32 +73,84 @@ class ChunkCultivationManager(QObject):
         self.default_data_threshold = 10
 
     def toggle_master_switch(self, enabled: bool):
-        """Переключение паузы с сохранением прогресса таймера"""
-        if self.master_switch == enabled:
-            return
+        """Переключение паузы с защитой от race condition"""
+        with self._state_lock:  # <-- Защищаем изменение состояния
+            if self.master_switch == enabled:
+                return
 
-        self.master_switch = enabled
-        
-        if not enabled:
-            if self._cultivation_timer.isActive():
-                self._paused_remaining_time = self._cultivation_timer.remainingTime()
-                self._cultivation_timer.stop()
+            self.master_switch = enabled
+
+            if not enabled:
+                # ПАУЗА
+                if self._cultivation_timer.isActive():
+                    self._paused_remaining_time = self._cultivation_timer.remainingTime()
+                    self._cultivation_timer.stop()
+                else:
+                    self._paused_remaining_time = 0
+
+                # Сохраняем snapshot состояния данных
+                self._paused_at_timestamp = time.time()
+                self._last_data_signature = self._calculate_data_signature()
+
+                logger.info(
+                    f"⏸️ Система культивации: ПАУЗА (осталось {self._paused_remaining_time/1000:.1f}с) "
+                    f"[snapshot: {self._last_data_signature[:8]}]", 
+                    token="ai-ctrl"
+                )
             else:
-                self._paused_remaining_time = 0
-            
-            logger.info(f"⏸️ Система культивации: ПАУЗА (осталось {self._paused_remaining_time/1000:.1f}с)", token="ai-ctrl")
-        else:
-            delay = self._paused_remaining_time
-            if delay <= 100: 
-                delay = 1000 
-            
-            self._is_resuming_from_pause = True
-            
-            self._cultivation_timer.start(delay)
-            
-            logger.info(f"▶️ Система культивации: АКТИВНА (продолжение через {delay/1000:.1f}с)", token="ai-ctrl")
-            
-        self.pause_state_changed.emit(enabled)
+                # ВОЗОБНОВЛЕНИЕ
+                delay = self._paused_remaining_time
+
+                if delay <= 100:
+                    delay = 1000
+
+                # Проверяем, изменились ли данные во время паузы
+                current_signature = self._calculate_data_signature()
+                data_changed = (current_signature != self._last_data_signature)
+
+                if data_changed:
+                    logger.warning(
+                        f"⚠️ Данные изменились во время паузы! "
+                        f"Старый хэш: {self._last_data_signature[:8]}, "
+                        f"Новый хэш: {current_signature[:8]}. "
+                        f"Принудительный пересчет триггеров.",
+                        token="ai-ctrl"
+                    )
+                    # Сбрасываем delay для немедленной проверки
+                    delay = 500
+
+                self._is_resuming_from_pause = True
+                self._cultivation_timer.start(delay)
+
+                logger.info(
+                    f"▶️ Система культивации: АКТИВНА (продолжение через {delay/1000:.1f}с) "
+                    f"[данные {'ИЗМЕНЕНЫ' if data_changed else 'не изменились'}]", 
+                    token="ai-ctrl"
+                )
+
+            self.pause_state_changed.emit(enabled)
+
+    def _calculate_data_signature(self) -> str:
+        """
+        Вычисляет signature состояния данных для определения изменений.
+        Включает: количество элементов, pending чанков, NEED_REFRESH чанков.
+        """
+        import hashlib
+
+        try:
+            stats = self.memory.raw_data.get_statistics()
+            total_items = stats.get('total_items', 0)
+
+            pending_count = len(self.memory.get_pending_chunks())
+            refresh_count = len(self.memory.knowledge.get_knowledge(status='NEED_REFRESH'))
+
+            # Хэшируем комбинацию критичных метрик
+            signature_string = f"{total_items}:{pending_count}:{refresh_count}"
+
+            return hashlib.md5(signature_string.encode()).hexdigest()
+        except Exception as e:
+            logger.error(f"Error calculating data signature: {e}")
+            return "error"
 
     def validate_chunks_integrity(self):
         chunks = self.memory.knowledge.get_knowledge(status='READY')
@@ -195,28 +254,39 @@ class ChunkCultivationManager(QObject):
             logger.error(f"Create error {key}: {e}", token="ai-det")
 
     def cultivate_pending_chunks(self, user_instructions: str = ""):
-        """Ручной запуск всех PENDING и NEED_REFRESH."""
-        # Получаем чанки (get_pending_chunks уже сортирует по приоритету DESC)
-        # Но для надежности перепроверим порядок
-        targets = self.memory.get_pending_chunks() + \
-                  self.memory.knowledge.get_knowledge(status=ChunkStatus.NEED_REFRESH.value)
+        """
+        Культивирует все PENDING и NEED_REFRESH чанки.
+        Вызывается как вручную (request_user_cultivation), так и автоматически.
+        """
+        # Получаем чанки
+        pending = self.memory.get_pending_chunks()
+        refresh = self.memory.knowledge.get_knowledge(status=ChunkStatus.NEED_REFRESH.value)
+
+        targets = pending + refresh
 
         # Удаляем дубликаты по ID
-        unique_targets = {t['id']: t for t in targets}.values()
-        
-        # Сортируем: PRODUCT (100) -> CATEGORY (50) -> ...
+        unique_targets = {t['id']: t for t in targets}
+
+        # Сортируем: PRODUCT (100) -> CATEGORY (80) -> DATABASE (50) -> AI_BEHAVIOR (0)
         sorted_targets = sorted(
-            unique_targets, 
+            unique_targets.values(), 
             key=lambda x: x.get('priority', 0), 
             reverse=True
         )
 
         if not sorted_targets:
-            logger.info("Нет чанков, требующих обновления.", token="ai-cult")
+            logger.info(
+                "⚠️ Нет чанков для обработки (PENDING/NEED_REFRESH).", 
+                token="ai-cult"
+            )
             return
 
-        logger.info(f"Запуск культивации для {len(sorted_targets)} чанков (Приоритет макс: {sorted_targets[0].get('priority')})...", token="ai-cult")
-        
+        logger.info(
+            f"📋 Найдено {len(sorted_targets)} чанков для культивации "
+            f"(макс. приоритет: {sorted_targets[0].get('priority', 0)})",
+            token="ai-cult"
+        )
+
         for chunk in sorted_targets:
             self._initiate_cultivation(
                 chunk,
@@ -229,13 +299,27 @@ class ChunkCultivationManager(QObject):
         self.cultivate_pending_chunks(user_instructions)
 
     def _check_triggers(self):
-        if self._is_resuming_from_pause:
-            self._is_resuming_from_pause = False
-            self._cultivation_timer.setInterval(self._target_poll_interval)
+        """Проверка триггеров с защитой от race condition"""
+        with self._state_lock:  # <-- Защищаем доступ
+            if self._is_resuming_from_pause:
+                self._is_resuming_from_pause = False
 
-        if not self.master_switch:
-            return
+                # При возобновлении после паузы пересчитываем signature
+                if self._last_data_signature:
+                    current_sig = self._calculate_data_signature()
+                    if current_sig != self._last_data_signature:
+                        logger.info(
+                            "Обнаружены изменения данных после паузы, форсируем полную проверку",
+                            token="ai-cult"
+                        )
 
+                self._cultivation_timer.setInterval(self._target_poll_interval)
+
+            # ВАЖНО: Только автоматические триггеры уважают паузу
+            if not self.master_switch:
+                return
+
+        # Основная логика проверки (уже без lock, чтобы не блокировать долго)
         try:
             self._create_new_chunks_from_data()
             self.check_and_cultivate()
@@ -535,21 +619,54 @@ class ChunkCultivationManager(QObject):
         # === CATEGORY ===
         elif chunk_type == "CATEGORY":
             all_chunks = self.memory.knowledge.get_knowledge(limit=10000)
-            sub_chunks = [c for c in all_chunks if c.get('parent_chunk_id') == chunk_id and c.get('chunk_type') == 'PRODUCT']
+            sub_chunks = [c for c in all_chunks 
+                if c.get('parent_chunk_id') == chunk_id 
+                and c.get('chunk_type') == "PRODUCT"]
 
             # FIX: Get Raw Data Preview + Count
             try:
-                raw_items = self.memory.raw_data.get_raw_items(category=chunk_key, limit=15)
+                raw_items = self.memory.raw_data.get_raw_items(category=chunk_key, limit=1000)
                 raw_count = self.memory.raw_data.get_raw_items_count(category=chunk_key)
+
+                logger.info(f"📦 RAW items для {chunk_key}: {raw_count} товаров", token="ai-cult")
                 
                 if raw_items:
-                    raw_preview_list = [f"- {i.get('title')[:60]}... ({i.get('price')}р)" for i in raw_items]
+                    raw_preview_list = [
+                        f"- {i.get('title', '')[:60]}... | {i.get('price', 0)}₽"
+                        for i in raw_items[:20]
+                    ]
                     raw_preview_str = "\n".join(raw_preview_list)
                 else:
-                    raw_preview_str = "Нет сырых данных."
+                    raw_preview_str = "Нет товаров в этой категории."
+                    logger.warning(f"⚠️ Категория {chunk_key} пуста!", token="ai-cult")
+
             except Exception as e:
-                raw_preview_str = "Ошибка получения данных."
+                logger.error(f"Ошибка получения товаров для {chunk_key}: {e}", token="ai-cult")
+                raw_preview_str = "Ошибка загрузки данных."
                 raw_count = 0
+
+            product_chunks_for_category = []
+
+            for chunk in all_chunks:
+                if chunk.get('chunk_type') != 'PRODUCT':
+                    continue
+                
+                # Проверяем связь с категорией через chunk_key
+                product_key = chunk.get('chunk_key', '')
+
+                # Если ключ продукта содержит категорию (например: "laptop_lenovo_ideapad")
+                if chunk_key.lower() in product_key.lower():
+                    product_chunks_for_category.append(chunk)
+                    continue
+                
+                # Или проверяем через parent_chunk_id (если используется)
+                if chunk.get('parent_chunk_id') == chunk_id:
+                    product_chunks_for_category.append(chunk)
+
+            logger.info(
+                f"📋 Найдено PRODUCT чанков для {chunk_key}: {len(product_chunks_for_category)}", 
+                token="ai-cult"
+            )
 
             return ChunkCultivationPrompts.build_category_cultivation_prompt(
                 category_key=chunk_key, sub_products=sub_chunks,
@@ -586,14 +703,56 @@ class ChunkCultivationManager(QObject):
 
     def _create_new_chunks_from_data(self):
         """Единая точка входа для создания чанков."""
-        if not self.master_switch: return
-        
-        from app.core.ai.smart_chunk_detector import SmartChunkDetector
-        
         # Детектор теперь сам ставит правильные приоритеты (PRODUCT=100)
         count = SmartChunkDetector.create_missing_chunks(self.memory, self)
         if count > 0:
             logger.info(f"Создано {count} новых структурных единиц памяти.", token="ai-det")
+
+    def create_database_chunk(self, topic: str, linked_chunks: List[int]) -> int:
+        """
+        Создает DATABASE чанк с пользовательской темой.
+
+        Args:
+            topic: Тема БД (напр., "Игровые сборки до 100к")
+            linked_chunks: Список ID чанков для линковки
+
+        Returns:
+            ID нового DATABASE чанка
+        """
+        db_key = f"db_{SmartChunkDetector._normalize_key(topic)}"
+
+        # Проверяем на дубли
+        existing = self.memory.knowledge.get_chunk_by_key_and_type(db_key, 'DATABASE')
+        if existing:
+            logger.warning(f"DATABASE чанк '{topic}' уже существует (ID: {existing['id']})")
+            return existing['id']
+
+        # Создаем DATABASE чанк
+        db_id = self.memory.add_knowledge(
+            chunk_type='DATABASE',
+            chunk_key=db_key,
+            title=f"Контекстная БД: {topic}",
+            status=ChunkStatus.PENDING.value,
+            parent_chunk_id=None,
+            priority=50
+        )
+
+        # Линкуем чанки
+        for chunk_id in linked_chunks:
+            try:
+                # Добавляем связь (требует расширения схемы БД)
+                self.memory.knowledge.add_chunk_link(
+                    source_chunk_id=db_id,
+                    target_chunk_id=chunk_id,
+                    link_type='INCLUDES'
+                )
+            except Exception as e:
+                logger.error(f"Error linking chunk {chunk_id} to DATABASE {db_id}: {e}")
+
+        logger.success(f"✅ DATABASE чанк '{topic}' создан (ID: {db_id})", token="ai-det")
+        self.chunk_status_changed.emit(db_id, ChunkStatus.PENDING.value)
+
+        return db_id
 
     # --- UI HELPERS ---
 

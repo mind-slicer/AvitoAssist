@@ -768,7 +768,7 @@ class AIMemoryPanel(QWidget):
         self.btn_generate = QPushButton("✨ Актуализировать Память")
         self.btn_generate.setStyleSheet(Components.start_button())
         self.btn_generate.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_generate.clicked.connect(self._on_generate_clicked)
+        self.btn_generate.clicked.connect(self.on_generate_clicked)
         self.btn_generate.setEnabled(False) 
 
         footer_layout.addWidget(self.btn_scan)
@@ -1079,10 +1079,30 @@ class AIMemoryPanel(QWidget):
         QTimer.singleShot(1000, lambda: self.btn_scan.setText("🔍 Найти кластеры"))
         QTimer.singleShot(1000, lambda: self.btn_scan.setEnabled(True))
 
-    def _on_generate_clicked(self):
+    def on_generate_clicked(self):
+        """Обработчик кнопки 'Найти кластеры'"""
+        # Проверяем наличие pending чанков
+        pending_count = sum(1 for c in self.masonry._cards.values() 
+                           if c.chunk_data.get('status') in ['PENDING', 'NEED_REFRESH'])
+
+        if pending_count == 0:
+            # Показываем сообщение пользователю
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "Нет чанков для обработки",
+                "В данный момент нет чанков со статусом PENDING или NEED_REFRESH.\n\n"
+                "Попробуйте сначала нажать '🔍 Сканировать базу'."
+            )
+            return
+
         self.btn_generate.setEnabled(False)
-        self.btn_generate.setText("Запуск...")
+        self.btn_generate.setText("⏳ Обработка...")
+
         self.generate_reports_signal.emit()
+
+        QTimer.singleShot(1000, lambda: self.btn_generate.setText("🧠 Найти кластеры"))
+        QTimer.singleShot(1000, lambda: self.btn_generate.setEnabled(True))
 
     # --- Prompts & Settings Logic (Same as before) ---
 

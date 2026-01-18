@@ -32,7 +32,7 @@ class AIProcessingWorker(QThread):
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
 
-    def __init__(self, port: int, items: List[Dict], prompts: List[str], rag_messages: List[Optional[str]], context: Dict, model_name: str):
+    def __init__(self, port: int, items: List[Dict], prompts: List[str], rag_messages: List[Optional[str]], context: Dict, model_name: str, timeout: int = 60):
         super().__init__()
         self.port = port
         self.items = items
@@ -40,6 +40,7 @@ class AIProcessingWorker(QThread):
         self.rag_messages = rag_messages
         self.context = context
         self.model_name = model_name
+        self.timeout = timeout
         self._is_running = True
 
     def stop(self):
@@ -50,7 +51,7 @@ class AIProcessingWorker(QThread):
         asyncio.run(self._process_async())
 
     async def _process_async(self):
-        client = LlamaClient(self.port)
+        client = LlamaClient(self.port, request_timeout=self.timeout)
         try:
             total = len(self.items)
             
@@ -171,7 +172,7 @@ class AIChunkCultivationWorker(QThread):
     progress_signal = pyqtSignal(int, str)
 
     def __init__(self, port: int, chunk_id: int, chunk_type: str,
-                 memory_manager, model_name: str, prompt: str, user_instructions: str = ""):
+                 memory_manager, model_name: str, prompt: str, user_instructions: str = "", timeout: int = 180):
         super().__init__()
         self.port = port
         self.chunk_id = chunk_id
@@ -179,6 +180,7 @@ class AIChunkCultivationWorker(QThread):
         self.memory = memory_manager
         self.model_name = model_name
         self.prompt = prompt
+        self.timeout = timeout
         self._is_running = True
         self.user_instructions = user_instructions
 
@@ -189,7 +191,7 @@ class AIChunkCultivationWorker(QThread):
         asyncio.run(self._cultivate_chunk())
 
     async def _cultivate_chunk(self):
-        client = LlamaClient(self.port)
+        client = LlamaClient(self.port, request_timeout=self.timeout)
         try:
             # 1. Проверка отмены перед стартом
             if hasattr(self, '_is_running') and not self._is_running:
@@ -312,6 +314,13 @@ class AIChunkCultivationWorker(QThread):
 
 
 class AIManager(QObject):
+    CHUNK_TYPE_PRIORITIES = {
+        'PRODUCT': 100, # 100
+        'CATEGORY': 80, # 80
+        'DATABASE': 50,
+        'AI_BEHAVIOR': 20
+    }
+
     progress_signal = pyqtSignal(str)
     ai_progress_value = pyqtSignal(int)
     result_signal = pyqtSignal(int, str, dict)
@@ -351,6 +360,8 @@ class AIManager(QObject):
         self.analysis_timer = QTimer()
         self.analysis_timer.timeout.connect(self._tick_analysis_timer)
         self.start_ts = 0
+
+        self._cultivation_queue = []
 
     def _find_default_model(self) -> Optional[str]:
         if not os.path.exists(MODELS_DIR):
@@ -621,23 +632,55 @@ class AIManager(QObject):
         self.processing_worker.error_signal.connect(self.error_signal.emit)
         self.processing_worker.start()
 
-    def start_cultivation_for_chunk(self, chunk_id, chunk_type, prompt, on_complete, user_instructions: str = ""):
+    def start_cultivation_for_chunk(self, chunk_id, chunk_type, prompt, on_complete, 
+                                     user_instructions: str = "", priority_override: int = None):
+        """
+        Добавляет чанк в очередь культивации с учетом приоритета.
+
+        Args:
+            chunk_id: ID чанка
+            chunk_type: Тип чанка (PRODUCT, CATEGORY, etc.)
+            prompt: Промпт для LLM
+            on_complete: Callback функция
+            user_instructions: Инструкции пользователя
+            priority_override: Ручной приоритет (если нужно переопределить)
+        """
+        # Проверка на дубликаты
         if any(item['id'] == chunk_id for item in self._cultivation_queue):
             return
 
-        self._cultivation_queue.append({
+        # Определяем приоритет
+        if priority_override is not None:
+            priority = priority_override
+        else:
+            priority = self.CHUNK_TYPE_PRIORITIES.get(chunk_type, 0)
+
+        # Добавляем задачу с приоритетом
+        task = {
             "id": chunk_id,
             "type": chunk_type,
+            "priority": priority,
             "prompt": prompt,
             "callback": on_complete,
-            "user_instructions": user_instructions
-        })
-        
-        logger.info(f"Чанк {chunk_id} добавлен в очередь (всего: {len(self._cultivation_queue)})", token="ai-cult")
-        
+            "user_instructions": user_instructions,
+            "added_at": time.time()  # Для FIFO при равных приоритетах
+        }
+
+        self._cultivation_queue.append(task)
+
+        # КРИТИЧНО: Сортируем очередь по приоритету (DESC) и времени добавления (ASC)
+        self._cultivation_queue.sort(key=lambda x: (-x['priority'], x['added_at']))
+
+        logger.info(
+            f"Чанк {chunk_id} ({chunk_type}) добавлен в очередь с приоритетом {priority} "
+            f"(всего: {len(self._cultivation_queue)})", 
+            token="ai-cult"
+        )
+
         QTimer.singleShot(100, self._process_cultivation_queue)
 
     def _process_cultivation_queue(self):
+        """Обработка очереди с учетом приоритетов"""
         if self._is_cultivating_now:
             return
 
@@ -650,12 +693,20 @@ class AIManager(QObject):
             return
 
         self._is_cultivating_now = True
+
+        # Берем первый элемент (уже отсортирован по приоритету)
         task = self._cultivation_queue.pop(0)
-        
         chunk_id = task["id"]
-        logger.info(f"Начало обработки из очереди: чанк {chunk_id}", token="ai-cult")
+
+        logger.info(
+            f"Начало обработки из очереди: чанк {chunk_id} ({task['type']}) "
+            f"[приоритет: {task['priority']}] "
+            f"(осталось в очереди: {len(self._cultivation_queue)})", 
+            token="ai-cult"
+        )
 
         port = self.server_manager.get_port()
+
         worker = AIChunkCultivationWorker(
             port=port,
             chunk_id=chunk_id,
@@ -663,9 +714,10 @@ class AIManager(QObject):
             memory_manager=self.memory_manager,
             model_name=self._model_name,
             prompt=task["prompt"],
-            user_instructions=task.get("user_instructions", "")
+            user_instructions=task.get("user_instructions", ""),
+            timeout=180  # Используем таймаут из #12
         )
-        
+
         self._chunk_workers[chunk_id] = worker
 
         def _handle_finished(result: dict):
@@ -677,13 +729,32 @@ class AIManager(QObject):
                     w.quit()
                     w.wait()
                     w.deleteLater()
-                
+
                 self._is_cultivating_now = False
+
+                # Продолжаем обработку очереди
                 QTimer.singleShot(1000, self._process_cultivation_queue)
 
         worker.finished.connect(_handle_finished)
         worker.error_signal.connect(self.error_signal.emit)
         worker.start()
+
+    def get_queue_status(self) -> Dict:
+        """Возвращает статус очереди для UI"""
+        if not self._cultivation_queue:
+            return {"total": 0, "by_type": {}, "highest_priority": 0}
+
+        by_type = {}
+        for task in self._cultivation_queue:
+            t = task['type']
+            by_type[t] = by_type.get(t, 0) + 1
+
+        return {
+            "total": len(self._cultivation_queue),
+            "by_type": by_type,
+            "highest_priority": self._cultivation_queue[0]['priority'] if self._cultivation_queue else 0,
+            "next_chunk_id": self._cultivation_queue[0]['id'] if self._cultivation_queue else None
+        }
 
     def _build_table_summary(self, items: List[Dict]) -> str:
         if not items:

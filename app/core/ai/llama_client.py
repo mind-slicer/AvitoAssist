@@ -1,11 +1,14 @@
 import aiohttp
-from typing import Optional, Dict, List, Any
+import asyncio
+
 from app.core.log_manager import logger
 
+
 class LlamaClient:
-    def __init__(self, port: int, host: str = "127.0.0.1"):
-        self.base_url = f"http://{host}:{port}"
-        self.session: Optional[aiohttp.ClientSession] = None
+    def __init__(self, port: int, request_timeout: int = 120):
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.session = None
+        self.request_timeout = request_timeout
 
     async def ensure_session(self):
         if self.session is None or self.session.closed:
@@ -24,36 +27,35 @@ class LlamaClient:
         except Exception:
             return False
 
-    async def chat_completion(self, 
-                            model: str, 
-                            messages: List[Dict[str, str]], 
-                            params: Dict[str, Any] = None) -> Optional[str]:
-        await self.ensure_session()
-        
-        default_params = {
-            "temperature": 0.3,
-            "max_tokens": 2048,
-            "stop": ["<|im_end|>", "<|endoftext|>", "user:", "system:"],
-        }
-        if params:
-            default_params.update(params)
+    async def chat_completion(self, model: str, messages: list, params: dict = None) -> str:
+        if not self.session:
+            timeout = aiohttp.ClientTimeout(
+                total=self.request_timeout,
+                connect=10,
+                sock_read=self.request_timeout
+            )
+            self.session = aiohttp.ClientSession(timeout=timeout)
 
         payload = {
             "model": model,
             "messages": messages,
-            **default_params
+            **(params or {})
         }
 
         try:
-            async with self.session.post(f"{self.base_url}/v1/chat/completions", json=payload) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error(f"Ошибка API: {resp.status}: {text}")
-                    return None
-                
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-                
+            async with self.session.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                else:
+                    logger.error(f"LLM server error: {response.status}")
+                    return ""
+        except asyncio.TimeoutError:
+            logger.error(f"LLM request timeout after {self.request_timeout}s")
+            return ""
         except Exception as e:
-            logger.error(f"Запрос провален: {e}")
-            return None
+            logger.error(f"LLM request error: {e}")
+            return ""

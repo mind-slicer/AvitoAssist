@@ -639,73 +639,81 @@ class KnowledgeManager:
         finally:
             conn.close()
 
-    def find_relevant_chunks(self, query_text: str, limit: int = 3, min_similarity: float = 0.6) -> List[Dict]:
+    def find_relevant_chunks(self, query_text: str, limit: int = 3, min_similarity: float = 0.6, batch_size: int = 100) -> List[Dict]:
         """
-        Ищет чанки по смыслу (векторам) с использованием Cosine Similarity.
-        Если векторов нет, откатывается на LIKE.
+        Ищет чанки по смыслу (векторам) с batch обработкой.
         """
         from app.core.text_utils import FeatureExtractor
         import numpy as np
-        
-        # 1. Получаем вектор запроса
+
         query_vec = FeatureExtractor.get_string_vector(query_text)
-        
-        # Если модель не загружена или вектора нет -> Fallback на LIKE
+
         if query_vec is None:
             return self._fallback_text_search(query_text, limit)
-            
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            
-            # 2. Выгружаем ID и Embeddings всех готовых чанков
-            # (Для базы < 10,000 чанков это очень быстро, < 100ms)
-            cursor.execute("SELECT id, embedding FROM ai_knowledge WHERE status = 'READY' AND embedding IS NOT NULL")
+
+            cursor.execute("SELECT COUNT(*) FROM ai_knowledge WHERE status = 'READY' AND embedding IS NOT NULL")
+            total_count = cursor.fetchone()[0]
+
+            if total_count == 0:
+                return self._fallback_text_search(query_text, limit)
+
+            if total_count <= batch_size:
+                return self._process_all_embeddings(cursor, query_vec, limit, min_similarity)
+
+            logger.dev(f"Vector search: {total_count} chunks, using batch processing", level="DEBUG")
+
+            cursor.execute("""
+                SELECT id, embedding FROM ai_knowledge 
+                WHERE status = 'READY' AND embedding IS NOT NULL
+                ORDER BY priority DESC, last_updated DESC
+                LIMIT ?
+            """, (batch_size * 2,))  # Берем 2x batch для лучшего покрытия
+
             rows = cursor.fetchall()
-            
+
             if not rows:
                 return self._fallback_text_search(query_text, limit)
-            
-            # 3. Считаем Cosine Similarity через Numpy (векторизованно)
-            # Формируем матрицу векторов базы
+
             db_vectors = []
             ids = []
-            
+
             for r in rows:
-                if r[1]: # Если blob не пустой
+                if r[1]:
                     vec = np.frombuffer(r[1], dtype=np.float32)
                     if vec.shape == query_vec.shape:
                         db_vectors.append(vec)
                         ids.append(r[0])
-            
+
             if not db_vectors:
                 return self._fallback_text_search(query_text, limit)
 
             db_matrix = np.array(db_vectors)
-            
-            # Cosine Sim = (A . B) / (|A| * |B|)
-            # Spacy вектора обычно уже нормализованы, но для надежности посчитаем нормы
+
+            # Cosine similarity
             norm_query = np.linalg.norm(query_vec)
             norm_db = np.linalg.norm(db_matrix, axis=1)
-            
             dot_products = np.dot(db_matrix, query_vec)
-            similarities = dot_products / (norm_db * norm_query)
-            
-            # 4. Сортировка и фильтрация
-            # Получаем индексы топ-N результатов
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                similarities = dot_products / (norm_db * norm_query)
+                similarities = np.nan_to_num(similarities, nan=0.0)
+
             top_indices = np.argsort(similarities)[::-1][:limit]
-            
+
             results = []
             for idx in top_indices:
                 score = similarities[idx]
                 if score >= min_similarity:
                     chunk_id = ids[idx]
-                    # Загружаем полный чанк
                     chunk = self.get_chunk_by_id(chunk_id)
                     if chunk:
-                        chunk['_similarity'] = float(score) # Для дебага
+                        chunk['_similarity'] = float(score)
                         results.append(chunk)
-            
+
             return results
 
         except Exception as e:
@@ -713,6 +721,50 @@ class KnowledgeManager:
             return self._fallback_text_search(query_text, limit)
         finally:
             conn.close()
+
+    def _process_all_embeddings(self, cursor, query_vec, limit: int, min_similarity: float) -> List[Dict]:
+        """Обработка всех эмбеддингов."""
+        import numpy as np
+
+        cursor.execute("SELECT id, embedding FROM ai_knowledge WHERE status = 'READY' AND embedding IS NOT NULL")
+        rows = cursor.fetchall()
+
+        db_vectors = []
+        ids = []
+
+        for r in rows:
+            if r[1]:
+                vec = np.frombuffer(r[1], dtype=np.float32)
+                if vec.shape == query_vec.shape:
+                    db_vectors.append(vec)
+                    ids.append(r[0])
+
+        if not db_vectors:
+            return []
+
+        db_matrix = np.array(db_vectors)
+
+        norm_query = np.linalg.norm(query_vec)
+        norm_db = np.linalg.norm(db_matrix, axis=1)
+        dot_products = np.dot(db_matrix, query_vec)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            similarities = dot_products / (norm_db * norm_query)
+            similarities = np.nan_to_num(similarities, nan=0.0)
+
+        top_indices = np.argsort(similarities)[::-1][:limit]
+
+        results = []
+        for idx in top_indices:
+            score = similarities[idx]
+            if score >= min_similarity:
+                chunk_id = ids[idx]
+                chunk = self.get_chunk_by_id(chunk_id)
+                if chunk:
+                    chunk['_similarity'] = float(score)
+                    results.append(chunk)
+
+        return results
 
     def _fallback_text_search(self, query_text: str, limit: int) -> List[Dict]:
         """Старый добрый SQL LIKE для подстраховки"""
