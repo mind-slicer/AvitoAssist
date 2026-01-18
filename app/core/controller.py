@@ -423,50 +423,61 @@ class ParserController(QObject):
     def scan_database(self):
         """Просто сканирует БД на наличие новых групп товаров"""
         if self.chunk_manager:
-            self.chunk_manager.scan_database_only()
+            self.chunk_manager.request_user_cultivation()
         else:
             logger.error("ChunkManager не инициализирован.")
 
     def start_cultivation(self):
-        """Запускает процесс генерации отчетов с предварительным поднятием сервера"""
         logger.info("Контроллер: Получен запрос на старт культивации")
 
         if not self.chunk_manager:
             logger.error("Менеджер памяти не инициализирован.")
             return
 
-        # 1. Убеждаемся, что менеджер ИИ существует
         self.ensure_ai_manager()
 
-        # 2. Проверяем модель
         if not self.ai_manager.has_model():
             self.error_occurred.emit("Не выбрана модель нейросети! Перейдите в настройки.")
             return
 
-        # 3. Логика запуска
         def _run_logic():
             logger.info("Контроллер: Сервер готов, запускаем обработку очереди чанков...")
-            user_instr = "" 
-            self.chunk_manager.cultivate_pending_chunks(user_instructions=user_instr)
+            
+            # Загружаем инструкции из файла (так как они сохраняются в MemoryPanel)
+            user_instr_list = []
+            import os, json
+            from app.config import BASE_APP_DIR
+            path = os.path.join(BASE_APP_DIR, "user_instructions.json")
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        user_instr_list = json.load(f)
+                except: pass
+            
+            user_instr_text = "\n".join(user_instr_list) if user_instr_list else ""
 
-        # 4. Проверяем статус сервера
+            # БЕЗОПАСНЫЙ ВЫЗОВ
+            if self.chunk_manager:
+                self.chunk_manager.request_user_cultivation(user_instructions=user_instr_text)
+            else:
+                logger.error("ChunkManager исчез перед запуском логики.")
+
+        # Проверяем статус сервера
         if not self.ai_manager._server_ready:
             logger.progress("Запуск нейросети для генерации отчетов...", token="ai_server_boot")
-            self.ui_lock_requested.emit(True) 
-            
-            # Используем lambda для замыкания, чтобы точно сработал слот
+            self.ui_lock_requested.emit(True)
+
             self.ai_manager.server_ready_signal.connect(
-                lambda: self.ui_lock_requested.emit(False), 
+                lambda: self.ui_lock_requested.emit(False),
                 Qt.ConnectionType.SingleShotConnection
             )
             self.ai_manager.server_ready_signal.connect(
-                _run_logic, 
+                _run_logic,
                 Qt.ConnectionType.SingleShotConnection
             )
-            
+
             self.ai_manager.ensure_server()
         else:
-            # Сервер уже работает
             _run_logic()
 
     def _on_cultivation_finished(self):

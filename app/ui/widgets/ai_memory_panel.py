@@ -406,46 +406,63 @@ class ChunkCard(QFrame):
         status = chunk_data.get('status', 'UNKNOWN')
         chunk_type = chunk_data.get('chunk_type')
         title = chunk_data.get('title')
-        
+
         self.title_label.setText(title)
-        
+
         icons = { 'PRODUCT': '📦', 'CATEGORY': '📂', 'DATABASE': '🗄️', 'AI_BEHAVIOR': '🧠' }
         self.icon_label.setText(icons.get(chunk_type, '📄'))
 
+        # --- FIX TIMESTAMP PARSING ---
         def fmt_date(iso_str):
             if not iso_str: return "-"
             try:
+                # Пробуем стандартный ISO
                 dt = datetime.fromisoformat(iso_str)
                 return dt.strftime("%d.%m.%Y %H:%M")
-            except: return ""
+            except ValueError:
+                try:
+                    # Пробуем обрезать микросекунды, если формат нестандартный
+                    dt = datetime.fromisoformat(iso_str.split('.')[0])
+                    return dt.strftime("%d.%m.%Y %H:%M")
+                except:
+                    return iso_str[:16].replace('T', ' ')
 
         created_at = fmt_date(chunk_data.get('created_at'))
         updated_at = fmt_date(chunk_data.get('last_updated'))
-        
+        # -----------------------------
+
         content_obj = chunk_data.get('content')
         size_kb = len(json.dumps(content_obj)) / 1024 if content_obj else 0
-        
+
+        # --- FIX RELATIVE TIME ---
         time_str = "Только что"
         last_upd_iso = chunk_data.get('last_updated')
-        
         if last_upd_iso:
             try:
-                dt = datetime.fromisoformat(last_upd_iso)
-                delta = datetime.now() - dt
-                total_sec = int(delta.total_seconds())
+                # Handle varying ISO formats safely
+                safe_iso = last_upd_iso.split('.')[0] if '.' in last_upd_iso else last_upd_iso
+                dt = datetime.fromisoformat(safe_iso)
                 
+                # Assume UTC if no TZ info, or Local if system sends local.
+                # Ideally, app should use UTC everywhere. 
+                # Calculating delta simply:
+                delta = datetime.now() - dt # Warning: naive vs aware timezone conflict possible
+                
+                total_sec = int(abs(delta.total_seconds()))
+
                 if total_sec < 60: time_str = "Только что"
                 elif total_sec < 3600: time_str = f"{total_sec // 60} мин. назад"
                 elif total_sec < 86400: time_str = f"{total_sec // 3600} ч. назад"
                 else: time_str = f"{total_sec // 86400} дн. назад"
-            except:
+            except Exception as e:
                 time_str = "Время неизвестно"
+        # -------------------------
 
         if created_at == updated_at:
             meta_text = f"📅 Создан: {created_at} • 💾 {size_kb:.1f} KB"
         else:
             meta_text = f"📅 Создан: {created_at} • 🔄 Обновлен: {time_str} | {updated_at} • 💾 {size_kb:.1f} KB"
-             
+
         self.meta_label.setText(meta_text)
 
         is_initializing = (status == 'INITIALIZING')

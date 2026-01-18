@@ -138,23 +138,27 @@ class ChunkCultivationManager(QObject):
             QTimer.singleShot(1000, self._process_cultivation_queue)
 
     def check_and_cultivate(self):
-        # 1. NEED_REFRESH
+        """Автоматическая проверка триггеров."""
+        # 1. Принудительные обновления (кнопка Refresh)
         refresh_chunks = self.memory.knowledge.get_knowledge(status=ChunkStatus.NEED_REFRESH.value)
         for chunk in refresh_chunks:
             if not any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
                 self._initiate_cultivation(chunk, ChunkCultivationTrigger.USER_BUTTON)
 
-        # 2. PENDING
+        # 2. Новые чанки (PENDING)
         pending_chunks = self.memory.get_pending_chunks()
         for chunk in pending_chunks:
             if not any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
+                # Проверяем объем данных перед запуском PENDING
+                # (Хотя детектор уже должен был проверить, но для надежности)
                 self._initiate_cultivation(chunk, ChunkCultivationTrigger.DATA_VOLUME)
 
-        # 3. READY Triggers
+        # 3. Готовые чанки (READY) - проверка времени и аномалий
         ready_chunks = self.memory.knowledge.get_ready_chunks()
         for chunk in ready_chunks:
             if any(t['id'] == chunk['id'] for t in self.ai._cultivation_queue):
                 continue
+            
             trigger = self._evaluate_triggers(chunk)
             if trigger:
                 self.memory.update_chunk_status(chunk['id'], ChunkStatus.NEED_REFRESH.value)
@@ -168,65 +172,6 @@ class ChunkCultivationManager(QObject):
         )
         self.chunk_status_changed.emit(chunk_id, ChunkStatus.PENDING.value)
         return chunk_id
-
-    #def scan_database_only(self):
-    #    """Сканирование базы на новые кандидаты (создает PENDING)."""
-    #    from app.core.ai.smart_chunk_detector import SmartChunkDetector
-    #    
-    #    # Передаем текущий порог данных в детектор
-    #    candidates = SmartChunkDetector.detect_candidates(
-    #        self.memory, 
-    #        threshold=self.default_data_threshold
-    #    )
-#
-    #    if not candidates:
-    #        return
-#
-    #    for c in candidates:
-    #        # Если чанк уже есть, пропускаем (даже если он READY)
-    #        exists = self.memory.knowledge.get_chunk_by_key_and_type(c['key'], c['type'])
-    #        if exists: continue
-#
-    #        # Ищем родителя
-    #        parent_id = None
-    #        if c.get('parent_key'):
-    #            parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(c['parent_key'], "CATEGORY")
-    #            if not parent_chunk:
-    #                 parent_chunk = self.memory.knowledge.get_chunk_by_key_and_type(c['parent_key'], "DATABASE")
-    #            if parent_chunk:
-    #                parent_id = parent_chunk['id']
-#
-    #        try:
-    #            new_id = self.memory.add_knowledge(
-    #                chunk_type=c['type'],
-    #                chunk_key=c['key'],
-    #                title=c['title'],
-    #                status=ChunkStatus.PENDING.value,
-    #                parent_chunk_id=parent_id
-    #            )
-    #            self.chunk_status_changed.emit(new_id, ChunkStatus.PENDING.value)
-    #            logger.info(f"Обнаружен новый кластер: {c['title']}", token="ai-det")
-    #        except Exception as e:
-    #            logger.error(f"Error creating chunk {c['key']}: {e}")
-#
-    #def scan_and_create_structure(self):
-    #    """Сканирует БД и создает структуру знаний (Категории -> Продукты)"""
-    #    if not self.master_switch: return
-#
-    #    from app.core.ai.smart_chunk_detector import SmartChunkDetector
-    #    
-    #    # Используем новый метод, который сам сортирует и линкует
-    #    count = SmartChunkDetector.create_missing_chunks(self.memory, self)
-    #    
-    #    if count > 0:
-    #        logger.success(f"Структура знаний обновлена: +{count} новых узлов.", token="ai-det")
-
-    def scan_database_only(self):
-        from app.core.ai.smart_chunk_detector import SmartChunkDetector
-        SmartChunkDetector.create_missing_chunks(self.memory, self)
-
-    def scan_and_create_structure(self):
-        self.scan_database_only()
 
     def _create_safe(self, c_data):
         key = c_data['key'].strip() # Нормализация
@@ -251,16 +196,28 @@ class ChunkCultivationManager(QObject):
 
     def cultivate_pending_chunks(self, user_instructions: str = ""):
         """Ручной запуск всех PENDING и NEED_REFRESH."""
-        # Объединяем оба статуса
+        # Получаем чанки (get_pending_chunks уже сортирует по приоритету DESC)
+        # Но для надежности перепроверим порядок
         targets = self.memory.get_pending_chunks() + \
                   self.memory.knowledge.get_knowledge(status=ChunkStatus.NEED_REFRESH.value)
+
+        # Удаляем дубликаты по ID
+        unique_targets = {t['id']: t for t in targets}.values()
         
-        if not targets:
+        # Сортируем: PRODUCT (100) -> CATEGORY (50) -> ...
+        sorted_targets = sorted(
+            unique_targets, 
+            key=lambda x: x.get('priority', 0), 
+            reverse=True
+        )
+
+        if not sorted_targets:
             logger.info("Нет чанков, требующих обновления.", token="ai-cult")
             return
 
-        logger.info(f"Запуск культивации для {len(targets)} чанков...", token="ai-cult")
-        for chunk in targets:
+        logger.info(f"Запуск культивации для {len(sorted_targets)} чанков (Приоритет макс: {sorted_targets[0].get('priority')})...", token="ai-cult")
+        
+        for chunk in sorted_targets:
             self._initiate_cultivation(
                 chunk,
                 ChunkCultivationTrigger.USER_BUTTON,
@@ -268,7 +225,7 @@ class ChunkCultivationManager(QObject):
             )
 
     def request_user_cultivation(self, user_instructions: str = ""):
-        self.scan_database_only()
+        self._create_new_chunks_from_data()
         self.cultivate_pending_chunks(user_instructions)
 
     def _check_triggers(self):
@@ -280,7 +237,7 @@ class ChunkCultivationManager(QObject):
             return
 
         try:
-            self.scan_database_only()
+            self._create_new_chunks_from_data()
             self.check_and_cultivate()
         except Exception as e:
             logger.error(f"Timer error: {e}")
@@ -598,8 +555,8 @@ class ChunkCultivationManager(QObject):
                 category_key=chunk_key, sub_products=sub_chunks,
                 previous_context=prev_summary, user_interests=user_interests,
                 linked_context=linked_context, 
-                raw_fallback_preview=raw_preview_str, # <--- Passing preview
-                raw_count=raw_count                   # <--- Passing total count
+                raw_fallback_preview=raw_preview_str,
+                raw_count=raw_count
             )
 
         # === DATABASE ===
@@ -628,10 +585,15 @@ class ChunkCultivationManager(QObject):
             raise ValueError(f"Unknown chunk type: {chunk_type}")
 
     def _create_new_chunks_from_data(self):
+        """Единая точка входа для создания чанков."""
+        if not self.master_switch: return
+        
         from app.core.ai.smart_chunk_detector import SmartChunkDetector
         
-        logger.info("Сканирование базы на новые знания...", token="ai-det")
-        SmartChunkDetector.create_missing_chunks(self.memory, self)
+        # Детектор теперь сам ставит правильные приоритеты (PRODUCT=100)
+        count = SmartChunkDetector.create_missing_chunks(self.memory, self)
+        if count > 0:
+            logger.info(f"Создано {count} новых структурных единиц памяти.", token="ai-det")
 
     # --- UI HELPERS ---
 

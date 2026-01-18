@@ -419,12 +419,13 @@ class ChunkCultivationPrompts:
         """
         Промпт для культивации PRODUCT чанка.
         """
+        total_raw_count = len(items) if items else 0
+
         items_preview = []
         for item in items[:15]:
             items_preview.append({
                 'title': item.get('title', '')[:100],
                 'price': item.get('price', 0),
-                'source': item.get('source', 'unknown')[:20],
                 'date': item.get('date', '')[:10]
             })
         
@@ -435,10 +436,15 @@ class ChunkCultivationPrompts:
     
         ИСХОДНЫЕ ДАННЫЕ:
         Товар: {chunk_key}
-        СТАТИСТИКА (ФАКТЫ ИЗ БД):
-        {math_json}
-        ПРИМЕРЫ ОБЪЯВЛЕНИЙ:
+
+        СТАТИСТИКА (Точные факты):
+        Всего найдено объявлений: {total_raw_count}
+        Ценовая выборка (валидные цены): {math_block.get('count', 0)}
+        Статистика цен: {math_json}
+        
+        ПРИМЕРЫ ОБЪЯВЛЕНИЙ (первые 15):
         {items_json}
+
         ИСТОРИЯ ЦЕН:
         {history_block if history_block else 'История недоступна'}
 
@@ -452,28 +458,14 @@ class ChunkCultivationPrompts:
         {previous_context[:300] if previous_context else 'Нет'}
 
         ЗАДАЧА:
-        1. Определи статус товара:
-            - COMMODITY: масовый товар (>50 объявлений, стабильная цена)
-            - SPECIALTY: популярный товар (15-50 объявлений, устоявшаяся ниша)
-            - PREMIUM: дорогой/редкий товар (5-15 объявлений, высокая цена)
-            - NICHE: очень редкий товар (<5 объявлений, уникальный)
-
-        2. Выполни АНАЛИЗ ЦЕН (ТОЛЬКО на основе реальных данных!):
-            - Минимум, максимум, среднее, медиану из math_block
-            - НЕ выдумывай! Используй только те цифры, которые уже есть.
-            - Определи диапазон нормальных цен (убери выбросы)
-
-        3. Дай ОПИСАНИЕ товара:
-            - Что это? (тип, категория, применение)
-            - Для кого? (целевая аудитория)
-            - Особенности? (если видно из объявлений)
-            - Тренды? (растет спрос, падает, стабильно)
+        1. Опиши товар, опираясь на заголовок и примеры.
+        2. Дай точную сводку цен (min/max/avg из статистики).
+        3. Если {total_raw_count} > 5, статус = HAS_OFFERS. Если цена супер-низкая = MAX_BENEFIT.
 
         ВАЖНО:
         - Все числа в price_analysis ДОЛЖНЫ быть из math_block!
-        - target_status выбери из 4 вариантов (COMMODITY/SPECIALTY/PREMIUM/NICHE)
-        - Если данных мало (<10 объявлений), установи confidence < 0.8
-        - confidence — это твоя оценка надёжности (0-1)
+        - Если данных мало (<10 объявлений), установи "confidence" < 0.8 в ответе.
+        - "confidence" — это твоя оценка надёжности (0-1)
 
         ОТВЕТ (ТОЛЬКО в формате JSON, без лишнего текста):
         {{
@@ -518,19 +510,18 @@ class ChunkCultivationPrompts:
         Промпт для культивации CATEGORY чанка.
         """
         products_info = []
-        if sub_products:
-            for prod in sub_products[:25]:
-                content = prod.get('content')
-                if isinstance(content, str):
-                    try: content = json.loads(content)
-                    except: content = {}
+        for p in sub_products:
+            p_cont = p.get('content')
+            if isinstance(p_cont, str):
+                try: p_cont = json.loads(p_cont)
+                except: p_cont = {}
                 
-                if content:
+                if p_cont:
                     products_info.append({
-                        'title': prod.get('title', ''),
-                        'status': content.get('target_status', 'UNKNOWN'),
-                        'price_avg': content.get('price_analysis', {}).get('avg', 0),
-                        'count': content.get('price_analysis', {}).get('count', 0)
+                        "name": p.get('title'),
+                        "status": p_cont.get('target_status', 'UNKNOWN'),
+                        "price_avg": p_cont.get('price_analysis', {}).get('avg', '?'),
+                        "count": p_cont.get('price_analysis', {}).get('count', 0)
                     })
 
         products_json = json.dumps(products_info, ensure_ascii=False, indent=2)
@@ -539,28 +530,31 @@ class ChunkCultivationPrompts:
         raw_data_block = ""
         if not products_info:
             raw_data_block = f"""
-            ВНИМАНИЕ: КЛАСТЕРЫ ЕЩЕ НЕ СОЗДАНЫ!
-            У тебя есть доступ к ПРЕВЬЮ сырых данных.
+            ВНИМАНИЕ: Подкатегории (кластеры товаров) еще не сформированы или находятся в очереди обработки.
+            ОПИРАЙСЯ НА СЫРЫЕ ДАННЫЕ НИЖЕ ДЛЯ ОБЩЕГО АНАЛИЗА.
             
-            ВСЕГО В БАЗЕ: {raw_count} объявлений.
-            НИЖЕ ПОКАЗАНЫ ТОЛЬКО ПЕРВЫЕ 15 ШТУК (ПРИМЕРЫ):
+            ВСЕГО В БАЗЕ (RAW ITEMS): {raw_count} объявлений.
+            ПРИМЕРЫ (Сырые данные):
             {raw_fallback_preview}
 
             ИНСТРУКЦИЯ:
-            1. НЕ пиши "в базе всего 15 товаров" или "мало данных". В базе {raw_count} товаров!
-            2. Используй примеры ТОЛЬКО для понимания ТИПА товаров и примерных цен.
-            3. Если {raw_count} > 10 -> СТАТУС = HAS_OFFERS.
+            1. Твой анализ сейчас предварительный.
+            2. Не пиши "категория пуста", если {raw_count} > 0.
+            3. Если {raw_count} > 10, статус должен быть HAS_OFFERS.
             """
         else:
-            raw_data_block = f"Сырые данные: {raw_count} объявлений."
+            raw_data_block = f"""
+            ВСЕГО В БАЗЕ (RAW ITEMS): {raw_count} объявлений.
+            СФОРМИРОВАННЫЕ КЛАСТЕРЫ (Подтовары):
+            {products_json}
+            
+            Используй кластеры как основной источник истины о сегментах рынка.
+            """
 
         prompt = f"""ТЫ — АНАЛИТИК НОМЕНКЛАТУРЫ. КУЛЬТИВАЦИЯ КАТЕГОРИИ [{category_key}].
 
         ИСХОДНЫЕ ДАННЫЕ:
         Категория: {category_key}
-
-        СФОРМИРОВАННЫЕ КЛАСТЕРЫ:
-        {products_json if products_info else "Кластеры еще не созданы."}
         
         {raw_data_block}
 
@@ -574,20 +568,18 @@ class ChunkCultivationPrompts:
 
         ЗАДАЧА:
         1. ОПРЕДЕЛИ РЫНОЧНУЮ СИТУАЦИЮ:
-            - Сколько товарных позиций в категории?
-            - Какой ценовой диапазон? (от мин до макс)
-            - Какие есть подсегменты (COMMODITY, SPECIALTY, etc)?
+            - Сколько всего сырых объявлений? ({raw_count})
+            - Какие модели/серии доминируют (исходя из примеров или кластеров)?
+            - Какой общий ценовой диапазон?
 
-        2. НАЙДИ ПАТТЕРНЫ И ТРЕНДЫ:
-            - Есть ли явные лидеры по популярности?
-            - Какие товары редкие (NICHE)?
-            - Какие товары массовые (COMMODITY)?
-            - Есть ли ценовые аномалии?
+        2. СТРУКТУРА:
+            - Если есть кластеры: опиши ситуацию по ним (какие дорогие, какие дешевые).
+            - Если кластеров нет: предположи структуру на основе сырых примеров.
 
-        3. ДАЙ ОПИСАНИЕ КАТЕГОРИИ:
-            - Что объединяет эти товары?
-            - Какая целевая аудитория?
-            - Как категория развивается?
+        3. СТАТУС (target_status):
+            - NO_INTEREST: Только если база пуста или цены x2-x3 от рынка.
+            - HAS_OFFERS: Есть товары, есть выбор.
+            - MAX_BENEFIT: Есть явные выгодные предложения (низ рынка).
 
         4. РЕКОМЕНДАЦИИ:
             - Как ориентироваться в категории?
@@ -595,8 +587,10 @@ class ChunkCultivationPrompts:
             - Какие ниши недозаполнены?
 
         ВАЖНО:
+        - "Товарные позиции" в твоем ответе — это виды товаров (модели), а не количество объявлений.
+        - Количество объявлений бери из {raw_count}.
         - Если 'User Instructions' пусты, influence_weights.user_instructions ДОЛЖЕН БЫТЬ 0.
-        - confidence отражает уверенность (0-1).
+        - "confidence" ниже отражает уверенность (0.0-1.0) в ответе.
 
         ОТВЕТ (ТОЛЬКО в формате JSON, без лишнего текста):
         {{
@@ -612,12 +606,12 @@ class ChunkCultivationPrompts:
                 "linked_context": <0-100>
             }},
             "subcategories": [
-            {{"name": "Подкатегория 1", "count": <кол-во>, "price_range": "X-Y₽"}},
-            {{"name": "Подкатегория 2", "count": <кол-во>, "price_range": "X-Y₽"}}],
+               {{"name": "Пример подкатегории", "count": "примерно X", "price_range": "X-Y"}}
+            ],
             "trends": ["Тренд 1", "Тренд 2"],
             "recommendations": ["Рекомендация 1", "Рекомендация 2"],
             "confidence": <0.0-1.0>,
-            "summary": "Однострочный summary"
+            "summary": "Однострочный итог для карточки"
         }}
         """
 

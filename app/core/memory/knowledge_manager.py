@@ -195,8 +195,7 @@ class KnowledgeManager:
             cursor = conn.cursor()
             content_json = json.dumps(content, ensure_ascii=False) if content else None
             
-            # Используем UTC для времени
-            now_utc = datetime.now(timezone.utc).isoformat()
+            now_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
             cursor.execute(
                 "SELECT id FROM ai_knowledge WHERE chunk_type = ? AND chunk_key = ?",
@@ -427,7 +426,7 @@ class KnowledgeManager:
             if summary is None:
                 summary = content.get('summary') or content.get('analysis', {}).get('summary', '')
             
-            now_utc = datetime.now(timezone.utc).isoformat()
+            now_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             
             sql = """
                 UPDATE ai_knowledge SET
