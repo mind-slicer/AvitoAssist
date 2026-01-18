@@ -5,75 +5,68 @@ from app.core.log_manager import logger
 class SmartChunkDetector:
 
     @staticmethod
+    def _normalize_key(key: str) -> str:
+        """Приводит ключ к единому формату: lowercase, без пробелов."""
+        if not key: return ""
+        return key.strip().lower().replace(" ", "_").replace("-", "_")
+
+    @staticmethod
     def detect_candidates(memory_manager, threshold: int = 10) -> List[Dict]:
-        """
-        Сканирует БД и предлагает кандидатов для создания чанков.
-        threshold: минимальное количество товаров для создания PRODUCT чанка.
-        """
         candidates = []
         try:
-            # 1. DATABASE (Всегда проверяем топ категорий)
+            # 1. DATABASE (100)
             categories = memory_manager.raw_data.get_all_categories()
             top_categories = sorted(categories, key=lambda x: x.get('item_count', 0), reverse=True)[:5]
-
             for cat in top_categories:
                 cat_name = cat.get('name', 'UNKNOWN')
-                # DB чанк создаем, если есть хоть что-то
                 if cat.get('item_count', 0) > 0:
                     candidates.append({
                         'type': 'DATABASE',
-                        'key': f"db_{cat_name.lower()}",
+                        'key': f"db_{SmartChunkDetector._normalize_key(cat_name)}",
                         'title': f'База: {cat_name}',
                         'parent_key': None,
-                        'item_count': cat.get('item_count', 0),
                         'priority': 100
                     })
 
-            # 2. CATEGORY
+            # 2. CATEGORY (50)
             for cat in categories:
-                cat_key = cat.get('name', 'UNKNOWN').strip()
+                cat_name = cat.get('name', 'UNKNOWN')
+                cat_key = SmartChunkDetector._normalize_key(cat_name)
                 item_count = cat.get('item_count', 0)
-                
-                # Категорию создаем, если в ней есть товары (даже меньше порога, т.к. это агрегатор)
                 if item_count > 0:
                     candidates.append({
                         'type': 'CATEGORY',
                         'key': cat_key,
-                        'title': cat.get('display_name', cat_key),
-                        'parent_key': f"db_{cat_key.lower().split('_')[0]}",
-                        'item_count': item_count,
+                        'title': cat.get('display_name', cat_name),
+                        'parent_key': f"db_{cat_key.split('_')[0]}",
                         'priority': 50
                     })
 
-            # 3. PRODUCT (Здесь применяем threshold)
+            # 3. PRODUCT (30)
             products = memory_manager.raw_data.get_all_product_keys()
             for prod in products:
-                p_key = prod.get('key')
+                raw_key = prod.get('key')
                 item_count = prod.get('item_count', 0)
+                if item_count < threshold: continue
 
-                if item_count < threshold:
-                    # Слишком мало данных для отдельного чанка
-                    continue
-
-                display_name = prod.get('display_name') or p_key
-                category_name = prod.get('category_name') or p_key.split('_')[0]
+                display_name = prod.get('display_name') or raw_key
+                category_name = prod.get('category_name') or raw_key.split('_')[0]
+                p_key = SmartChunkDetector._normalize_key(raw_key)
 
                 candidates.append({
                     'type': 'PRODUCT',
                     'key': p_key,
                     'title': display_name,
-                    'parent_key': category_name, # Родитель - Категория
-                    'item_count': item_count,
+                    'parent_key': SmartChunkDetector._normalize_key(category_name),
                     'priority': 30
                 })
 
-            # 4. AI_BEHAVIOR
+            # 4. AI_BEHAVIOR (200)
             candidates.append({
                 'type': 'AI_BEHAVIOR',
                 'key': 'general_behavior',
                 'title': 'Поведение ИИ',
                 'parent_key': 'db_general',
-                'item_count': 0,
                 'priority': 200
             })
 
@@ -86,106 +79,73 @@ class SmartChunkDetector:
 
     @staticmethod
     def create_missing_chunks(memory_manager, cultivation_manager) -> int:
-        """
-        Создает недостающие чанки на основе детектированных кандидатов.
-        
-        ВАЖНО:
-        - Сначала создаем DATABASE
-        - Потом CATEGORY (с parent_chunk_id на DATABASE)
-        - Потом PRODUCT (с parent_chunk_id на CATEGORY)
-        - Потом AI_BEHAVIOR
-        
-        Порядок важен для правильной иерархии!
-        """
         candidates = SmartChunkDetector.detect_candidates(memory_manager)
+        if not candidates: return 0
         
-        if not candidates:
-            logger.info("Новых кандидатов не найдено.", token="ai-det")
-            return 0
-        
-        # Сортируем по типу для правильного порядка создания
         type_order = {"DATABASE": 0, "CATEGORY": 1, "PRODUCT": 2, "AI_BEHAVIOR": 3}
         candidates.sort(key=lambda x: type_order.get(x['type'], 999))
         
         created_count = 0
         
-        # Словарь для отслеживания созданных чанков (ключ -> ID)
-        created_chunks = {}
-        
-        # Словарь для отслеживания существующих чанков
-        existing_chunks = {}
+        # Загружаем существующие для проверки
+        existing_chunks = {} 
         all_existing = memory_manager.knowledge.get_knowledge(limit=10000)
         for chunk in all_existing:
-            key = (chunk['chunk_type'], chunk['chunk_key'])
+            key = (chunk['chunk_type'], SmartChunkDetector._normalize_key(chunk['chunk_key']))
             existing_chunks[key] = chunk['id']
         
+        newly_created = {}
+
         for candidate in candidates:
             c_type = candidate['type']
-            c_key = candidate['key'].strip()
-            c_title = candidate['title']
-            parent_key = candidate.get('parent_key')
+            norm_key = SmartChunkDetector._normalize_key(candidate['key'])
+            c_title = candidate['title'].strip()
+            priority = candidate.get('priority', 1)
             
-            # Проверяем, не существует ли уже такой чанк
-            if (c_type, c_key) in existing_chunks:
-                logger.dev(f"Чанк [{c_type}] {c_key} уже существует. Пропускаем.", level="DEBUG")
-                created_chunks[(c_type, c_key)] = existing_chunks[(c_type, c_key)]
-                continue
-            
-            # Определяем parent_chunk_id
-            parent_id = None
-            
-            if parent_key:
-                # Для DATABASE: parent_key всегда None
-                # Для CATEGORY: parent_key - это DATABASE ключ (например, "db_gpu")
-                # Для PRODUCT: parent_key - это CATEGORY ключ (например, "video_cards")
-                # Для AI_BEHAVIOR: parent_key - это DATABASE ключ (например, "db_general")
+            # --- FIX: Если чанк существует, ОБНОВЛЯЕМ ПРИОРИТЕТ ---
+            if (c_type, norm_key) in existing_chunks:
+                chunk_id = existing_chunks[(c_type, norm_key)]
+                # Принудительное обновление приоритета в БД
+                try:
+                    conn = memory_manager.knowledge._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE ai_knowledge SET priority = ? WHERE id = ?", (priority, chunk_id))
+                    conn.commit()
+                    conn.close()
+                except: pass
                 
-                # Ищем parent чанк либо в только что созданных, либо в БД
+                newly_created[(c_type, norm_key)] = chunk_id
+                continue
+
+            # Определяем родителя
+            parent_id = None
+            parent_key_raw = candidate.get('parent_key')
+            if parent_key_raw:
+                parent_key_norm = SmartChunkDetector._normalize_key(parent_key_raw)
                 parent_type = "DATABASE" if c_type in ["CATEGORY", "AI_BEHAVIOR"] else "CATEGORY"
                 
-                if (parent_type, parent_key) in created_chunks:
-                    parent_id = created_chunks[(parent_type, parent_key)]
-                elif (parent_type, parent_key) in existing_chunks:
-                    parent_id = existing_chunks[(parent_type, parent_key)]
-                else:
-                    # Если родителя нет, логируем предупреждение, но не блокируем создание
-                    logger.warning(
-                        f"⚠️ Родитель [{parent_type}] {parent_key} не найден для [{c_type}] {c_key}. "
-                        f"Создаем без родителя.",
-                        token="ai-det"
-                    )
+                if (parent_type, parent_key_norm) in newly_created:
+                    parent_id = newly_created[(parent_type, parent_key_norm)]
+                elif (parent_type, parent_key_norm) in existing_chunks:
+                    parent_id = existing_chunks[(parent_type, parent_key_norm)]
             
-            # Создаем чанк
             try:
                 new_id = memory_manager.add_knowledge(
                     chunk_type=c_type,
-                    chunk_key=c_key,
+                    chunk_key=norm_key,
                     title=c_title,
                     status='PENDING',
-                    parent_chunk_id=parent_id,  # ВАЖНО: передаём parent_id
-                    priority=candidate.get('priority', 1)
+                    parent_chunk_id=parent_id,
+                    priority=priority # <-- Передаем приоритет при создании
                 )
+                newly_created[(c_type, norm_key)] = new_id
                 
-                # Сохраняем в словарь созданных
-                created_chunks[(c_type, c_key)] = new_id
-                
-                # Отправляем сигнал в UI
                 if cultivation_manager:
                     cultivation_manager.chunk_status_changed.emit(new_id, 'PENDING')
                 
-                logger.success(f"✅ Создан чанк [{new_id}] {c_type} : {c_key}", token="ai-det")
+                logger.success(f"✅ Создан чанк [{new_id}] {c_type} (P:{priority})", token="ai-det")
                 created_count += 1
-            
             except Exception as e:
-                logger.error(f"❌ Ошибка создания чанка [{c_type}] {c_key}: {e}", token="ai-det")
-                continue
-            
-        if created_count > 0:
-            logger.success(
-                f"🎯 Структура знаний обновлена: создано {created_count} новых узлов.",
-                token="ai-det"
-            )
-        else:
-            logger.info("Все кандидаты уже существуют в базе знаний.", token="ai-det")
+                logger.error(f"Create error {c_title}: {e}")
         
         return created_count

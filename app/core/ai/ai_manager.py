@@ -207,9 +207,16 @@ class AIChunkCultivationWorker(QThread):
                 "mirostat_mode": 0
             }
 
-            system_content = "Ты аналитик рынка объявлений Авито. Твоя задача — свести данные в единый JSON."
+            from app.core.ai.prompts import prompt_manager
+            system_behavior = prompt_manager.get("memory_generation_behavior")
+            if not system_behavior or len(system_behavior) < 10:
+                system_behavior = "Ты аналитик данных. Твоя задача — свести данные в единый JSON, строго следуя схеме."
+            
+            system_content = system_behavior
             if self.user_instructions:
-                system_content += f"\n\nВАЖНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ:\n{self.user_instructions}"
+                system_content += f"\n\n[ПРИОРИТЕТНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]:\n{self.user_instructions}"
+            else:
+                system_content += "\n\n[ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ]: Отсутствуют. Вес 'user_instructions' должен быть 0."
 
             messages = [
                 {"role": "system", "content": system_content},

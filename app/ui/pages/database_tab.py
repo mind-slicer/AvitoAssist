@@ -1158,7 +1158,7 @@ class DatabaseTab(QWidget):
             data = id_item.data(Qt.ItemDataRole.UserRole)
             if data:
                 self._show_details(data, 'knowledge')
-                self.delete_btn.setEnabled(True)
+                self.btn_delete_selected.setEnabled(False)
                 self.cultivate_btn.setEnabled(True)
 
     def _show_details(self, data: dict, data_type: str):
@@ -1281,21 +1281,13 @@ class DatabaseTab(QWidget):
 
     def _render_knowledge_details(self, chunk: dict):
         """Render knowledge chunk details with modern UI."""
-        # 1. Title
         title = QLabel(chunk.get('title', f"Chunk #{chunk.get('id', 'Unknown')}"))
         title.setStyleSheet(TextPresets.h3())
         title.setWordWrap(True)
         self.details_layout.addWidget(title)
         
-        # 2. Status Badge (Visual)
         status = chunk.get('status', 'UNKNOWN')
-        status_colors = {
-            'PENDING': '#FFA500',
-            'INITIALIZING': '#4169E1',
-            'READY': '#32CD32',
-            'FAILED': Palette.ERROR,
-            'COMPRESSED': Palette.TEXT_MUTED
-        }
+        status_colors = {'PENDING': '#FFA500', 'INITIALIZING': '#4169E1', 'READY': '#32CD32', 'FAILED': Palette.ERROR}
         
         status_container = QWidget()
         status_layout = QHBoxLayout(status_container)
@@ -1304,21 +1296,12 @@ class DatabaseTab(QWidget):
         
         badge = QLabel(f" {status} ")
         badge_color = status_colors.get(status, Palette.TEXT)
-        badge.setStyleSheet(f"""
-            background-color: {Palette.with_alpha(badge_color, 0.15)};
-            color: {badge_color};
-            border: 1px solid {badge_color};
-            border-radius: 4px;
-            font-weight: bold;
-            font-size: 10px;
-        """)
+        badge.setStyleSheet(f"background-color: {Palette.with_alpha(badge_color, 0.15)}; color: {badge_color}; border: 1px solid {badge_color}; border-radius: 4px; font-weight: bold; font-size: 10px;")
         status_layout.addWidget(badge)
         status_layout.addStretch()
         self.details_layout.addWidget(status_container)
-
         self.details_layout.addWidget(self._create_divider())
         
-        # 3. Metadata Form
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setContentsMargins(0, 0, 0, 0)
@@ -1335,23 +1318,25 @@ class DatabaseTab(QWidget):
             val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form_layout.addRow(lbl, val)
 
+        def fmt_time(iso_str):
+            if not iso_str: return "-"
+            # Убираем 'T' для красоты
+            return iso_str.replace("T", " ")[:16]
+
         add_row("ТИП", chunk.get('chunk_type'))
         add_row("КЛЮЧ", chunk.get('chunk_key'))
         add_row("ПРИОРИТЕТ", chunk.get('priority'))
-        add_row("ПОПЫТОК", chunk.get('retry_count'))
-        add_row("СОЗДАНО", str(chunk.get('created_at', ''))[:16])
-        add_row("ОБНОВЛЕНО", str(chunk.get('last_updated', ''))[:16])
+        add_row("СОЗДАНО", fmt_time(chunk.get('created_at')))
+        add_row("ОБНОВЛЕНО", fmt_time(chunk.get('last_updated')))
         
         self.details_layout.addWidget(form_widget)
 
-        # 4. Content / Summary
         summary = chunk.get('summary')
         if summary:
             self.details_layout.addWidget(self._create_divider())
             lbl = QLabel("СВОДКА")
             lbl.setStyleSheet(Components.subsection_title())
             self.details_layout.addWidget(lbl)
-            
             txt = QLabel(summary)
             txt.setStyleSheet(TextPresets.body())
             txt.setWordWrap(True)

@@ -955,6 +955,79 @@ class RawDataManager:
             
         return item
 
+    def get_scoped_statistics(self, scope_key: str) -> Dict:
+        """
+        Возвращает статистику, ограниченную областью (например, 'LAPTOP' или 'GPU').
+        Если scope_key похож на 'db_laptop', он очищается до 'LAPTOP'.
+        """
+        clean_key = scope_key.lower().replace("db_", "").replace("base:", "").strip()
+        
+        # Пытаемся найти ID категории
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Поиск категории
+            cat_id = None
+            cursor.execute("SELECT id, name FROM categories WHERE LOWER(name) = ?", (clean_key,))
+            row = cursor.fetchone()
+            
+            query_where = ""
+            params = []
+            
+            real_name = clean_key.upper()
+            
+            if row:
+                cat_id = row[0]
+                real_name = row[1]
+                # Фильтр по категории через products
+                query_where = "WHERE ri.product_id IN (SELECT id FROM products WHERE category_id = ?)"
+                params.append(cat_id)
+            else:
+                # Если категории нет, возможно это поиск по product_key или broad search?
+                # Для простоты, если категория не найдена, вернем глобальную статистику или пустую?
+                # Лучше попытаться найти товары по частичному совпадению названия категории в продукте
+                # Но пока вернем 0, чтобы не смешивать всё в кучу.
+                pass 
+
+            if not query_where:
+                # Fallback: Если это 'GLOBAL' или пустая строка, возвращаем общую
+                if clean_key in ['global', 'all', '']:
+                    return self.get_statistics()
+                else:
+                    return {
+                        'total_items': 0, 'total_categories': 0, 
+                        'avg_price': 0, 'scope': real_name
+                    }
+
+            # Считаем items
+            cursor.execute(f"SELECT COUNT(*) FROM raw_items ri {query_where} AND ri.is_deleted = 0", params)
+            total_items = cursor.fetchone()[0] or 0
+
+            # Считаем avg price
+            cursor.execute(f"SELECT AVG(ri.price) FROM raw_items ri {query_where} AND ri.is_deleted = 0 AND ri.price > 0", params)
+            avg_price = cursor.fetchone()[0] or 0
+
+            # Считаем уникальные бренды (как прокси категорий/разнообразия)
+            cursor.execute(f"""
+                SELECT COUNT(DISTINCT p.brand) 
+                FROM raw_items ri 
+                JOIN products p ON ri.product_id = p.id 
+                {query_where} AND ri.is_deleted = 0
+            """, params)
+            total_brands = cursor.fetchone()[0] or 0
+
+            return {
+                'total_items': total_items,
+                'total_categories': 1, # Это одна категория
+                'total_brands': total_brands,
+                'avg_price': int(avg_price),
+                'scope': real_name
+            }
+            
+        finally:
+            conn.close()
+
     def get_hierarchy_data(self) -> Dict:
         conn = self._get_connection()
         try:

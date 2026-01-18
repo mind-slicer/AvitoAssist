@@ -1,8 +1,8 @@
 import os
 import json
 import statistics
-from datetime import datetime
 from typing import List, Dict, Optional
+
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
 
@@ -59,12 +59,12 @@ class PromptManager:
 
     # --- 4. MEMORY PROMPT ---
     DEFAULT_MEMORY_BEHAVIOR = """Ты — объективный архивариус и Data Scientist.
-Твоя задача — фиксация ФАКТОВ в форме знаний для будущих анализов.
+Твоя задача — фиксация ФАКТОВ в форме знаний для проведения будущих анализов.
 
 ТВОЯ СТРАТЕГИЯ:
 1. ИСТОЧНИК ИСТИНЫ — RAW DATA
 - Сырые объявления (цены, даты, характеристики) — это главный источник.
-- Если в данных нет дефектов, НЕ выдумывай их.
+- Если в данных нет дефектов, не выдумывай их.
 - Если нет информации — честно скажи "Нет данных".
 
 2. ВАЖНОСТЬ ЦИФР
@@ -74,8 +74,7 @@ class PromptManager:
 
 3. ИГНОРИРУЙ МАРКЕТИНГ
 - Слова "Игровой", "Мощный", "Топ", "Лучший", "Экономно", "Выгодная" — шум.
-- Слова "q25", "ликвидность", "маржа", "спрос", "тренд" — ЗАПРЕЩЕНЫ в памяти (это анализ, не память).
-- Тебе важны ЦИФРЫ: цена, дата добавления, количество просмотров, состояние (новое, б/у).
+- Слова "q25", "ликвидность", "маржа", "спрос", "тренд" — ЗАПРЕЩЕНЫ в памяти (все это элементы анализа).
 
 4. ВЛИЯНИЕ ИНТЕРЕСОВ ПОЛЬЗОВАТЕЛЯ
 - Интересы влияют НА СТАТУС, а не на содержание памяти.
@@ -84,32 +83,28 @@ class PromptManager:
 5. СВЯЗИ (LINKED CONTEXT)
 - Используй переданный контекст для вычисления относительных позиций и заполнения пробелов.
 - "Средняя цена в категории 50000р, а в продукте 45000р" → статус может быть "ВЫГОДНО".
-- Но в самой памяти пиши: "Дата: Х, Мин: 45000, Макс: 55000, Средн: 50000, Мед: 50000".
-- Сравнение — дело анализа, память — дело фактов.
+- В самой памяти пиши: "Дата: Х, Мин: 45000, Макс: 55000, Средн: 50000, Мед: 50000".
 
 6. INFLUENCE_WEIGHTS
-- raw_data: Если 100% информации из реальных объявлений → 100.
-- system_prompt: Если ты использовал внутренние знания (напр., дефолтная цена на RTX 4090) → укажи % (например, 30).
+- raw_data: Процент полученной информации из реальных объявлений → 100.
+- system_prompt: Вес использования ЭТОГО промпта (DEFAULT_MEMORY_BEHAVIOR), как основную опору поведения → укажи % (например, 30).
 - user_instructions: Если твой выбор статуса зависит от инструкций пользователя → укажи % (например, 20).
 - user_interests: Если статус зависит от совпадения с интересами → укажи % (например, 30).
-- linked_context: Если использовал информацию о категории или родительском чанке → укажи %.
-- СУММА ВСЕХ ВЕСОВ = 100.
-- Пример: raw_data=80, system_prompt=10, user_interests=10, остальные=0 → СУММА=100
+- linked_context: Если использовал информацию о связанном контексте → укажи %.
 
 СТРУКТУРА ПАМЯТИ:
 Для PRODUCT:
 - main_description: Сухая сводка (цены, состояние, дефекты, активность).
 - price_analysis: {avg, med, q25, min, max, count, trend}.
 - activity: {total_items, avg_views, fresh_count}.
-- defects_found: [список реальных дефектов, найденных в данных].
+- defects_found: [Список реальных дефектов, найденных в данных].
 - target_status: "NO_INTEREST" | "HAS_OFFERS" | "MAX_BENEFIT".
 - influence_weights: {raw_data, system_prompt, user_instructions, user_interests, linked_context}.
-- data_sufficiency: "LOW" | "MEDIUM" | "HIGH".
 
 Для CATEGORY:
-- main_description: Какие продукты входят? Какова общая статистика?
-- sub_products: [список связанных PRODUCT чанков].
-- total_items: Сколько сырых товаров в этой категории?
+- main_description: Какие продукты входят в категорию? Какова общая статистика?
+- sub_products: [Список связанных PRODUCT чанков].
+- total_items: Сколько товаров в этой категории?
 - avg_price: Средняя цена по категории (если есть данные).
 - target_status: "NO_INTEREST" | "HAS_OFFERS" | "MAX_BENEFIT".
 - influence_weights: {raw_data, system_prompt, user_instructions, user_interests, linked_context}.
@@ -120,14 +115,14 @@ class PromptManager:
 - top_categories: [Топ категории по количеству товаров].
 - vocabulary: [Топ слова в объявлениях].
 - target_status: "NO_INTEREST" | "HAS_OFFERS" | "MAX_BENEFIT".
-- influence_weights: {raw_data, system_prompt, ...}.
+- influence_weights: {raw_data, system_prompt, user_instructions, user_interests, linked_context}.
 
 Для AI_BEHAVIOR:
 - main_description: Какие закономерности ты заметил в действиях пользователя и ошибках LLM?
 - learned_rules: [Правила типа: "Пользователь редко берёт видеокарты, фокус на CPU"].
 - correction_prompts: [Подсказки для LLM при следующих анализах].
 - target_status: Этот тип НЕ имеет статус (всегда "служебный").
-- influence_weights: {raw_data, user_actions, system_prompt, ...}.
+- influence_weights: {raw_data, system_prompt, user_instructions, user_interests, linked_context}.
 
 ВЫВОДЫ О СТАТУСЕ (target_status):
 NO_INTEREST:
@@ -151,14 +146,11 @@ MAX_BENEFIT:
 - "q25", "квартиль", "медиана" (вместо: пиши "25-процентная цена", "средняя цена").
 - "ликвидность", "спрос", "тренд", "маржа" (это анализ для другого контекста).
 - "выгодная возможность", "хорошая сделка" (это оценка, не факт).
-- "причина создания этого чанка" (не несет информации, занимает контекст).
 - Округленные числа. Всегда точные цифры.
 
 ИТОГ:
 Ты — АРХИВ, не аналитик. Твоя задача: сохранить ФАКТЫ так, чтобы они были полезны
 для АНАЛИЗА объявлений, ЧАТА с пользователем и ФОРМИРОВАНИЯ будущих чанков.
-
-Честность важнее убедительности. Факты важнее мнений.
 """
 
     def __init__(self):
@@ -402,66 +394,6 @@ class PromptBuilder:
 
 
 class ChunkCultivationPrompts:
-    COMMON_FORMAT = """
-    ВАЖНО: Твой ответ должен быть СТРОГО валидным JSON.
-    
-    СТРУКТУРА JSON:
-    {   
-        "target_status": "NO_INTEREST" | "HAS_OFFERS" | "MAX_BENEFIT",
-        "main_description": "Сухая фактическая сводка (без маркетинга, без 'q25', без 'ликвидности').",
-        "hidden_thought_process": "Твой внутренний монолог. Почему ты выбрал такой статус? Какие аномалии заметил? Какова связь по весам влияния (influence_weights)?",
-        "data_sufficiency": "LOW" | "MEDIUM" | "HIGH",
-        "influence_weights": {
-          "raw_data": <число 0-100>,
-          "system_prompt": <число 0-100>,
-          "user_instructions": <число 0-100>,
-          "user_interests": <число 0-100>,
-          "linked_context": <число 0-100>
-        },
-        "price_analysis": {
-          "avg": <число>,
-          "med": <число>,
-          "q25": <число>,
-          "min": <число>,
-          "max": <число>,
-          "count": <число>,
-          "trend": "up" | "down" | "stable"
-        }
-    }
-
-    СТАТУСЫ (ТОЛЬКО 3 ВАРИАНТА):
-    NO_INTEREST:
-    - Товар НЕ совпадает с интересами пользователя.
-    - ИЛИ цены завышены (выше медианы на 30%+).
-    - ИЛИ очень мало репрезентативных данных (<10 объявлений).
-    - ИЛИ данные противоречивы и непонятны.
-    HAS_OFFERS:
-    - Товар есть в достаточном количестве (10-50 объявлений).
-    - Цены в нормальном диапазоне (q25 до медианы).
-    - Товар может быть интересен, но нет специальных преимуществ.
-    - Это "рабочая лошадка" — товар доступен, цены честные.
-    MAX_BENEFIT:
-    - Цены АНОМАЛЬНО низкие (ниже q25 на 20%+ И более 10 объявлений).
-    - ИЛИ это редкий/дефицитный товар с высокой активностью.
-    - ИЛИ 100% совпадение с интересами + выгодная цена одновременно.
-
-    ВЛИЯНИЕ ВЕСОВ (influence_weights):
-    Сумма ВСЕХ весов должна быть = 100.
-    Примеры:
-    - Если решение основано 100% на фактах из БД: raw_data=100, остальные=0.
-    - Если 80% из БД + 20% из твоих знаний: raw_data=80, system_prompt=20.
-    - Если пользователь сказал "берём только новые": raw_data=60, user_instructions=40.
-    - Если товар совпадает с интересами И выгодная цена: raw_data=50, user_interests=50.
-
-    ВАЖНЫЕ ПРАВИЛА:
-    - Никогда не пиши в main_description: "q25", "ликвидность", "маржа", "спрос", "тренд".
-    - Пиши точные цифры. Если нет данных — честно скажи "Нет данных".
-    - Если объявлений меньше 10 → data_sufficiency = "LOW" и status, вероятно, "NO_INTEREST".
-    - Если объявлений 10-25 → data_sufficiency = "MEDIUM".
-    - Если объявлений более 25 → data_sufficiency = "HIGH".
-    - Не выдумывай статусы. Они ТОЛЬКО: NO_INTEREST, HAS_OFFERS, MAX_BENEFIT.
-    """
-
     @staticmethod
     def _format_linked_block(text: str) -> str:
         if not text: return ""
@@ -469,7 +401,6 @@ class ChunkCultivationPrompts:
         {text}
         (Используй это для сравнения. Если текущие данные противоречат контексту — это аномалия)."""
 
-    # TODO ГДЕ МЫ ВЫЗЫВАЕМ ЭТО? КАК В ИТОГЕ СОБИРАЕТСЯ И ИСПОЛЬЗУЕТСЯ COMMON_FORMAT?
     @staticmethod
     def _get_system_behavior():
         return prompt_manager.get("memory_generation_behavior")
@@ -500,7 +431,6 @@ class ChunkCultivationPrompts:
         items_json = json.dumps(items_preview, ensure_ascii=False, indent=2)
         math_json = json.dumps(math_block, ensure_ascii=False, indent=2)
         
-        # TODO для confidence
         prompt = f"""ТЫ — АНАЛИТИК ТОВАРОВ. КУЛЬТИВАЦИЯ ПРОДУКТА.
     
         ИСХОДНЫЕ ДАННЫЕ:
@@ -522,7 +452,7 @@ class ChunkCultivationPrompts:
         {previous_context[:300] if previous_context else 'Нет'}
 
         ЗАДАЧА:
-        1. Определи СТАТУС товара (target_status):
+        1. Определи статус товара:
             - COMMODITY: масовый товар (>50 объявлений, стабильная цена)
             - SPECIALTY: популярный товар (15-50 объявлений, устоявшаяся ниша)
             - PREMIUM: дорогой/редкий товар (5-15 объявлений, высокая цена)
@@ -539,12 +469,6 @@ class ChunkCultivationPrompts:
             - Особенности? (если видно из объявлений)
             - Тренды? (растет спрос, падает, стабильно)
 
-        4. Дай РЕКОМЕНДАЦИИ пользователю (если он торговец/покупатель):
-            - Если COMMODITY: акцент на оптовые закупки
-            - Если SPECIALTY: нужна диверсификация
-            - Если PREMIUM: ищи уникальные варианты
-            - Если NICHE: очень редко встречается, высокий риск
-
         ВАЖНО:
         - Все числа в price_analysis ДОЛЖНЫ быть из math_block!
         - target_status выбери из 4 вариантов (COMMODITY/SPECIALTY/PREMIUM/NICHE)
@@ -555,8 +479,8 @@ class ChunkCultivationPrompts:
         {{
             "main_description": "Краткое описание товара (1-2 предложения)",
             "hidden_thought_process": "Твои мысли: почему такой статус? Какие факторы повлияли (цена, интересы)?",
-            "target_status": "COMMODITY|SPECIALTY|PREMIUM|NICHE",
-            "market_phase": "растущий|стабильный|падающий",
+            "target_status": "NO_INTEREST | HAS_OFFERS | MAX_BENEFIT",
+            "market_phase": "растущий | стабильный | падающий",
             "influence_weights": {{
                 "raw_data": <0-100>,
                 "system_prompt": <0-100>,
@@ -587,39 +511,58 @@ class ChunkCultivationPrompts:
         previous_context: str,
         user_interests: str,
         linked_context: str,
-        raw_fallback: str
+        raw_fallback_preview: str,
+        raw_count: int
     ) -> str:
         """
         Промпт для культивации CATEGORY чанка.
         """
-        # Подготавливаем информацию о подтоварах
         products_info = []
         if sub_products:
-            for prod in sub_products[:20]:  # Первые 20 продуктов
+            for prod in sub_products[:25]:
                 content = prod.get('content')
                 if isinstance(content, str):
-                    try:
-                        content = json.loads(content)
-                    except:
-                        content = {}
-
-                products_info.append({
-                    'title': prod.get('title', ''),
-                    'status': content.get('target_status', 'UNKNOWN'),
-                    'price_avg': content.get('price_analysis', {}).get('avg', 0),
-                    'item_count': content.get('price_analysis', {}).get('count', 0)
-                })
+                    try: content = json.loads(content)
+                    except: content = {}
+                
+                if content:
+                    products_info.append({
+                        'title': prod.get('title', ''),
+                        'status': content.get('target_status', 'UNKNOWN'),
+                        'price_avg': content.get('price_analysis', {}).get('avg', 0),
+                        'count': content.get('price_analysis', {}).get('count', 0)
+                    })
 
         products_json = json.dumps(products_info, ensure_ascii=False, indent=2)
+        
+        # Формируем блок сырых данных, если чанков нет
+        raw_data_block = ""
+        if not products_info:
+            raw_data_block = f"""
+            ВНИМАНИЕ: КЛАСТЕРЫ ЕЩЕ НЕ СОЗДАНЫ!
+            У тебя есть доступ к ПРЕВЬЮ сырых данных.
+            
+            ВСЕГО В БАЗЕ: {raw_count} объявлений.
+            НИЖЕ ПОКАЗАНЫ ТОЛЬКО ПЕРВЫЕ 15 ШТУК (ПРИМЕРЫ):
+            {raw_fallback_preview}
 
-        prompt = f"""ТЫ — АНАЛИТИК НОМЕНКЛАТУРЫ. КУЛЬТИВАЦИЯ КАТЕГОРИИ.
+            ИНСТРУКЦИЯ:
+            1. НЕ пиши "в базе всего 15 товаров" или "мало данных". В базе {raw_count} товаров!
+            2. Используй примеры ТОЛЬКО для понимания ТИПА товаров и примерных цен.
+            3. Если {raw_count} > 10 -> СТАТУС = HAS_OFFERS.
+            """
+        else:
+            raw_data_block = f"Сырые данные: {raw_count} объявлений."
+
+        prompt = f"""ТЫ — АНАЛИТИК НОМЕНКЛАТУРЫ. КУЛЬТИВАЦИЯ КАТЕГОРИИ [{category_key}].
 
         ИСХОДНЫЕ ДАННЫЕ:
         Категория: {category_key}
-        ПОДТОВАРЫ В КАТЕГОРИИ:
-        {products_json if products_info else raw_fallback}
-        ИНФОРМАЦИЯ О СЫРЫХ ДАННЫХ:
-        {raw_fallback}
+
+        СФОРМИРОВАННЫЕ КЛАСТЕРЫ:
+        {products_json if products_info else "Кластеры еще не созданы."}
+        
+        {raw_data_block}
 
         КОНТЕКСТ ПОЛЬЗОВАТЕЛЯ:
         Интересы: {user_interests if user_interests else 'Не заданы'}
@@ -652,13 +595,14 @@ class ChunkCultivationPrompts:
             - Какие ниши недозаполнены?
 
         ВАЖНО:
-        - Используй только данные из подтоваров, не выдумывай.
+        - Если 'User Instructions' пусты, influence_weights.user_instructions ДОЛЖЕН БЫТЬ 0.
         - confidence отражает уверенность (0-1).
 
         ОТВЕТ (ТОЛЬКО в формате JSON, без лишнего текста):
         {{
             "main_description": "Краткое описание категории",
             "hidden_thought_process": "Анализ структуры категории и её точек интереса.",
+            "target_status": "NO_INTEREST | HAS_OFFERS | MAX_BENEFIT",
             "market_overview": "Обзор рынка в категории (2-3 предложения)",
             "influence_weights": {{
                 "raw_data": <0-100>,
@@ -672,7 +616,7 @@ class ChunkCultivationPrompts:
             {{"name": "Подкатегория 2", "count": <кол-во>, "price_range": "X-Y₽"}}],
             "trends": ["Тренд 1", "Тренд 2"],
             "recommendations": ["Рекомендация 1", "Рекомендация 2"],
-            "confidence": <число>,
+            "confidence": <0.0-1.0>,
             "summary": "Однострочный summary"
         }}
         """
@@ -689,17 +633,23 @@ class ChunkCultivationPrompts:
         """
         Промпт для культивации DATABASE чанка.
         """
-        vocab_text = ", ".join(vocabulary[:30]) if vocabulary else "Нет данных"
+        vocab_text = ", ".join(vocabulary[:40]) if vocabulary else "Нет данных"
+        
+        # Явное указание на область видимости
+        scope_note = f"Это виртуальная база данных по теме '{topic}'." 
+        if db_stats.get('total_items', 0) == 0:
+            scope_note += " ВНИМАНИЕ: База выглядит пустой. Проверь фильтры."
 
-        prompt = f"""ТЫ — АНАЛИТИК ДАННЫХ. КУЛЬТИВАЦИЯ БАЗЫ ЗНАНИЙ.
+        prompt = f"""ТЫ — АНАЛИТИК ДАННЫХ. КУЛЬТИВАЦИЯ БД [{topic}].
 
-        СТАТИСТИКА БД:
+        {scope_note}
+
+        СТАТИСТИКА:
         Всего объявлений: {db_stats.get('total_items', 0)}
-        Категорий: {db_stats.get('total_categories', 0)}
         Средняя цена: {db_stats.get('avg_price', 0)}₽
-        Тема БД: {topic}
+        Брендов/Групп: {db_stats.get('total_brands', 0)}
 
-        КЛЮЧЕВЫЕ СЛОВА (TOP-30):
+        ТОП СЛОВА (КОНТЕКСТ):
         {vocab_text}
 
         {linked_context if linked_context else ''}
@@ -735,6 +685,7 @@ class ChunkCultivationPrompts:
         {{
             "main_description": "Состояние и характер БД",
             "data_volume_assessment": "Оценка объёма данных",
+            "target_status": "NO_INTEREST | HAS_OFFERS | MAX_BENEFIT",
             "hidden_thought_process": "Оценка полноты данных и необходимости расширения.",
             "influence_weights": {{
                 "raw_data": <0-100>,
@@ -746,7 +697,7 @@ class ChunkCultivationPrompts:
             "key_topics": ["Тема 1", "Тема 2", "Тема 3"],
             "quality_issues": ["Проблема 1", "Проблема 2"],
             "recommendations": ["Рекомендация 1", "Рекомендация 2"],
-            "data_quality_score": <число>,
+            "data_quality_score": <0.0-1.0>,
             "summary": "Однострочный summary"
         }}
         """

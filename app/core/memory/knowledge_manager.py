@@ -1,17 +1,11 @@
 import sqlite3
 import json
 import os
-import sys
 import time
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.text_utils import FeatureExtractor
-
-# Add workspace root to path for config imports
-_workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _workspace_root not in sys.path:
-    sys.path.insert(0, _workspace_root)
 
 from app.config import BASE_APP_DIR
 from app.core.log_manager import logger
@@ -200,6 +194,9 @@ class KnowledgeManager:
         try:
             cursor = conn.cursor()
             content_json = json.dumps(content, ensure_ascii=False) if content else None
+            
+            # Используем UTC для времени
+            now_utc = datetime.now(timezone.utc).isoformat()
 
             cursor.execute(
                 "SELECT id FROM ai_knowledge WHERE chunk_type = ? AND chunk_key = ?",
@@ -208,20 +205,19 @@ class KnowledgeManager:
             existing = cursor.fetchone()
 
             if existing:
-                # При обновлении, если передан parent_chunk_id, обновляем и его
                 sql = """
                     UPDATE ai_knowledge SET
-                        title = ?, content = ?, summary = NULL,
+                        title = ?, content = ?,
                         status = ?, priority = ?, new_data_items_count = 0,
                         last_updated = ?
                 """
-                params = [title, content_json, status, priority, datetime.now().isoformat()]
+                params = [title, content_json, status, priority, now_utc]
                 
                 if source_hash:
                     sql += ", source_hash = ?"
                     params.append(source_hash)
                 
-                if parent_chunk_id is not None: # <--- [NEW LOGIC]
+                if parent_chunk_id is not None:
                     sql += ", parent_chunk_id = ?"
                     params.append(parent_chunk_id)
                 
@@ -229,16 +225,16 @@ class KnowledgeManager:
                 params.append(existing[0])
                 
                 cursor.execute(sql, tuple(params))
+                conn.commit()
                 return existing[0]
             else:
-                # При создании вставляем parent_chunk_id
                 cursor.execute("""
                     INSERT INTO ai_knowledge (
                         chunk_type, chunk_key, title, content, status, priority, 
-                        last_updated, source_hash, parent_chunk_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        last_updated, source_hash, parent_chunk_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (chunk_type, chunk_key, title, content_json, status, priority, 
-                      datetime.now().isoformat(), source_hash, parent_chunk_id)) # <--- [NEW PARAM]
+                      now_utc, source_hash, parent_chunk_id, now_utc))
                 
                 conn.commit()
                 self._stats_cache = None
@@ -431,13 +427,14 @@ class KnowledgeManager:
             if summary is None:
                 summary = content.get('summary') or content.get('analysis', {}).get('summary', '')
             
-            # Обновляем запрос, добавляя embedding
+            now_utc = datetime.now(timezone.utc).isoformat()
+            
             sql = """
                 UPDATE ai_knowledge SET
                     content = ?, summary = ?, status = 'READY',
                     new_data_items_count = 0, last_updated = ?
             """
-            params = [content_json, summary, datetime.now().isoformat()]
+            params = [content_json, summary, now_utc]
             
             if source_hash:
                 sql += ", source_hash = ?"
@@ -457,14 +454,14 @@ class KnowledgeManager:
             conn.close()
 
     def update_chunk_status(self, chunk_id: int, status: str, progress: Optional[int] = None):
-        """Update chunk status."""
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
+            now_utc = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
                 UPDATE ai_knowledge SET status = ?, last_cultivation_attempt = ?
                 WHERE id = ?
-            """, (status, datetime.now().isoformat(), chunk_id))
+            """, (status, now_utc, chunk_id))
             conn.commit()
         finally:
             conn.close()
